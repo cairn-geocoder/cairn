@@ -1,0 +1,23 @@
+[package]
+name = "cairn-api"
+description = "HTTP API handlers (axum) for the Cairn geocoder."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+cairn-place = { workspace = true }
+cairn-text = { workspace = true }
+cairn-spatial = { workspace = true }
+cairn-parse = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name = "cairn-spatial"
+description = "R*-tree and point-in-polygon for the Cairn geocoder."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+cairn-place = { workspace = true }
+cairn-tile = { workspace = true }
+geo = { workspace = true }
+geo-types = { workspace = true }
+rstar = { workspace = true }
+thiserror = { workspace = true }

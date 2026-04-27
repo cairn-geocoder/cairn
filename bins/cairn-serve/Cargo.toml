@@ -1,0 +1,23 @@
+[package]
+name = "cairn-serve"
+description = "Cairn HTTP runtime server."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "cairn-serve"
+path = "src/main.rs"
+
+[dependencies]
+cairn-api = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

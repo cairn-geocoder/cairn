@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cairn-geocoder",
+    "crates/cairn-place",
+    "crates/cairn-tile",
+    "crates/cairn-text",
+    "crates/cairn-spatial",
+    "crates/cairn-parse",
+    "crates/cairn-import-osm",
+    "crates/cairn-import-wof",
+    "crates/cairn-import-oa",
+    "crates/cairn-import-geonames",
+    "crates/cairn-api",
+    "bins/cairn-build",
+    "bins/cairn-serve",
+]
+
+[workspace.package]
+version = "0.0.1-alpha"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cairn-geocoder/cairn"
+homepage = "https://github.com/cairn-geocoder/cairn"
+authors = ["Cairn contributors"]
+
+[workspace.dependencies]
+# Internal crates
+cairn-place = { version = "0.0.1-alpha", path = "crates/cairn-place" }
+cairn-tile = { version = "0.0.1-alpha", path = "crates/cairn-tile" }
+cairn-text = { version = "0.0.1-alpha", path = "crates/cairn-text" }
+cairn-spatial = { version = "0.0.1-alpha", path = "crates/cairn-spatial" }
+cairn-parse = { version = "0.0.1-alpha", path = "crates/cairn-parse" }
+cairn-api = { version = "0.0.1-alpha", path = "crates/cairn-api" }
+cairn-import-osm = { version = "0.0.1-alpha", path = "crates/cairn-import-osm" }
+cairn-import-wof = { version = "0.0.1-alpha", path = "crates/cairn-import-wof" }
+cairn-import-oa = { version = "0.0.1-alpha", path = "crates/cairn-import-oa" }
+cairn-import-geonames = { version = "0.0.1-alpha", path = "crates/cairn-import-geonames" }
+
+# Core
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI / runtime
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "net"] }
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# Storage / mmap / serialization
+memmap2 = "0.9"
+rkyv = { version = "0.7", features = ["validation"] }
+blake3 = "1"
+zstd = "0.13"
+
+# Text + spatial
+tantivy = "0.22"
+fst = "0.4"
+geo = "0.28"
+geo-types = "0.7"
+rstar = "0.12"
+
+# Importers
+osmpbf = "0.3"
+csv = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true

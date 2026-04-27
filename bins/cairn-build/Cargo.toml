@@ -1,0 +1,26 @@
+[package]
+name = "cairn-build"
+description = "Cairn bundle builder CLI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "cairn-build"
+path = "src/main.rs"
+
+[dependencies]
+cairn-place = { workspace = true }
+cairn-tile = { workspace = true }
+cairn-import-osm = { workspace = true }
+cairn-import-wof = { workspace = true }
+cairn-import-oa = { workspace = true }
+cairn-import-geonames = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

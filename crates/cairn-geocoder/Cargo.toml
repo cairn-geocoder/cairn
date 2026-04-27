@@ -1,0 +1,21 @@
+[package]
+name = "cairn-geocoder"
+description = "Umbrella crate for the Cairn airgap-ready geocoder. Re-exports core APIs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["geocoding", "geocoder", "geo", "airgap", "offline"]
+categories = ["science::geo"]
+
+[dependencies]
+cairn-place = { workspace = true }
+cairn-tile = { workspace = true }
+cairn-text = { workspace = true }
+cairn-spatial = { workspace = true }
+cairn-parse = { workspace = true }
+cairn-api = { workspace = true }
