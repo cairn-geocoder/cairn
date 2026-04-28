@@ -86,6 +86,93 @@ pub struct AppState {
     /// can forge their IP and trivially bypass the per-IP bucket.
     /// Default `false`.
     pub trust_forwarded_for: bool,
+    /// Optional CIDR allowlist of trusted reverse proxies. When non-empty,
+    /// `X-Forwarded-For` is honored only when the per-connection peer
+    /// is inside one of these networks. Tightens `trust_forwarded_for`
+    /// against attackers who bypass the proxy. Empty = trust unconditionally
+    /// (when `trust_forwarded_for` is also true).
+    pub trusted_proxy_cidrs: Arc<Vec<TrustedCidr>>,
+}
+
+/// Minimal CIDR matcher (no external dep). Stores the network address
+/// already masked to its prefix length, so `contains` is one mask + one
+/// equality check.
+#[derive(Clone, Debug)]
+pub struct TrustedCidr {
+    network: std::net::IpAddr,
+    prefix: u8,
+}
+
+impl TrustedCidr {
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let s = spec.trim();
+        let (addr_part, prefix_part) = match s.split_once('/') {
+            Some(p) => p,
+            None => {
+                let addr: std::net::IpAddr = s
+                    .parse()
+                    .map_err(|e| format!("not a CIDR or bare IP: {e}"))?;
+                let prefix = if addr.is_ipv4() { 32 } else { 128 };
+                return Ok(Self {
+                    network: addr,
+                    prefix,
+                });
+            }
+        };
+        let addr: std::net::IpAddr = addr_part
+            .parse()
+            .map_err(|e| format!("invalid IP in CIDR: {e}"))?;
+        let prefix: u8 = prefix_part
+            .parse()
+            .map_err(|e| format!("invalid prefix in CIDR: {e}"))?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        if prefix > max {
+            return Err(format!(
+                "prefix {prefix} exceeds max {max} for the address family"
+            ));
+        }
+        Ok(Self {
+            network: mask_addr(addr, prefix),
+            prefix,
+        })
+    }
+
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        match (self.network, ip) {
+            (std::net::IpAddr::V4(_), std::net::IpAddr::V4(_))
+            | (std::net::IpAddr::V6(_), std::net::IpAddr::V6(_)) => {
+                mask_addr(ip, self.prefix) == self.network
+            }
+            _ => false,
+        }
+    }
+}
+
+fn mask_addr(addr: std::net::IpAddr, prefix: u8) -> std::net::IpAddr {
+    match addr {
+        std::net::IpAddr::V4(v4) => {
+            let bits = u32::from(v4);
+            let masked = if prefix == 0 {
+                0
+            } else if prefix >= 32 {
+                bits
+            } else {
+                bits & (!0u32 << (32 - prefix))
+            };
+            std::net::IpAddr::V4(std::net::Ipv4Addr::from(masked))
+        }
+        std::net::IpAddr::V6(v6) => {
+            let bits = u128::from(v6);
+            let masked = if prefix == 0 {
+                0
+            } else if prefix >= 128 {
+                bits
+            } else {
+                bits & (!0u128 << (128 - prefix))
+            };
+            std::net::IpAddr::V6(std::net::Ipv6Addr::from(masked))
+        }
+    }
 }
 
 /// Token-bucket rate limiter, per remote IP. `rate_per_sec` tokens
@@ -162,6 +249,38 @@ mod rate_tests {
             assert!(rl.check(ip));
         }
         assert!(!rl.check(ip));
+    }
+
+    #[test]
+    fn cidr_v4_contains_inside_and_excludes_outside() {
+        let c = TrustedCidr::parse("10.0.0.0/8").unwrap();
+        assert!(c.contains("10.0.0.1".parse().unwrap()));
+        assert!(c.contains("10.255.255.255".parse().unwrap()));
+        assert!(!c.contains("11.0.0.1".parse().unwrap()));
+        assert!(!c.contains("192.168.1.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_v6_contains_inside_and_excludes_outside() {
+        let c = TrustedCidr::parse("fd00::/8").unwrap();
+        assert!(c.contains("fd00::1".parse().unwrap()));
+        assert!(c.contains("fdff::ffff".parse().unwrap()));
+        assert!(!c.contains("fc00::1".parse().unwrap()));
+        assert!(!c.contains("2001:db8::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_bare_ip_is_host_route() {
+        let c = TrustedCidr::parse("192.168.1.5").unwrap();
+        assert!(c.contains("192.168.1.5".parse().unwrap()));
+        assert!(!c.contains("192.168.1.6".parse().unwrap()));
+    }
+
+    #[test]
+    fn cidr_rejects_bad_prefix() {
+        assert!(TrustedCidr::parse("10.0.0.0/40").is_err());
+        assert!(TrustedCidr::parse("not-an-ip").is_err());
+        assert!(TrustedCidr::parse("10.0.0.0/abc").is_err());
     }
 
     #[test]
@@ -290,7 +409,12 @@ async fn rate_limit(
     let Some(limiter) = state.rate_limit.as_deref() else {
         return Ok(next.run(request).await);
     };
-    let client_ip = client_ip_for_rate_limit(state.trust_forwarded_for, &request, addr);
+    let client_ip = client_ip_for_rate_limit(
+        state.trust_forwarded_for,
+        &state.trusted_proxy_cidrs,
+        &request,
+        addr,
+    );
     let Some(ip) = client_ip else {
         // No usable IP source (no ConnectInfo, no trusted XFF). Tests
         // hit this path; production always has ConnectInfo.
@@ -306,31 +430,47 @@ async fn rate_limit(
     Ok(next.run(request).await)
 }
 
-/// Resolve the client IP for rate-limiting purposes. When
-/// `trust_xff` is set, prefer the first IP from the `X-Forwarded-For`
-/// header (the originating client per RFC 7239 / common ingress
-/// convention). Otherwise fall back to the per-connection IP from
-/// `ConnectInfo`.
+/// Resolve the client IP for rate-limiting purposes.
+///
+/// When `trust_xff` is set, the first `X-Forwarded-For` IP becomes the
+/// rate-limiting key — but only if the per-connection peer is inside
+/// `trusted_cidrs` (or the allowlist is empty, in which case XFF is
+/// trusted unconditionally). Anything outside the allowlist falls back
+/// to the per-connection peer, defeating XFF spoofing from arbitrary
+/// internet hosts.
 ///
 /// Without `trust_xff` an attacker can forge `X-Forwarded-For` and
-/// bypass the bucket; that's why this is opt-in.
+/// bypass the bucket; the CIDR allowlist tightens that opt-in.
 fn client_ip_for_rate_limit(
     trust_xff: bool,
+    trusted_cidrs: &[TrustedCidr],
     request: &Request<axum::body::Body>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
 ) -> Option<std::net::IpAddr> {
+    let peer_ip = connect_info.map(|ConnectInfo(sa)| sa.ip());
     if trust_xff {
-        if let Some(value) = request.headers().get("x-forwarded-for") {
-            if let Ok(s) = value.to_str() {
-                if let Some(first) = s.split(',').next() {
-                    if let Ok(ip) = first.trim().parse::<std::net::IpAddr>() {
-                        return Some(ip);
+        let peer_trusted = match peer_ip {
+            Some(ip) if !trusted_cidrs.is_empty() => {
+                trusted_cidrs.iter().any(|c| c.contains(ip))
+            }
+            // No CIDR allowlist configured — trust XFF unconditionally
+            // (the trust_forwarded_for=true contract). Tests with no
+            // ConnectInfo also hit this branch.
+            _ => trusted_cidrs.is_empty(),
+        };
+        if peer_trusted {
+            if let Some(value) = request.headers().get("x-forwarded-for") {
+                if let Ok(s) = value.to_str() {
+                    if let Some(first) = s.split(',').next() {
+                        if let Ok(ip) = first.trim().parse::<std::net::IpAddr>() {
+                            return Some(ip);
+                        }
                     }
                 }
             }
         }
     }
-    connect_info.map(|ConnectInfo(sa)| sa.ip())
+    peer_ip
 }
 
 /// Reject requests that don't carry the configured `X-API-Key` header

@@ -126,6 +126,35 @@ async fn main() -> Result<()> {
         tracing::info!("CAIRN_TRUST_PROXY=on — X-Forwarded-For is the rate-limiter key");
     }
 
+    // CAIRN_TRUSTED_PROXIES is a comma-separated CIDR allowlist
+    // (e.g. "10.0.0.0/8,172.16.0.0/12,fd00::/8"). When non-empty, XFF
+    // is honored only when the per-connection peer falls inside one
+    // of these networks — defeats XFF spoofing from arbitrary internet
+    // hosts even when CAIRN_TRUST_PROXY=on. Empty (default) trusts XFF
+    // unconditionally (matches the previous behavior).
+    let trusted_proxy_cidrs: Vec<cairn_api::TrustedCidr> = std::env::var("CAIRN_TRUSTED_PROXIES")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|raw| {
+            raw.split(',')
+                .filter(|s| !s.trim().is_empty())
+                .filter_map(|s| match cairn_api::TrustedCidr::parse(s) {
+                    Ok(c) => Some(c),
+                    Err(err) => {
+                        tracing::warn!(spec = s, ?err, "skipping invalid CIDR");
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !trusted_proxy_cidrs.is_empty() {
+        tracing::info!(
+            cidrs = trusted_proxy_cidrs.len(),
+            "CAIRN_TRUSTED_PROXIES — XFF accepted only from listed CIDRs"
+        );
+    }
+
     let state = AppState {
         bundle_path: Arc::new(cli.bundle.clone()),
         text,
@@ -135,6 +164,7 @@ async fn main() -> Result<()> {
         api_key,
         rate_limit,
         trust_forwarded_for,
+        trusted_proxy_cidrs: Arc::new(trusted_proxy_cidrs),
     };
     let app = router(state);
 

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode};
-use cairn_api::{router, AppState, Metrics, RateLimiter};
+use cairn_api::{router, AppState, Metrics, RateLimiter, TrustedCidr};
 use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
 use cairn_spatial::{AdminFeature, AdminIndex, AdminLayer, NearestIndex, PlacePoint, PointLayer};
 use cairn_text::{build_index, TextIndex};
@@ -148,6 +148,7 @@ fn build_test_state() -> AppState {
         api_key: None,
         rate_limit: None,
         trust_forwarded_for: false,
+        trusted_proxy_cidrs: Arc::new(Vec::new()),
     }
 }
 
@@ -593,6 +594,64 @@ async fn rate_limit_uses_xff_when_trusted_so_separate_proxied_clients_dont_share
         .unwrap();
     let resp_a2 = tower::ServiceExt::oneshot(app, req_a2).await.unwrap();
     assert_eq!(resp_a2.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn rate_limit_xff_ignored_when_peer_outside_cidr_allowlist() {
+    use std::net::SocketAddr;
+    let mut state = build_test_state();
+    state.rate_limit = Some(std::sync::Arc::new(RateLimiter::new(0.001, 1.0)));
+    state.trust_forwarded_for = true;
+    // Allowlist accepts only 10.0.0.0/8. Our MockConnectInfo will use
+    // 203.0.113.1 (TEST-NET-3, outside the allowlist), so XFF must be
+    // ignored even though trust_forwarded_for=true.
+    state.trusted_proxy_cidrs = std::sync::Arc::new(vec![TrustedCidr::parse("10.0.0.0/8").unwrap()]);
+    let app = router(state)
+        .layer(MockConnectInfo(SocketAddr::from(([203, 0, 113, 1], 9999))));
+
+    let req_a = Request::get("/v1/search?q=Vaduz")
+        .header("X-Forwarded-For", "198.51.100.1")
+        .body(Body::empty())
+        .unwrap();
+    let resp_a = tower::ServiceExt::oneshot(app.clone(), req_a)
+        .await
+        .unwrap();
+    assert_eq!(resp_a.status(), StatusCode::OK);
+    // Different XFF from same peer must STILL share the bucket because
+    // XFF is being ignored — peer IP wins.
+    let req_b = Request::get("/v1/search?q=Vaduz")
+        .header("X-Forwarded-For", "198.51.100.2")
+        .body(Body::empty())
+        .unwrap();
+    let resp_b = tower::ServiceExt::oneshot(app, req_b).await.unwrap();
+    assert_eq!(resp_b.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn rate_limit_xff_honored_when_peer_inside_cidr_allowlist() {
+    use std::net::SocketAddr;
+    let mut state = build_test_state();
+    state.rate_limit = Some(std::sync::Arc::new(RateLimiter::new(0.001, 1.0)));
+    state.trust_forwarded_for = true;
+    state.trusted_proxy_cidrs = std::sync::Arc::new(vec![TrustedCidr::parse("10.0.0.0/8").unwrap()]);
+    // Peer is inside 10.0.0.0/8 → XFF is the rate-limit key.
+    let app = router(state)
+        .layer(MockConnectInfo(SocketAddr::from(([10, 1, 2, 3], 9999))));
+    let req_a = Request::get("/v1/search?q=Vaduz")
+        .header("X-Forwarded-For", "198.51.100.1")
+        .body(Body::empty())
+        .unwrap();
+    let resp_a = tower::ServiceExt::oneshot(app.clone(), req_a)
+        .await
+        .unwrap();
+    assert_eq!(resp_a.status(), StatusCode::OK);
+    // Different XFF from the trusted peer = different rate-limit key.
+    let req_b = Request::get("/v1/search?q=Vaduz")
+        .header("X-Forwarded-For", "198.51.100.2")
+        .body(Body::empty())
+        .unwrap();
+    let resp_b = tower::ServiceExt::oneshot(app, req_b).await.unwrap();
+    assert_eq!(resp_b.status(), StatusCode::OK);
 }
 
 #[tokio::test]
