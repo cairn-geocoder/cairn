@@ -1,0 +1,243 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cairn",
+    "version": "0.0.2-alpha",
+    "summary": "Offline, airgap-ready geocoder.",
+    "description": "Cairn turns OSM + WhosOnFirst + OpenAddresses + Geonames data into a single on-disk bundle, then serves forward search, autocomplete, fuzzy matching, structured queries, and reverse geocoding from one static Rust binary.",
+    "license": { "name": "MIT OR Apache-2.0" }
+  },
+  "servers": [
+    { "url": "https://cairn.kaldera.dev", "description": "Live demo backend" },
+    { "url": "http://localhost:8080", "description": "Local cairn-serve" }
+  ],
+  "tags": [
+    { "name": "search", "description": "Forward and structured search." },
+    { "name": "reverse", "description": "Reverse geocoding." },
+    { "name": "parse", "description": "Address parsing utilities." },
+    { "name": "ops", "description": "Health + metrics." },
+    { "name": "pelias", "description": "Pelias-compatible aliases." }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": ["ops"],
+        "summary": "Liveness probe.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Status" } } }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": ["ops"],
+        "summary": "Readiness probe (returns 503 if no text index).",
+        "responses": {
+          "200": { "description": "Ready" },
+          "503": { "description": "Not ready" }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": ["ops"],
+        "summary": "Prometheus 0.0.4 text exposition.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/v1/search": {
+      "get": {
+        "tags": ["search"],
+        "summary": "Forward search with autocomplete + fuzzy + layer + focus.",
+        "parameters": [
+          { "name": "q",     "in": "query", "required": true,  "schema": { "type": "string" } },
+          { "name": "mode",  "in": "query", "schema": { "type": "string", "enum": ["search", "autocomplete"] } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100 } },
+          { "name": "fuzzy", "in": "query", "schema": { "type": "integer", "minimum": 0, "maximum": 2 } },
+          { "name": "layer", "in": "query", "description": "Comma-separated kinds to keep.", "schema": { "type": "string" } },
+          { "name": "focus.lat", "in": "query", "schema": { "type": "number" } },
+          { "name": "focus.lon", "in": "query", "schema": { "type": "number" } },
+          { "name": "focus.weight", "in": "query", "schema": { "type": "number" } }
+        ],
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SearchResponse" } } } },
+          "400": { "description": "Bad request",      "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiError" } } } },
+          "401": { "description": "Missing API key",  "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiError" } } } },
+          "503": { "description": "Index not loaded", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiError" } } } }
+        }
+      }
+    },
+    "/v1/structured": {
+      "get": {
+        "tags": ["search"],
+        "summary": "Field-by-field address search.",
+        "parameters": [
+          { "name": "house_number", "in": "query", "schema": { "type": "string" } },
+          { "name": "road",         "in": "query", "schema": { "type": "string" } },
+          { "name": "unit",         "in": "query", "schema": { "type": "string" } },
+          { "name": "postcode",     "in": "query", "schema": { "type": "string" } },
+          { "name": "city",         "in": "query", "schema": { "type": "string" } },
+          { "name": "district",     "in": "query", "schema": { "type": "string" } },
+          { "name": "region",       "in": "query", "schema": { "type": "string" } },
+          { "name": "country",      "in": "query", "schema": { "type": "string" } },
+          { "name": "limit",        "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" }, "400": { "description": "Bad request" } }
+      }
+    },
+    "/v1/reverse": {
+      "get": {
+        "tags": ["reverse"],
+        "summary": "Point-in-polygon reverse with nearest-K fallback.",
+        "parameters": [
+          { "name": "lat",     "in": "query", "required": true, "schema": { "type": "number" } },
+          { "name": "lon",     "in": "query", "required": true, "schema": { "type": "number" } },
+          { "name": "limit",   "in": "query", "schema": { "type": "integer" } },
+          { "name": "nearest", "in": "query", "description": "Fallback K when PIP empty.", "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReverseResponse" } } } },
+          "400": { "description": "Bad request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiError" } } } }
+        }
+      }
+    },
+    "/v1/parse": {
+      "get": {
+        "tags": ["parse"],
+        "summary": "Free-text address → ParsedAddress.",
+        "parameters": [{ "name": "q", "in": "query", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "OK" }, "400": { "description": "Bad request" } }
+      }
+    },
+    "/v1/expand": {
+      "get": {
+        "tags": ["parse"],
+        "summary": "Free-text address → normalized variants.",
+        "parameters": [{ "name": "q", "in": "query", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "OK" }, "400": { "description": "Bad request" } }
+      }
+    },
+    "/search": {
+      "get": {
+        "tags": ["pelias"],
+        "summary": "Pelias-compatible forward search.",
+        "parameters": [
+          { "name": "text",  "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "size",  "in": "query", "schema": { "type": "integer" } },
+          { "name": "layers","in": "query", "schema": { "type": "string" } },
+          { "name": "focus.point.lat", "in": "query", "schema": { "type": "number" } },
+          { "name": "focus.point.lon", "in": "query", "schema": { "type": "number" } }
+        ],
+        "responses": { "200": { "description": "Pelias FeatureCollection" } }
+      }
+    },
+    "/autocomplete": {
+      "get": {
+        "tags": ["pelias"],
+        "summary": "Pelias-compatible autocomplete.",
+        "parameters": [
+          { "name": "text", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "size", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "Pelias FeatureCollection" } }
+      }
+    },
+    "/v1/autocomplete": {
+      "get": {
+        "tags": ["pelias"],
+        "summary": "Pelias-compatible autocomplete (alternate path).",
+        "parameters": [{ "name": "text", "in": "query", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Pelias FeatureCollection" } }
+      }
+    },
+    "/reverse": {
+      "get": {
+        "tags": ["pelias"],
+        "summary": "Pelias-compatible reverse geocoding.",
+        "parameters": [
+          { "name": "point.lat", "in": "query", "required": true, "schema": { "type": "number" } },
+          { "name": "point.lon", "in": "query", "required": true, "schema": { "type": "number" } },
+          { "name": "size",      "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "Pelias FeatureCollection" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyHeader": { "type": "apiKey", "in": "header", "name": "X-API-Key" },
+      "ApiKeyQuery":  { "type": "apiKey", "in": "query",  "name": "api_key" }
+    },
+    "schemas": {
+      "Status": {
+        "type": "object",
+        "properties": { "status": { "type": "string" } }
+      },
+      "Hit": {
+        "type": "object",
+        "properties": {
+          "place_id":    { "type": "integer", "format": "uint64" },
+          "name":        { "type": "string" },
+          "kind":        { "type": "string" },
+          "level":       { "type": "integer" },
+          "lon":         { "type": "number" },
+          "lat":         { "type": "number" },
+          "score":       { "type": "number" },
+          "admin_path":  { "type": "array", "items": { "type": "integer", "format": "uint64" } },
+          "distance_km": { "type": "number" }
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "properties": {
+          "query":   { "type": "string" },
+          "mode":    { "type": "string" },
+          "results": { "type": "array", "items": { "$ref": "#/components/schemas/Hit" } }
+        }
+      },
+      "ReverseHit": {
+        "type": "object",
+        "properties": {
+          "place_id":    { "type": "integer", "format": "uint64" },
+          "name":        { "type": "string" },
+          "kind":        { "type": "string" },
+          "level":       { "type": "integer" },
+          "lon":         { "type": "number" },
+          "lat":         { "type": "number" },
+          "admin_path":  { "type": "array", "items": { "type": "integer", "format": "uint64" } },
+          "distance_km": { "type": "number" }
+        }
+      },
+      "ReverseResponse": {
+        "type": "object",
+        "properties": {
+          "lat":     { "type": "number" },
+          "lon":     { "type": "number" },
+          "source":  { "type": "string", "enum": ["pip", "nearest"] },
+          "results": { "type": "array", "items": { "$ref": "#/components/schemas/ReverseHit" } }
+        }
+      },
+      "ApiError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code":    { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "security": [{ "ApiKeyHeader": [] }, { "ApiKeyQuery": [] }]
+}

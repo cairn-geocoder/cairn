@@ -9,8 +9,9 @@
 use axum::http::header;
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Json},
+    http::{Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Json, Response},
     routing::get,
     Router,
 };
@@ -21,7 +22,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::error;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
+use tracing::{error, Level};
 
 /// Hand-rolled Prometheus-compatible metrics. Avoids adding a dep just to
 /// emit a few counters. Hot paths bump atomics; `/metrics` formats them.
@@ -69,19 +71,130 @@ pub struct AppState {
     pub admin: Option<Arc<AdminIndex>>,
     pub nearest: Option<Arc<NearestIndex>>,
     pub metrics: Arc<Metrics>,
+    /// Optional API key. When `Some`, every request to `/v1/*` must
+    /// present `X-API-Key: <key>` (or `?api_key=<key>`) or 401.
+    pub api_key: Option<Arc<String>>,
+}
+
+/// Standard error envelope for every non-2xx JSON response.
+///
+/// Wire shape:
+/// ```json
+/// { "error": { "code": "snake_case_id", "message": "human readable" } }
+/// ```
+#[derive(Debug, Serialize)]
+pub struct ApiError {
+    #[serde(skip)]
+    status: StatusCode,
+    error: ApiErrorBody,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiErrorBody {
+    code: &'static str,
+    message: String,
+}
+
+impl ApiError {
+    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            error: ApiErrorBody {
+                code,
+                message: message.into(),
+            },
+        }
+    }
+
+    fn bad_request(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, code, message)
+    }
+
+    fn unavailable(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, code, message)
+    }
+
+    fn unauthorized(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, code, message)
+    }
+
+    fn internal(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, code, message)
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let body = serde_json::json!({ "error": self.error });
+        (self.status, Json(body)).into_response()
+    }
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .route("/metrics", get(metrics))
+    // Routes that require an API key when one is configured.
+    let v1 = Router::new()
         .route("/v1/search", get(search))
         .route("/v1/reverse", get(reverse))
         .route("/v1/structured", get(structured))
         .route("/v1/parse", get(parse_addr))
         .route("/v1/expand", get(expand_addr))
-        .with_state(state)
+        // Pelias-compatible aliases share the same handlers.
+        .route("/v1/autocomplete", get(pelias_autocomplete))
+        .route("/search", get(pelias_search))
+        .route("/autocomplete", get(pelias_autocomplete))
+        .route("/reverse", get(pelias_reverse))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_api_key,
+        ));
+
+    // Open routes (health / metrics / spec) bypass auth.
+    let open = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/metrics", get(metrics))
+        .route("/openapi.json", get(openapi_spec));
+
+    open.merge(v1).with_state(state).layer(
+        TraceLayer::new_for_http()
+            .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+            .on_request(DefaultOnRequest::new().level(Level::INFO))
+            .on_response(DefaultOnResponse::new().level(Level::INFO)),
+    )
+}
+
+/// Reject requests that don't carry the configured `X-API-Key` header
+/// (or `?api_key=…`). When `state.api_key` is `None`, the layer is a
+/// no-op so OSS deploys without auth keep working.
+async fn require_api_key(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let Some(expected) = state.api_key.as_deref() else {
+        return Ok(next.run(request).await);
+    };
+
+    let header = request
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let query_key = request.uri().query().and_then(|q| {
+        q.split('&').find_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            (k == "api_key").then(|| v.to_string())
+        })
+    });
+
+    let provided = header.as_deref().or(query_key.as_deref()).unwrap_or("");
+    if provided != expected {
+        return Err(ApiError::unauthorized(
+            "missing_or_invalid_api_key",
+            "set X-API-Key header or ?api_key= query parameter",
+        ));
+    }
+    Ok(next.run(request).await)
 }
 
 #[derive(Serialize)]
@@ -631,4 +744,271 @@ fn map_err(err: TextError) -> (StatusCode, Json<serde_json::Value>) {
         _ => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err}")),
     };
     (status, Json(serde_json::json!({ "error": msg })))
+}
+
+// ========================================================================
+// Pelias-compatible shim
+//
+// Maps a subset of Pelias query params + response shape onto Cairn's
+// internal handlers so that clients written against Pelias can drop in
+// without code changes. Subset:
+//   * /search             — forward search
+//   * /v1/autocomplete    — prefix autocomplete
+//   * /reverse            — point-in-polygon
+// Full Pelias compat (place lookup, structured query, geocoding response
+// metadata) lands in a follow-up phase if needed.
+// ========================================================================
+
+#[derive(Deserialize, Serialize, Default, Debug)]
+struct PeliasSearchQuery {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    size: Option<usize>,
+    #[serde(default)]
+    layers: Option<String>,
+    #[serde(default, rename = "focus.point.lat")]
+    focus_lat: Option<f64>,
+    #[serde(default, rename = "focus.point.lon")]
+    focus_lon: Option<f64>,
+}
+
+#[derive(Deserialize, Serialize, Default, Debug)]
+struct PeliasReverseQuery {
+    #[serde(default, rename = "point.lat")]
+    lat: Option<f64>,
+    #[serde(default, rename = "point.lon")]
+    lon: Option<f64>,
+    #[serde(default)]
+    size: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct PeliasFeatureCollection<'a> {
+    geocoding: PeliasGeocodingMeta<'a>,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    features: Vec<PeliasFeature>,
+}
+
+#[derive(Serialize)]
+struct PeliasGeocodingMeta<'a> {
+    version: &'static str,
+    attribution: &'static str,
+    engine: PeliasEngine<'a>,
+    query: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct PeliasEngine<'a> {
+    name: &'static str,
+    bundle_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct PeliasFeature {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    geometry: PeliasGeometry,
+    properties: PeliasProperties,
+}
+
+#[derive(Serialize)]
+struct PeliasGeometry {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    coordinates: [f64; 2],
+}
+
+#[derive(Serialize)]
+struct PeliasProperties {
+    id: String,
+    layer: String,
+    name: String,
+    label: String,
+    confidence: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    distance_km: Option<f64>,
+}
+
+fn hit_to_pelias_feature(h: Hit) -> PeliasFeature {
+    let label = if h.kind.is_empty() {
+        h.name.clone()
+    } else {
+        format!("{} ({})", h.name, h.kind)
+    };
+    PeliasFeature {
+        kind: "Feature",
+        geometry: PeliasGeometry {
+            kind: "Point",
+            coordinates: [h.lon, h.lat],
+        },
+        properties: PeliasProperties {
+            id: h.place_id.to_string(),
+            layer: h.kind.clone(),
+            name: h.name.clone(),
+            label,
+            // Pelias confidence is 0–1; we map score / (score+1) to keep
+            // it monotonic without leaking BM25 magnitudes.
+            confidence: h.score / (h.score + 1.0),
+            distance_km: h.distance_km,
+        },
+    }
+}
+
+async fn pelias_search(
+    State(state): State<AppState>,
+    Query(params): Query<PeliasSearchQuery>,
+) -> Result<Json<PeliasFeatureCollection<'static>>, ApiError> {
+    pelias_search_impl(state, params, SearchMode::Search).await
+}
+
+async fn pelias_autocomplete(
+    State(state): State<AppState>,
+    Query(params): Query<PeliasSearchQuery>,
+) -> Result<Json<PeliasFeatureCollection<'static>>, ApiError> {
+    pelias_search_impl(state, params, SearchMode::Autocomplete).await
+}
+
+async fn pelias_search_impl(
+    state: AppState,
+    params: PeliasSearchQuery,
+    mode: SearchMode,
+) -> Result<Json<PeliasFeatureCollection<'static>>, ApiError> {
+    let text = params.text.trim();
+    if text.is_empty() {
+        return Err(ApiError::bad_request(
+            "missing_text",
+            "the 'text' query parameter is required",
+        ));
+    }
+    let layers = params
+        .layers
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim().to_lowercase())
+                .filter(|p| !p.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let focus = match (params.focus_lat, params.focus_lon) {
+        (Some(lat), Some(lon)) => Some(Coord { lon, lat }),
+        _ => None,
+    };
+    let opts = SearchOptions {
+        mode,
+        limit: params.size.unwrap_or(10).clamp(1, 40),
+        fuzzy: 0,
+        layers,
+        focus,
+        focus_weight: 0.5,
+    };
+    let text_idx = state
+        .text
+        .as_ref()
+        .ok_or_else(|| ApiError::unavailable("text_index_unloaded", "text index not loaded"))?
+        .clone();
+    let hits = text_idx.search(text, &opts).map_err(|err| match err {
+        TextError::Query(_) => ApiError::bad_request("bad_query", err.to_string()),
+        _ => ApiError::internal("text_search_failed", err.to_string()),
+    })?;
+    Ok(Json(PeliasFeatureCollection {
+        geocoding: PeliasGeocodingMeta {
+            version: "0.2",
+            attribution: "© OpenStreetMap contributors, WhosOnFirst, OpenAddresses",
+            engine: PeliasEngine {
+                name: "cairn",
+                bundle_id: bundle_id_static(&state),
+            },
+            query: serde_json::to_value(&params).unwrap_or_default(),
+        },
+        kind: "FeatureCollection",
+        features: hits.into_iter().map(hit_to_pelias_feature).collect(),
+    }))
+}
+
+async fn pelias_reverse(
+    State(state): State<AppState>,
+    Query(params): Query<PeliasReverseQuery>,
+) -> Result<Json<PeliasFeatureCollection<'static>>, ApiError> {
+    let (lat, lon) = match (params.lat, params.lon) {
+        (Some(lat), Some(lon)) => (lat, lon),
+        _ => {
+            return Err(ApiError::bad_request(
+                "missing_coords",
+                "point.lat and point.lon are required",
+            ))
+        }
+    };
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return Err(ApiError::bad_request(
+            "out_of_range",
+            "point.lat must be in [-90,90] and point.lon in [-180,180]",
+        ));
+    }
+
+    let admin = state
+        .admin
+        .as_ref()
+        .ok_or_else(|| ApiError::unavailable("admin_unloaded", "admin layer not loaded"))?
+        .clone();
+    let limit = params.size.unwrap_or(10).clamp(1, 40);
+    let probe = Coord { lon, lat };
+    let matches = admin.point_in_polygon(probe);
+
+    let features: Vec<PeliasFeature> = matches
+        .iter()
+        .take(limit)
+        .map(|f| {
+            let hit = Hit {
+                place_id: f.place_id,
+                name: f.name.clone(),
+                kind: f.kind.clone(),
+                level: f.level as u64,
+                lon: f.centroid.lon,
+                lat: f.centroid.lat,
+                score: 1.0,
+                admin_path: f.admin_path.clone(),
+                distance_km: Some(haversine_km(lat, lon, f.centroid.lat, f.centroid.lon)),
+            };
+            hit_to_pelias_feature(hit)
+        })
+        .collect();
+
+    Ok(Json(PeliasFeatureCollection {
+        geocoding: PeliasGeocodingMeta {
+            version: "0.2",
+            attribution: "© OpenStreetMap contributors, WhosOnFirst, OpenAddresses",
+            engine: PeliasEngine {
+                name: "cairn",
+                bundle_id: bundle_id_static(&state),
+            },
+            query: serde_json::to_value(&params).unwrap_or_default(),
+        },
+        kind: "FeatureCollection",
+        features,
+    }))
+}
+
+fn bundle_id_static(state: &AppState) -> &'static str {
+    // The bundle id lives in `Metrics`. To embed it in a static-lifetime
+    // response struct without copying for every request, leak the string
+    // once. Acceptable: there's a single bundle per process.
+    static ID: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    ID.get_or_init(|| Box::leak(state.metrics.bundle_id.clone().into_boxed_str()))
+}
+
+// ========================================================================
+// OpenAPI spec
+// ========================================================================
+
+const OPENAPI_SPEC: &str = include_str!("../openapi.json");
+
+async fn openapi_spec() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        OPENAPI_SPEC,
+    )
 }

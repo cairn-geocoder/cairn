@@ -76,12 +76,27 @@ async fn main() -> Result<()> {
     let point_count = nearest.as_ref().map(|n| n.len() as u64).unwrap_or(0);
     let metrics = Arc::new(Metrics::new(bundle_id, admin_features, point_count));
 
+    let api_key = std::env::var("CAIRN_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|k| {
+            tracing::info!(
+                masked = mask_secret(&k),
+                "API key loaded from CAIRN_API_KEY"
+            );
+            Arc::new(k)
+        });
+    if api_key.is_none() {
+        tracing::warn!("CAIRN_API_KEY not set — /v1/* endpoints are open");
+    }
+
     let state = AppState {
         bundle_path: Arc::new(cli.bundle.clone()),
         text,
         admin,
         nearest,
         metrics,
+        api_key,
     };
     let app = router(state);
 
@@ -94,4 +109,13 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(cli.bind).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Masks an API key for log output: keeps first 3 + last 3 chars.
+fn mask_secret(s: &str) -> String {
+    if s.len() <= 8 {
+        "***".into()
+    } else {
+        format!("{}…{}", &s[..3], &s[s.len() - 3..])
+    }
 }

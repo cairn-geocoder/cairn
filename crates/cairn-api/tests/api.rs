@@ -148,7 +148,14 @@ fn build_test_state() -> AppState {
         admin: Some(Arc::new(admin)),
         nearest: Some(Arc::new(nearest)),
         metrics: Arc::new(Metrics::new("test".into(), 1, 3)),
+        api_key: None,
     }
+}
+
+fn build_test_state_with_key(key: &str) -> AppState {
+    let mut state = build_test_state();
+    state.api_key = Some(Arc::new(key.to_string()));
+    state
 }
 
 async fn get_json(state: AppState, uri: &str) -> (StatusCode, Value) {
@@ -213,7 +220,9 @@ async fn search_dedup_one_doc_per_place() {
 async fn search_empty_q_400() {
     let (status, body) = get_json(build_test_state(), "/v1/search?q=").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["error"].is_string());
+    // Legacy v1 handlers still emit the simpler `{"error": "msg"}` shape;
+    // standardised envelope on Pelias + new endpoints. Both supported.
+    assert!(body["error"].is_string() || body["error"]["message"].is_string());
 }
 
 #[tokio::test]
@@ -277,4 +286,101 @@ async fn metrics_emits_prometheus_text() {
     assert!(body.contains("cairn_uptime_seconds"));
     assert!(body.contains("cairn_admin_features"));
     assert!(body.contains("cairn_requests_total"));
+}
+
+#[tokio::test]
+async fn openapi_spec_served() {
+    let (status, body) = get_text(build_test_state(), "/openapi.json").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"openapi\""));
+    assert!(body.contains("/v1/search"));
+    assert!(body.contains("Pelias"));
+}
+
+#[tokio::test]
+async fn pelias_search_returns_feature_collection() {
+    let (status, body) = get_json(build_test_state(), "/search?text=Vaduz&size=3").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["type"], "FeatureCollection");
+    assert_eq!(body["geocoding"]["engine"]["name"], "cairn");
+    let features = body["features"].as_array().unwrap();
+    assert!(!features.is_empty());
+    assert_eq!(features[0]["type"], "Feature");
+    assert_eq!(features[0]["geometry"]["type"], "Point");
+    assert_eq!(features[0]["properties"]["name"], "Vaduz");
+}
+
+#[tokio::test]
+async fn pelias_autocomplete_works_via_v1_path() {
+    let (status, _) = get_json(build_test_state(), "/v1/autocomplete?text=Vad").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn pelias_reverse_returns_feature_collection() {
+    let (status, body) = get_json(
+        build_test_state(),
+        "/reverse?point.lat=47.14&point.lon=9.55",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["type"], "FeatureCollection");
+    let features = body["features"].as_array().unwrap();
+    assert!(!features.is_empty());
+}
+
+#[tokio::test]
+async fn pelias_reverse_missing_coords_400() {
+    let (status, body) = get_json(build_test_state(), "/reverse").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "missing_coords");
+}
+
+#[tokio::test]
+async fn auth_blocks_request_without_key() {
+    let (status, body) = get_json(
+        build_test_state_with_key("secret-key"),
+        "/v1/search?q=Vaduz",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "missing_or_invalid_api_key");
+}
+
+#[tokio::test]
+async fn auth_allows_request_with_valid_key_in_query() {
+    let (status, _) = get_json(
+        build_test_state_with_key("secret-key"),
+        "/v1/search?q=Vaduz&api_key=secret-key",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn auth_allows_request_with_valid_header() {
+    let req = Request::get("/v1/search?q=Vaduz")
+        .header("X-API-Key", "secret-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router(build_test_state_with_key("secret-key"))
+        .oneshot(req)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn auth_does_not_block_open_routes() {
+    // /healthz, /readyz, /metrics, /openapi.json must work without a key.
+    let state = build_test_state_with_key("secret-key");
+    for path in ["/healthz", "/readyz", "/metrics", "/openapi.json"] {
+        let req = Request::get(path).body(Body::empty()).unwrap();
+        let resp = router(state.clone()).oneshot(req).await.unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "{path} should be open"
+        );
+    }
 }
