@@ -21,6 +21,8 @@ bincode = { workspace = true }
 blake3 = { workspace = true }
 lru = { workspace = true }
 tracing = { workspace = true }
+rkyv = { workspace = true }
+bytecheck = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

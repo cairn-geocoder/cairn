@@ -33,6 +33,8 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tracing::debug;
 
+pub mod archived;
+
 /// Default LRU capacity (per index) when the caller doesn't pick one.
 /// Each entry holds one tile's feature/point list. Country-scale bundles
 /// rarely exceed a few hundred non-empty tiles; planet-scale callers
