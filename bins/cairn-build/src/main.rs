@@ -276,7 +276,7 @@ fn cmd_verify(bundle: &Path) -> Result<()> {
         manifest = %report.manifest_path,
         tiles_checked = report.tiles_checked,
         failures = report.failures.len(),
-        "verify done"
+        "tile verify done"
     );
     if !report.ok() {
         for f in &report.failures {
@@ -289,9 +289,58 @@ fn cmd_verify(bundle: &Path) -> Result<()> {
         }
         anyhow::bail!("{} tiles failed integrity check", report.failures.len());
     }
+
+    // Optional layers: text index + admin polygons + nearest-fallback points.
+    // Each is verified by attempting to open / parse the artifact. Missing
+    // artifacts are warnings, not failures.
+    let text_dir = bundle.join("index/text");
+    let text_status = if text_dir.exists() {
+        match cairn_text::TextIndex::open(&text_dir) {
+            Ok(_) => "ok",
+            Err(err) => {
+                tracing::error!(?err, path = %text_dir.display(), "text index broken");
+                anyhow::bail!("text index at {} failed to open", text_dir.display());
+            }
+        }
+    } else {
+        "missing"
+    };
+
+    let admin_path = bundle.join("spatial/admin.bin");
+    let admin_status = if admin_path.exists() {
+        match cairn_spatial::AdminLayer::read_from(&admin_path) {
+            Ok(layer) => {
+                tracing::info!(features = layer.features.len(), "admin layer ok");
+                "ok"
+            }
+            Err(err) => {
+                tracing::error!(?err, path = %admin_path.display(), "admin layer broken");
+                anyhow::bail!("admin.bin at {} failed to parse", admin_path.display());
+            }
+        }
+    } else {
+        "missing"
+    };
+
+    let points_path = bundle.join("spatial/points.bin");
+    let points_status = if points_path.exists() {
+        match cairn_spatial::PointLayer::read_from(&points_path) {
+            Ok(layer) => {
+                tracing::info!(points = layer.points.len(), "point layer ok");
+                "ok"
+            }
+            Err(err) => {
+                tracing::error!(?err, path = %points_path.display(), "point layer broken");
+                anyhow::bail!("points.bin at {} failed to parse", points_path.display());
+            }
+        }
+    } else {
+        "missing"
+    };
+
     println!(
-        "OK: {} tiles verified at {}",
-        report.tiles_checked, report.manifest_path
+        "OK: {} tiles verified, text={}, admin={}, points={} at {}",
+        report.tiles_checked, text_status, admin_status, points_status, report.manifest_path
     );
     Ok(())
 }

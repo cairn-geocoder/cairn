@@ -302,11 +302,152 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     2.0 * EARTH_KM * a.sqrt().asin()
 }
 
-async fn structured() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "results": [],
-        "note": "structured queries ship in Phase 4"
-    }))
+#[derive(Deserialize, Default)]
+pub struct StructuredQuery {
+    #[serde(default)]
+    pub house_number: Option<String>,
+    #[serde(default)]
+    pub road: Option<String>,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub postcode: Option<String>,
+    #[serde(default)]
+    pub city: Option<String>,
+    #[serde(default)]
+    pub district: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default, rename = "focus.lat")]
+    pub focus_lat: Option<f64>,
+    #[serde(default, rename = "focus.lon")]
+    pub focus_lon: Option<f64>,
+    #[serde(default, rename = "focus.weight")]
+    pub focus_weight: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct StructuredResponse<'a> {
+    query: &'a str,
+    layer_hint: &'a str,
+    results: Vec<Hit>,
+}
+
+async fn structured(
+    State(state): State<AppState>,
+    Query(params): Query<StructuredQuery>,
+) -> impl IntoResponse {
+    // Concatenate all non-empty parts in finest → coarsest order.
+    let parts: Vec<&str> = [
+        params.house_number.as_deref(),
+        params.road.as_deref(),
+        params.unit.as_deref(),
+        params.postcode.as_deref(),
+        params.city.as_deref(),
+        params.district.as_deref(),
+        params.region.as_deref(),
+        params.country.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .filter(|s| !s.is_empty())
+    .collect();
+
+    if parts.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "at least one structured field is required"
+            })),
+        )
+            .into_response();
+    }
+    let query = parts.join(" ");
+
+    // Layer hint: pick the finest non-empty field as the kind filter.
+    // Address > Street > City > Region > Country — empty layer if none of
+    // those signals are present (e.g. only postcode given).
+    let (layer_hint, layers): (&str, Vec<String>) = if params
+        .house_number
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        ("address", vec!["address".into()])
+    } else if params
+        .road
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        ("street", vec!["street".into()])
+    } else if params
+        .city
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        ("city", vec!["city".into()])
+    } else if params
+        .region
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        ("region", vec!["region".into()])
+    } else if params
+        .country
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        ("country", vec!["country".into()])
+    } else {
+        ("any", Vec::new())
+    };
+
+    let focus = match (params.focus_lat, params.focus_lon) {
+        (Some(lat), Some(lon)) => Some(Coord { lon, lat }),
+        _ => None,
+    };
+
+    let opts = SearchOptions {
+        mode: SearchMode::Search,
+        limit: params.limit.unwrap_or(10).clamp(1, 100),
+        fuzzy: 0,
+        layers,
+        focus,
+        focus_weight: params.focus_weight.unwrap_or(0.5),
+    };
+
+    let text = match state.text.as_ref() {
+        Some(t) => t.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": "text index not loaded" })),
+            )
+                .into_response();
+        }
+    };
+
+    match text.search(&query, &opts) {
+        Ok(results) => Json(StructuredResponse {
+            query: &query,
+            layer_hint,
+            results,
+        })
+        .into_response(),
+        Err(err) => {
+            error!(?err, query, "structured search failed");
+            map_err(err).into_response()
+        }
+    }
 }
 
 fn map_err(err: TextError) -> (StatusCode, Json<serde_json::Value>) {

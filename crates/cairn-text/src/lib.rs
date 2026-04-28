@@ -435,12 +435,18 @@ mod tests {
     }
 
     fn tempdir_for_test() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let d = std::env::temp_dir().join(format!(
-            "cairn-text-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "cairn-text-test-{}-{}-{}",
+            std::process::id(),
+            nanos,
+            n
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
