@@ -31,16 +31,25 @@ jobs:
             archive_suffix: linux-x86_64-musl
             extra_apt: musl-tools
             cc_env: CC=musl-gcc
+            tool: cargo
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            archive_suffix: linux-aarch64-musl
+            extra_apt: ''
+            cc_env: ''
+            tool: cross
           - os: macos-14
             target: aarch64-apple-darwin
             archive_suffix: darwin-aarch64
             extra_apt: ''
             cc_env: ''
+            tool: cargo
           - os: macos-13
             target: x86_64-apple-darwin
             archive_suffix: darwin-x86_64
             extra_apt: ''
             cc_env: ''
+            tool: cargo
     steps:
       - uses: actions/checkout@v4
 
@@ -58,10 +67,19 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Install cross-rs (when needed)
+        if: matrix.tool == 'cross'
+        run: cargo install cross --locked --git https://github.com/cross-rs/cross --rev main
+
       - name: Build release binaries
         run: |
-          ${{ matrix.cc_env }} cargo build --release --target ${{ matrix.target }} \
-            -p cairn-build -p cairn-serve
+          if [ "${{ matrix.tool }}" = "cross" ]; then
+            cross build --release --target ${{ matrix.target }} \
+              -p cairn-build -p cairn-serve
+          else
+            ${{ matrix.cc_env }} cargo build --release --target ${{ matrix.target }} \
+              -p cairn-build -p cairn-serve
+          fi
 
       - name: Package tarball
         id: pkg
