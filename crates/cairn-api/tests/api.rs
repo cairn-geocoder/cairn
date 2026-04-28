@@ -367,6 +367,115 @@ async fn auth_allows_request_with_valid_header() {
 }
 
 #[tokio::test]
+async fn search_limit_caps_results() {
+    let (_, body) = get_json(build_test_state(), "/v1/search?q=Vaduz&limit=1").await;
+    let results = body["results"].as_array().unwrap();
+    assert!(results.len() <= 1);
+}
+
+#[tokio::test]
+async fn search_limit_clamps_to_100() {
+    // Asking for limit=9999 must clamp at 100, not crash.
+    let (status, _) = get_json(build_test_state(), "/v1/search?q=Vaduz&limit=9999").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn search_fuzzy_recovers_single_typo() {
+    // "Vadzu" is a single u<->z transposition of "Vaduz" (Damerau cost 1).
+    let (status, body) = get_json(build_test_state(), "/v1/search?q=Vadzu&fuzzy=1").await;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        results.iter().any(|r| r["name"] == "Vaduz"),
+        "expected fuzzy=1 to recover 'Vadzu' -> 'Vaduz', got {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn search_multi_layer_filter_unions() {
+    let (_, body) = get_json(
+        build_test_state(),
+        "/v1/search?q=Vaduz&layer=city,country&limit=10",
+    )
+    .await;
+    let results = body["results"].as_array().unwrap();
+    for r in results {
+        let kind = r["kind"].as_str().unwrap();
+        assert!(
+            kind == "city" || kind == "country",
+            "unexpected kind in multi-layer filter: {kind}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn autocomplete_endpoint_returns_prefix_hits() {
+    let (status, body) = get_json(build_test_state(), "/v1/autocomplete?text=Vad&size=5").await;
+    assert_eq!(status, StatusCode::OK);
+    // Pelias-shaped FeatureCollection.
+    assert_eq!(body["type"], "FeatureCollection");
+    let features = body["features"].as_array().unwrap();
+    assert!(
+        features.iter().any(|f| f["properties"]["name"] == "Vaduz"),
+        "autocomplete should match 'Vad' prefix to Vaduz"
+    );
+}
+
+#[tokio::test]
+async fn reverse_limit_caps_results() {
+    let (_, body) = get_json(
+        build_test_state(),
+        "/v1/reverse?lat=48.0&lon=10.5&nearest=2&limit=1",
+    )
+    .await;
+    let results = body["results"].as_array().unwrap();
+    assert!(results.len() <= 1);
+}
+
+#[tokio::test]
+async fn metrics_counter_increments_after_search() {
+    // Hit /v1/search, then /metrics, and confirm the search counter ticked.
+    let state = build_test_state();
+    let (_, _) = get_json(state.clone(), "/v1/search?q=Vaduz").await;
+    let (status, body) = get_text(state, "/metrics").await;
+    assert_eq!(status, StatusCode::OK);
+    let line = body
+        .lines()
+        .find(|l| l.starts_with("cairn_requests_total") && l.contains("endpoint=\"search\""))
+        .expect("expected a search counter row in /metrics");
+    let val: f64 = line
+        .split_whitespace()
+        .last()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    assert!(
+        val >= 1.0,
+        "expected search counter >= 1 after a search call, got {val}"
+    );
+}
+
+#[tokio::test]
+async fn structured_returns_pelias_compat_layer_hint() {
+    // Layer-hint precedence: postcode > address > street > neighborhood >
+    // city > county > region > country. With both city + country set,
+    // city wins.
+    let (_, body) = get_json(
+        build_test_state(),
+        "/v1/structured?city=Vaduz&country=Liechtenstein",
+    )
+    .await;
+    assert_eq!(body["layer_hint"], "city");
+}
+
+#[tokio::test]
+async fn unknown_route_returns_404() {
+    let req = Request::get("/v99/nope").body(Body::empty()).unwrap();
+    let resp = router(build_test_state()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn auth_does_not_block_open_routes() {
     // /healthz, /readyz, /metrics, /openapi.json must work without a key.
     let state = build_test_state_with_key("secret-key");
