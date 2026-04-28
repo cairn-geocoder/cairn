@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to attach binaries to (e.g. v0.0.1-alpha)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive_suffix: linux-x86_64-musl
+            extra_apt: musl-tools
+            cc_env: CC=musl-gcc
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive_suffix: darwin-aarch64
+            extra_apt: ''
+            cc_env: ''
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive_suffix: darwin-x86_64
+            extra_apt: ''
+            cc_env: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install apt deps (linux only)
+        if: matrix.extra_apt != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.extra_apt }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binaries
+        run: |
+          ${{ matrix.cc_env }} cargo build --release --target ${{ matrix.target }} \
+            -p cairn-build -p cairn-serve
+
+      - name: Package tarball
+        id: pkg
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          NAME="cairn-${TAG}-${{ matrix.archive_suffix }}"
+          mkdir -p "dist/${NAME}"
+          cp "target/${{ matrix.target }}/release/cairn-build" "dist/${NAME}/"
+          cp "target/${{ matrix.target }}/release/cairn-serve" "dist/${NAME}/"
+          cp README.md ROADMAP.md LICENSE-MIT LICENSE-APACHE "dist/${NAME}/"
+          (cd dist && tar czf "${NAME}.tar.gz" "${NAME}")
+          (cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: |
+            dist/${{ steps.pkg.outputs.name }}.tar.gz
+            dist/${{ steps.pkg.outputs.name }}.tar.gz.sha256
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.pkg.outputs.tag }}
+          files: |
+            dist/${{ steps.pkg.outputs.name }}.tar.gz
+            dist/${{ steps.pkg.outputs.name }}.tar.gz.sha256
+          fail_on_unmatched_files: true
