@@ -11,9 +11,12 @@ authors.workspace = true
 
 [features]
 default = []
-# `libpostal` enables the FFI build; vendored libpostal sources land in Phase 4.
-libpostal = []
+# Enables the libpostal FFI bindings. Requires the `libpostal` C library
+# headers + compiled language model files at build / runtime
+# (LIBPOSTAL_DATA_DIR). See README + ROADMAP Phase 6e.
+libpostal = ["dep:libpostal-sys"]
 
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true }
+libpostal-sys = { version = "0.1", optional = true }

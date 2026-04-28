@@ -108,12 +108,20 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     let mut places: Vec<Place> = Vec::new();
     let mut sources: Vec<SourceVersion> = Vec::new();
 
+    let mut admin_layer: Option<cairn_spatial::AdminLayer> = None;
     if let Some(osm_path) = args.osm.as_ref() {
         tracing::info!(path = %osm_path.display(), "ingesting OSM PBF");
         let imported = cairn_import_osm::import(osm_path)
             .with_context(|| format!("OSM import failed: {}", osm_path.display()))?;
-        tracing::info!(count = imported.len(), "OSM places imported");
-        places.extend(imported);
+        tracing::info!(
+            places = imported.places.len(),
+            polygons = imported.admin_layer.features.len(),
+            "OSM imported"
+        );
+        places.extend(imported.places);
+        if !imported.admin_layer.features.is_empty() {
+            admin_layer = Some(imported.admin_layer);
+        }
         sources.push(SourceVersion {
             name: "osm".into(),
             version: osm_path.display().to_string(),
@@ -121,7 +129,6 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         });
     }
 
-    let mut admin_layer: Option<cairn_spatial::AdminLayer> = None;
     if let Some(wof_path) = args.wof.as_ref() {
         tracing::info!(path = %wof_path.display(), "ingesting WhosOnFirst SQLite");
         let imported = cairn_import_wof::import(wof_path)
@@ -132,7 +139,13 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             "WoF imported"
         );
         places.extend(imported.places);
-        admin_layer = Some(imported.admin_layer);
+        admin_layer = match admin_layer.take() {
+            Some(mut existing) => {
+                existing.features.extend(imported.admin_layer.features);
+                Some(existing)
+            }
+            None => Some(imported.admin_layer),
+        };
         sources.push(SourceVersion {
             name: "wof".into(),
             version: wof_path.display().to_string(),

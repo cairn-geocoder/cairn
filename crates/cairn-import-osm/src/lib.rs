@@ -1,18 +1,30 @@
-//! OpenStreetMap PBF → `Place` stream.
+//! OpenStreetMap PBF → `Place` stream + admin polygon layer.
 //!
-//! Phase 4 scope:
+//! Phase 4–6d scope:
 //! - Nodes tagged `place=*` with a `name=*` → admin/city/neighborhood Places.
 //! - Nodes tagged with POI keys (amenity, shop, tourism, office, leisure,
 //!   historic) plus a name → POI Places at L2.
 //! - Ways tagged `highway=<road class>` with a name → Street Places at L2,
 //!   centroid = mean of cached node coordinates.
+//! - Relations tagged `boundary=administrative` (or `type=multipolygon`
+//!   with a `boundary=*` tag) → admin polygons. Outer-role member ways
+//!   are stitched into closed rings via endpoint matching; ways that
+//!   don't close are dropped with a warning. `admin_level` maps to
+//!   `PlaceKind` (2=country, 4=region, 6=county, 8=city, 10=neighborhood).
 //!
-//! Two-pass over the PBF: pass 1 caches every node's `(lon, lat)`, pass 2
-//! emits Places (including ways resolved against the cache).
+//! Two passes over the PBF:
+//!   1. `load_node_coords`: cache every node's `(lon, lat)`.
+//!   2. Single sweep that emits Places, caches `way_id → Vec<NodeId>` as
+//!      ways stream by, and uses the accumulated cache to assemble
+//!      admin polygons when relations stream by (PBF order: nodes →
+//!      ways → relations, so ways are always available when relations
+//!      arrive).
 
 use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
+use cairn_spatial::{AdminFeature, AdminLayer};
 use cairn_tile::{Level, TileCoord};
-use osmpbf::{DenseNode, Element, ElementReader, Node, Way};
+use geo_types::{LineString, MultiPolygon, Polygon};
+use osmpbf::{DenseNode, Element, ElementReader, Node, Relation, Way};
 use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
@@ -34,23 +46,37 @@ struct Counters {
     nodes_emitted: u64,
     ways_seen: u64,
     ways_emitted: u64,
+    relations_seen: u64,
+    relations_emitted: u64,
     skipped_no_name: u64,
     skipped_unknown_kind: u64,
     skipped_way_no_coords: u64,
+    skipped_relation_open_ring: u64,
+    skipped_relation_no_outer: u64,
 }
 
 type NodeCoords = HashMap<i64, [f64; 2]>;
+type WayNodes = HashMap<i64, Vec<i64>>;
 
-pub fn import(pbf_path: &Path) -> Result<Vec<Place>, ImportError> {
-    info!(path = %pbf_path.display(), "opening OSM PBF (pass 1: node coords)");
+/// Aggregate output of an OSM PBF import.
+pub struct OsmImport {
+    pub places: Vec<Place>,
+    pub admin_layer: AdminLayer,
+}
+
+pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
+    info!(path = %pbf_path.display(), "OSM PBF pass 1: node coords");
     let node_coords = load_node_coords(pbf_path)?;
     info!(nodes_cached = node_coords.len(), "node coord cache built");
 
-    info!("OSM PBF pass 2: emit Places");
+    info!("OSM PBF pass 2: places + ways + admin relations");
     let reader = ElementReader::from_path(pbf_path)?;
     let mut places = Vec::new();
+    let mut admin_features: Vec<AdminFeature> = Vec::new();
     let mut counters = Counters::default();
     let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
+    let mut admin_local_counters: HashMap<(u8, u32), u64> = HashMap::new();
+    let mut way_nodes: WayNodes = HashMap::new();
 
     reader.for_each(|element| match element {
         Element::Node(n) => {
@@ -67,11 +93,23 @@ pub fn import(pbf_path: &Path) -> Result<Vec<Place>, ImportError> {
         }
         Element::Way(w) => {
             counters.ways_seen += 1;
+            way_nodes.insert(w.id(), w.refs().collect());
             if let Some(p) = way_to_place(&w, &node_coords, &mut local_counters, &mut counters) {
                 places.push(p);
             }
         }
-        Element::Relation(_) => {}
+        Element::Relation(r) => {
+            counters.relations_seen += 1;
+            if let Some(feat) = relation_to_admin(
+                &r,
+                &way_nodes,
+                &node_coords,
+                &mut admin_local_counters,
+                &mut counters,
+            ) {
+                admin_features.push(feat);
+            }
+        }
     })?;
 
     info!(
@@ -79,12 +117,21 @@ pub fn import(pbf_path: &Path) -> Result<Vec<Place>, ImportError> {
         nodes_emitted = counters.nodes_emitted,
         ways_seen = counters.ways_seen,
         ways_emitted = counters.ways_emitted,
+        relations_seen = counters.relations_seen,
+        relations_emitted = counters.relations_emitted,
         skipped_no_name = counters.skipped_no_name,
         skipped_unknown_kind = counters.skipped_unknown_kind,
         skipped_way_no_coords = counters.skipped_way_no_coords,
+        skipped_relation_open_ring = counters.skipped_relation_open_ring,
+        skipped_relation_no_outer = counters.skipped_relation_no_outer,
         "OSM import done"
     );
-    Ok(places)
+    Ok(OsmImport {
+        places,
+        admin_layer: AdminLayer {
+            features: admin_features,
+        },
+    })
 }
 
 fn load_node_coords(pbf_path: &Path) -> Result<NodeCoords, ImportError> {
@@ -358,6 +405,204 @@ fn collect_tags<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(iter: I) -> Vec<
     iter.into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
+}
+
+/// Build an `AdminFeature` from an OSM admin-boundary relation by stitching
+/// outer-role member ways into closed rings. Returns `None` if the relation
+/// isn't admin, doesn't have a usable name + admin_level, or none of its
+/// outer members close into a ring.
+fn relation_to_admin(
+    relation: &Relation<'_>,
+    way_nodes: &WayNodes,
+    node_coords: &NodeCoords,
+    local_counters: &mut HashMap<(u8, u32), u64>,
+    counters: &mut Counters,
+) -> Option<AdminFeature> {
+    let tags = collect_tags(relation.tags());
+    if !is_admin_boundary(&tags) {
+        return None;
+    }
+    let names = collect_names(&tags);
+    if names.is_empty() {
+        counters.skipped_no_name += 1;
+        return None;
+    }
+    let kind = match admin_level_kind(&tags) {
+        Some(k) => k,
+        None => {
+            counters.skipped_unknown_kind += 1;
+            return None;
+        }
+    };
+
+    let outer_ways: Vec<i64> = relation
+        .members()
+        .filter(|m| matches!(m.member_type, osmpbf::RelMemberType::Way))
+        .filter(|m| {
+            m.role()
+                .ok()
+                .map(|r| r == "outer" || r.is_empty())
+                .unwrap_or(false)
+        })
+        .map(|m| m.member_id)
+        .collect();
+    if outer_ways.is_empty() {
+        counters.skipped_relation_no_outer += 1;
+        return None;
+    }
+
+    let rings = assemble_rings(&outer_ways, way_nodes);
+    if rings.is_empty() {
+        counters.skipped_relation_open_ring += 1;
+        debug!(rel_id = relation.id(), "no closed outer ring; dropping");
+        return None;
+    }
+
+    let polygons: Vec<Polygon<f64>> = rings
+        .into_iter()
+        .filter_map(|ring| ring_to_polygon(&ring, node_coords))
+        .collect();
+    if polygons.is_empty() {
+        counters.skipped_relation_open_ring += 1;
+        return None;
+    }
+    let multipolygon = MultiPolygon(polygons);
+    let centroid = multipolygon_centroid(&multipolygon)?;
+
+    let level = level_for_kind(kind);
+    let tile = TileCoord::from_coord(level, centroid);
+    let key = (level.as_u8(), tile.id());
+    let local = local_counters.entry(key).or_insert(0);
+    let local_id = *local;
+    *local += 1;
+    let place_id = match PlaceId::new(level.as_u8(), tile.id(), local_id) {
+        Ok(id) => id,
+        Err(err) => {
+            debug!(?err, "PlaceId overflow on admin relation");
+            return None;
+        }
+    };
+
+    let default_name = names
+        .iter()
+        .find(|n| n.lang == "default")
+        .or_else(|| names.first())
+        .map(|n| n.value.clone())
+        .unwrap_or_default();
+    counters.relations_emitted += 1;
+    Some(AdminFeature {
+        place_id: place_id.0,
+        level: level.as_u8(),
+        kind: kind_str(kind).into(),
+        name: default_name,
+        centroid,
+        admin_path: vec![],
+        polygon: multipolygon,
+    })
+}
+
+fn is_admin_boundary(tags: &[(String, String)]) -> bool {
+    let boundary = tag_value(tags, "boundary");
+    let typ = tag_value(tags, "type");
+    boundary == Some("administrative")
+        || (typ == Some("multipolygon") && boundary == Some("administrative"))
+        || (typ == Some("boundary") && boundary == Some("administrative"))
+}
+
+fn admin_level_kind(tags: &[(String, String)]) -> Option<PlaceKind> {
+    let lvl = tag_value(tags, "admin_level")?.parse::<u8>().ok()?;
+    Some(match lvl {
+        1..=2 => PlaceKind::Country,
+        3..=4 => PlaceKind::Region,
+        5..=6 => PlaceKind::County,
+        7..=8 => PlaceKind::City,
+        9..=12 => PlaceKind::Neighborhood,
+        _ => return None,
+    })
+}
+
+fn kind_str(kind: PlaceKind) -> &'static str {
+    match kind {
+        PlaceKind::Country => "country",
+        PlaceKind::Region => "region",
+        PlaceKind::County => "county",
+        PlaceKind::City => "city",
+        PlaceKind::District => "district",
+        PlaceKind::Neighborhood => "neighborhood",
+        PlaceKind::Street => "street",
+        PlaceKind::Address => "address",
+        PlaceKind::Poi => "poi",
+        PlaceKind::Postcode => "postcode",
+    }
+}
+
+/// Stitch a multi-set of outer ways into closed rings via endpoint matching.
+/// Each output ring is a `Vec<NodeId>` whose first and last entries match
+/// (geographically the same node).
+fn assemble_rings(outer_way_ids: &[i64], way_nodes: &WayNodes) -> Vec<Vec<i64>> {
+    let mut available: HashMap<i64, Vec<i64>> = outer_way_ids
+        .iter()
+        .filter_map(|id| way_nodes.get(id).cloned().map(|v| (*id, v)))
+        .collect();
+    let mut rings: Vec<Vec<i64>> = Vec::new();
+
+    while let Some(&seed_id) = available.keys().next().copied().as_ref() {
+        let mut chain = available.remove(&seed_id).unwrap();
+        if chain.len() < 2 {
+            continue;
+        }
+        // Try to extend the chain at its tail end until it closes or we
+        // run out of matching ways.
+        let mut extended = true;
+        while extended {
+            extended = false;
+            if chain.first() == chain.last() {
+                break;
+            }
+            let tail = *chain.last().unwrap();
+            // Find a way that starts or ends at `tail`.
+            let next_id = available.iter().find_map(|(id, nodes)| {
+                if nodes.first() == Some(&tail) || nodes.last() == Some(&tail) {
+                    Some(*id)
+                } else {
+                    None
+                }
+            });
+            if let Some(id) = next_id {
+                let mut nodes = available.remove(&id).unwrap();
+                if nodes.first() != Some(&tail) {
+                    nodes.reverse();
+                }
+                // Skip the duplicated joining node.
+                chain.extend(nodes.into_iter().skip(1));
+                extended = true;
+            }
+        }
+        if chain.first() == chain.last() && chain.len() >= 4 {
+            rings.push(chain);
+        }
+    }
+    rings
+}
+
+fn ring_to_polygon(ring: &[i64], node_coords: &NodeCoords) -> Option<Polygon<f64>> {
+    let coords: Vec<(f64, f64)> = ring
+        .iter()
+        .filter_map(|id| node_coords.get(id).map(|c| (c[0], c[1])))
+        .collect();
+    if coords.len() < 4 {
+        return None;
+    }
+    Some(Polygon::new(LineString::from(coords), vec![]))
+}
+
+fn multipolygon_centroid(mp: &MultiPolygon<f64>) -> Option<Coord> {
+    use geo::Centroid;
+    let p = mp.centroid()?;
+    Some(Coord {
+        lon: p.x(),
+        lat: p.y(),
+    })
 }
 
 #[cfg(test)]

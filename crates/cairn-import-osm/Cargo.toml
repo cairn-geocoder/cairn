@@ -12,6 +12,9 @@ authors.workspace = true
 [dependencies]
 cairn-place = { workspace = true }
 cairn-tile = { workspace = true }
+cairn-spatial = { workspace = true }
+geo = { workspace = true }
+geo-types = { workspace = true }
 osmpbf = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
