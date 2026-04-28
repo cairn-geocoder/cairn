@@ -373,7 +373,9 @@ dependencies = [
  "cairn-tile",
  "clap",
  "flate2",
+ "serde",
  "tar",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

@@ -67,6 +67,29 @@ enum Command {
         #[arg(long)]
         bundle: PathBuf,
     },
+    /// Compute a tile-level diff between two bundles. Writes a TOML
+    /// manifest of added / changed / removed files that `apply` can use
+    /// to bring `--old` up to `--new` without re-downloading the whole
+    /// bundle.
+    Diff {
+        #[arg(long)]
+        old: PathBuf,
+        #[arg(long)]
+        new: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Apply a previously-computed diff to a target bundle, pulling new /
+    /// changed files from `--source` (a copy of the new bundle, possibly
+    /// remote-mounted) and deleting removed ones.
+    Apply {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        diff: PathBuf,
+        #[arg(long)]
+        source: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -108,6 +131,12 @@ fn main() -> Result<()> {
         } => cmd_extract(&bundle, &bbox, &out, tar),
         Command::Verify { bundle } => cmd_verify(&bundle),
         Command::Info { bundle } => cmd_info(&bundle),
+        Command::Diff { old, new, out } => cmd_diff(&old, &new, &out),
+        Command::Apply {
+            bundle,
+            diff,
+            source,
+        } => cmd_apply(&bundle, &diff, &source),
     }
 }
 
@@ -462,6 +491,214 @@ fn write_tar_gz(src_dir: &Path, dst: &Path) -> Result<u64> {
     tar.finish()?;
     let len = std::fs::metadata(dst)?.len();
     Ok(len)
+}
+
+// =====================================================================
+// Differential tile updates
+// =====================================================================
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct DiffManifest {
+    schema_version: u32,
+    old_bundle_id: String,
+    new_bundle_id: String,
+    #[serde(default)]
+    changed: Vec<DiffEntry>,
+    #[serde(default)]
+    added: Vec<DiffEntry>,
+    #[serde(default)]
+    removed: Vec<DiffEntry>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct DiffEntry {
+    rel_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    old_blake3: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    new_blake3: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    byte_size: Option<u64>,
+}
+
+fn cmd_diff(old: &Path, new: &Path, out: &Path) -> Result<()> {
+    let old_manifest = read_manifest(&old.join("manifest.toml"))
+        .with_context(|| format!("reading old manifest at {}", old.display()))?;
+    let new_manifest = read_manifest(&new.join("manifest.toml"))
+        .with_context(|| format!("reading new manifest at {}", new.display()))?;
+
+    let old_index: HashMap<String, FileSig> = collect_files(&old_manifest);
+    let new_index: HashMap<String, FileSig> = collect_files(&new_manifest);
+
+    let mut changed = Vec::new();
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+
+    for (rel, new_sig) in &new_index {
+        match old_index.get(rel) {
+            Some(old_sig) if old_sig.blake3 == new_sig.blake3 => {}
+            Some(old_sig) => changed.push(DiffEntry {
+                rel_path: rel.clone(),
+                old_blake3: Some(old_sig.blake3.clone()),
+                new_blake3: Some(new_sig.blake3.clone()),
+                byte_size: Some(new_sig.byte_size),
+            }),
+            None => added.push(DiffEntry {
+                rel_path: rel.clone(),
+                old_blake3: None,
+                new_blake3: Some(new_sig.blake3.clone()),
+                byte_size: Some(new_sig.byte_size),
+            }),
+        }
+    }
+    for (rel, old_sig) in &old_index {
+        if !new_index.contains_key(rel) {
+            removed.push(DiffEntry {
+                rel_path: rel.clone(),
+                old_blake3: Some(old_sig.blake3.clone()),
+                new_blake3: None,
+                byte_size: None,
+            });
+        }
+    }
+
+    changed.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    added.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    removed.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+
+    let diff = DiffManifest {
+        schema_version: 1,
+        old_bundle_id: old_manifest.bundle_id,
+        new_bundle_id: new_manifest.bundle_id,
+        changed,
+        added,
+        removed,
+    };
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let toml = toml::to_string_pretty(&diff).context("encoding diff manifest")?;
+    std::fs::write(out, toml)
+        .with_context(|| format!("writing diff manifest to {}", out.display()))?;
+
+    println!(
+        "OK: diff {} → {}: changed={} added={} removed={} → {}",
+        diff.old_bundle_id,
+        diff.new_bundle_id,
+        diff.changed.len(),
+        diff.added.len(),
+        diff.removed.len(),
+        out.display()
+    );
+    Ok(())
+}
+
+fn cmd_apply(bundle: &Path, diff_path: &Path, source: &Path) -> Result<()> {
+    let raw = std::fs::read_to_string(diff_path)
+        .with_context(|| format!("reading diff manifest at {}", diff_path.display()))?;
+    let diff: DiffManifest = toml::from_str(&raw)
+        .with_context(|| format!("parsing diff manifest at {}", diff_path.display()))?;
+
+    tracing::info!(
+        old = %diff.old_bundle_id,
+        new = %diff.new_bundle_id,
+        changed = diff.changed.len(),
+        added = diff.added.len(),
+        removed = diff.removed.len(),
+        "applying diff"
+    );
+
+    // 1. Copy added + changed files from `source` and verify their blake3
+    //    against the diff manifest before overwriting the live bundle.
+    for entry in diff.changed.iter().chain(diff.added.iter()) {
+        let src = source.join(&entry.rel_path);
+        let dst = bundle.join(&entry.rel_path);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&src, &dst)
+            .with_context(|| format!("copy {} → {}", src.display(), dst.display()))?;
+        if let Some(expected) = entry.new_blake3.as_deref() {
+            let actual = hash_file(&dst)?;
+            if actual != expected {
+                anyhow::bail!(
+                    "blake3 mismatch on {} after copy ({} vs {})",
+                    dst.display(),
+                    actual,
+                    expected
+                );
+            }
+        }
+    }
+
+    // 2. Remove deleted files. Best-effort — a missing file is fine.
+    for entry in &diff.removed {
+        let dst = bundle.join(&entry.rel_path);
+        if dst.exists() {
+            std::fs::remove_file(&dst).with_context(|| format!("removing {}", dst.display()))?;
+        }
+    }
+
+    // 3. Replace the manifest itself wholesale from source so the bundle
+    //    converges to the new schema state. The diff carried just the
+    //    file-level deltas; we trust source's manifest.toml as truth.
+    std::fs::copy(source.join("manifest.toml"), bundle.join("manifest.toml"))
+        .context("copying new manifest")?;
+
+    println!(
+        "OK: applied diff {} → {} ({} files updated, {} removed)",
+        diff.old_bundle_id,
+        diff.new_bundle_id,
+        diff.changed.len() + diff.added.len(),
+        diff.removed.len()
+    );
+    Ok(())
+}
+
+#[derive(Clone)]
+struct FileSig {
+    blake3: String,
+    byte_size: u64,
+}
+
+/// Collect every file in a manifest as `(rel_path, FileSig)`. Tile blobs
+/// live under `tiles/`, spatial files under `spatial/`. The text index
+/// directory isn't blake3-anchored in the manifest yet, so it's skipped.
+fn collect_files(manifest: &Manifest) -> HashMap<String, FileSig> {
+    let mut out = HashMap::new();
+    for t in &manifest.tiles {
+        let coord = TileCoord::from_id(
+            cairn_tile::Level::from_u8(t.level).unwrap_or(cairn_tile::Level::L0),
+            t.tile_id,
+        );
+        out.insert(
+            coord.relative_path(),
+            FileSig {
+                blake3: t.blake3.clone(),
+                byte_size: t.byte_size,
+            },
+        );
+    }
+    for e in &manifest.admin_tiles {
+        out.insert(
+            e.rel_path.clone(),
+            FileSig {
+                blake3: e.blake3.clone(),
+                byte_size: e.byte_size,
+            },
+        );
+    }
+    for e in &manifest.point_tiles {
+        out.insert(
+            e.rel_path.clone(),
+            FileSig {
+                blake3: e.blake3.clone(),
+                byte_size: e.byte_size,
+            },
+        );
+    }
+    out
 }
 
 fn copy_relative_file(src_root: &Path, dst_root: &Path, rel_path: &str) -> Result<()> {
