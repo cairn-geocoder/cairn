@@ -1201,7 +1201,12 @@ struct PeliasProperties {
 }
 
 fn hit_to_pelias_feature(h: Hit) -> PeliasFeature {
-    let label = if h.kind.is_empty() {
+    // Prefer the canonical label produced by the text index (when the
+    // bundle ships an admin_names sidecar). Fall back to "name (kind)"
+    // for older bundles or reverse-PIP hits that bypass the index.
+    let label = if !h.label.is_empty() {
+        h.label.clone()
+    } else if h.kind.is_empty() {
         h.name.clone()
     } else {
         format!("{} ({})", h.name, h.kind)
@@ -1341,6 +1346,7 @@ async fn pelias_reverse(
                 admin_path: f.admin_path.clone(),
                 distance_km: Some(haversine_km(lat, lon, f.centroid.lat, f.centroid.lon)),
                 population: 0,
+                label: String::new(),
             };
             hit_to_pelias_feature(hit)
         })

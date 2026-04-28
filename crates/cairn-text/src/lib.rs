@@ -101,6 +101,12 @@ pub struct Hit {
     /// occasionally; OSM rarely). 0 = unknown.
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub population: u64,
+    /// Canonical Pelias-style label, e.g. "Vaduz Castle, Vaduz,
+    /// Liechtenstein". Built by joining the hit's name with the
+    /// resolved admin_path names (root → leaf, deduplicated). Empty
+    /// when the bundle has no admin_names sidecar.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub label: String,
 }
 
 fn is_zero_u64(n: &u64) -> bool {
@@ -319,6 +325,10 @@ pub struct TextIndex {
     index: Index,
     reader: IndexReader,
     schema: TextSchema,
+    /// Optional admin-id → name map for label rendering. Loaded from
+    /// `<dir>/admin_names.json` at open time; empty when the sidecar
+    /// is missing.
+    admin_names: std::sync::Arc<std::collections::HashMap<u64, String>>,
 }
 
 impl TextIndex {
@@ -331,11 +341,19 @@ impl TextIndex {
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
         let schema = TextSchema::build();
+        let admin_names = load_admin_names(dir);
         Ok(Self {
             index,
             reader,
             schema,
+            admin_names: std::sync::Arc::new(admin_names),
         })
+    }
+
+    /// Read-only view of the admin-id → name map. Empty when the
+    /// bundle was built without the sidecar (older bundles).
+    pub fn admin_names(&self) -> &std::collections::HashMap<u64, String> {
+        &self.admin_names
     }
 
     pub fn search(&self, query: &str, opts: &SearchOptions) -> Result<Vec<Hit>, TextError> {
@@ -387,6 +405,13 @@ impl TextIndex {
         }
         hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         hits.truncate(opts.limit);
+        // Populate label after truncation — only the surviving hits
+        // pay the format_label cost.
+        if !self.admin_names.is_empty() {
+            for h in hits.iter_mut() {
+                h.label = format_label(h, &self.admin_names);
+            }
+        }
         Ok(hits)
     }
 
@@ -536,6 +561,7 @@ impl TextIndex {
                 .get_first(self.schema.population)
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
+            label: String::new(),
         }
     }
 }
@@ -571,6 +597,63 @@ fn apply_population_boost(hits: &mut [Hit]) {
 
 fn fold_for_compare(s: &str) -> String {
     deunicode::deunicode(s).trim().to_lowercase()
+}
+
+fn load_admin_names(dir: &Path) -> std::collections::HashMap<u64, String> {
+    let path = dir.join("admin_names.json");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    // Sidecar is `{ "u64-as-string": "Name" }`. JSON object keys are
+    // always strings, so we parse to BTreeMap<String, String> and
+    // convert keys.
+    let parsed: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&raw).unwrap_or_default();
+    let mut out = std::collections::HashMap::with_capacity(parsed.len());
+    for (k, v) in parsed {
+        if let Ok(id) = k.parse::<u64>() {
+            out.insert(id, v);
+        }
+    }
+    out
+}
+
+/// Build a Pelias-style label by joining the hit's name with the
+/// resolved admin chain (e.g. "Vaduz Castle, Vaduz, Liechtenstein").
+///
+/// Order: name first, then admin_path traversed leaf → root.
+/// Deduplication runs over the WHOLE chain (not just adjacent) using
+/// a parenthetical-suffix-stripped fold key, so "Vaduz" + "Vaduz (Li)"
+/// collapse to a single entry. Empty when the bundle has no
+/// admin_names sidecar.
+fn format_label(hit: &Hit, admin_names: &std::collections::HashMap<u64, String>) -> String {
+    if admin_names.is_empty() {
+        return String::new();
+    }
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut parts: Vec<String> = Vec::with_capacity(1 + hit.admin_path.len());
+    let leaf_key = label_key(&hit.name);
+    seen.insert(leaf_key);
+    parts.push(hit.name.clone());
+    for id in hit.admin_path.iter().rev() {
+        if let Some(name) = admin_names.get(id) {
+            let key = label_key(name);
+            if !key.is_empty() && seen.insert(key) {
+                parts.push(name.clone());
+            }
+        }
+    }
+    parts.join(", ")
+}
+
+/// Normalize a label component for dedup: lowercased, deunicoded, and
+/// stripped of parenthetical suffixes ("Vaduz (Li)" → "vaduz") so
+/// admin-tier disambiguation noise doesn't double-print in the label.
+fn label_key(s: &str) -> String {
+    let folded = deunicode::deunicode(s).to_lowercase();
+    let trimmed = folded.split('(').next().unwrap_or("").trim();
+    trimmed.to_string()
 }
 
 fn apply_geo_bias(hits: &mut [Hit], focus: Coord, weight: f64) {
@@ -906,6 +989,74 @@ mod tests {
             hits.first().map(|h| h.name == "München").unwrap_or(false),
             "ASCII 'munchen' must boost München over partial-name PoI: {hits:?}"
         );
+    }
+
+    #[test]
+    fn label_joins_admin_chain_root_to_leaf() {
+        let mut admin_names: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+        admin_names.insert(100, "Liechtenstein".into());
+        admin_names.insert(200, "Oberland".into());
+        admin_names.insert(300, "Vaduz (Li)".into());
+        let hit = Hit {
+            place_id: 999,
+            name: "Vaduz Castle".into(),
+            kind: "poi".into(),
+            level: 2,
+            lon: 9.5,
+            lat: 47.1,
+            score: 1.0,
+            admin_path: vec![100, 200, 300],
+            distance_km: None,
+            population: 0,
+            label: String::new(),
+        };
+        let label = super::format_label(&hit, &admin_names);
+        // leaf → root order, parenthetical suffix dedup against
+        // "Vaduz Castle" (different stem). Country last.
+        assert_eq!(label, "Vaduz Castle, Vaduz (Li), Oberland, Liechtenstein");
+    }
+
+    #[test]
+    fn label_dedup_strips_parenthetical_suffix() {
+        let mut admin_names: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+        admin_names.insert(50, "Vaduz (Li)".into());
+        admin_names.insert(60, "Liechtenstein".into());
+        let hit = Hit {
+            place_id: 1,
+            name: "Vaduz".into(),
+            kind: "city".into(),
+            level: 1,
+            lon: 9.5,
+            lat: 47.1,
+            score: 1.0,
+            admin_path: vec![60, 50],
+            distance_km: None,
+            population: 0,
+            label: String::new(),
+        };
+        let label = super::format_label(&hit, &admin_names);
+        // 'Vaduz (Li)' folds to 'vaduz' which equals leaf 'Vaduz' →
+        // dropped. Only Liechtenstein survives the chain.
+        assert_eq!(label, "Vaduz, Liechtenstein");
+    }
+
+    #[test]
+    fn label_empty_when_admin_names_missing() {
+        let admin_names: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+        let hit = Hit {
+            place_id: 1,
+            name: "Vaduz".into(),
+            kind: "city".into(),
+            level: 1,
+            lon: 9.5,
+            lat: 47.1,
+            score: 1.0,
+            admin_path: vec![1, 2, 3],
+            distance_km: None,
+            population: 0,
+            label: String::new(),
+        };
+        assert_eq!(super::format_label(&hit, &admin_names), "");
     }
 
     #[test]

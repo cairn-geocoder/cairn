@@ -690,6 +690,57 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         .with_context(|| format!("building text index at {}", text_dir.display()))?;
     tracing::info!(docs, path = %text_dir.display(), "text index written");
 
+    // Sidecar `index/text/admin_names.json` maps every admin-tier
+    // PlaceId (AdminFeature.place_id post-renumber AND admin-kind Place.id)
+    // to its primary name. Powers Pelias-style label rendering at query
+    // time without a tantivy round-trip per hit. Optional — empty file
+    // is fine, runtime will simply not populate the label field.
+    let mut admin_names: std::collections::BTreeMap<u64, String> =
+        std::collections::BTreeMap::new();
+    if let Some(layer) = &deduped_admin {
+        for f in &layer.features {
+            if !f.name.is_empty() {
+                admin_names.insert(f.place_id, f.name.clone());
+            }
+        }
+    }
+    for p in &places {
+        if !matches!(
+            p.kind,
+            cairn_place::PlaceKind::Country
+                | cairn_place::PlaceKind::Region
+                | cairn_place::PlaceKind::County
+                | cairn_place::PlaceKind::City
+                | cairn_place::PlaceKind::District
+                | cairn_place::PlaceKind::Neighborhood
+        ) {
+            continue;
+        }
+        if let Some(default_name) = p
+            .names
+            .iter()
+            .find(|n| n.lang == "default")
+            .or_else(|| p.names.first())
+        {
+            // Only insert if the AdminFeature pass didn't already cover
+            // this id, so AdminFeature names (the canonical polygon
+            // name) win over admin-tier Place names on ID overlap.
+            admin_names
+                .entry(p.id.0)
+                .or_insert_with(|| default_name.value.clone());
+        }
+    }
+    let admin_names_path = text_dir.join("admin_names.json");
+    let admin_names_str = serde_json::to_string(&admin_names)
+        .context("encoding admin_names sidecar")?;
+    std::fs::write(&admin_names_path, &admin_names_str)
+        .with_context(|| format!("writing {}", admin_names_path.display()))?;
+    tracing::info!(
+        path = %admin_names_path.display(),
+        entries = admin_names.len(),
+        "admin_names sidecar written"
+    );
+
     // Bucket per-level using each Place's PlaceId-recorded level so admin,
     // city, and street/POI rows land in their natural tier.
     let mut by_level: HashMap<u8, Vec<Place>> = HashMap::new();
