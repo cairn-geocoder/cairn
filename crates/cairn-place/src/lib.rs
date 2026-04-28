@@ -1,10 +1,28 @@
 //! Place document model + 64-bit `PlaceId` encoding.
+//!
+//! All on-disk types derive `rkyv::Archive` so that tile blobs can be
+//! mmap'd and read without parsing.
 
+use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Bit layout of [`PlaceId`]: `[level: 3 | tile_id: 22 | local_id: 39]`.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Hash,
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+)]
+#[archive(check_bytes)]
+#[archive_attr(derive(Debug))]
 pub struct PlaceId(pub u64);
 
 impl PlaceId {
@@ -55,19 +73,38 @@ pub enum PlaceIdError {
     LocalOverflow(u64),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
+#[archive(check_bytes)]
+#[archive_attr(derive(Debug))]
 pub struct Coord {
     pub lon: f64,
     pub lat: f64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[archive(check_bytes)]
+#[archive_attr(derive(Debug))]
 pub struct LocalizedName {
     pub lang: String,
     pub value: String,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+)]
+#[archive(check_bytes)]
+#[archive_attr(derive(Debug))]
 pub enum PlaceKind {
     Country,
     Region,
@@ -81,7 +118,9 @@ pub enum PlaceKind {
     Postcode,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[archive(check_bytes)]
+#[archive_attr(derive(Debug))]
 pub struct Place {
     pub id: PlaceId,
     pub kind: PlaceKind,
@@ -94,6 +133,8 @@ pub struct Place {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rkyv::ser::serializers::AllocSerializer;
+    use rkyv::ser::Serializer;
 
     #[test]
     fn placeid_roundtrip() {
@@ -108,5 +149,32 @@ mod tests {
         assert!(PlaceId::new(8, 0, 0).is_err());
         assert!(PlaceId::new(0, PlaceId::MAX_TILE + 1, 0).is_err());
         assert!(PlaceId::new(0, 0, PlaceId::MAX_LOCAL + 1).is_err());
+    }
+
+    #[test]
+    fn place_rkyv_roundtrip() {
+        let place = Place {
+            id: PlaceId::new(1, 100, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![LocalizedName {
+                lang: "en".into(),
+                value: "Vaduz".into(),
+            }],
+            centroid: Coord {
+                lon: 9.5209,
+                lat: 47.1410,
+            },
+            admin_path: vec![PlaceId::new(0, 0, 1).unwrap()],
+            tags: vec![("place".into(), "city".into())],
+        };
+
+        let mut serializer = AllocSerializer::<256>::default();
+        serializer.serialize_value(&place).unwrap();
+        let bytes = serializer.into_serializer().into_inner();
+
+        let archived = rkyv::check_archived_root::<Place>(&bytes).unwrap();
+        assert_eq!(archived.id.0, place.id.0);
+        assert_eq!(archived.names.len(), 1);
+        assert_eq!(archived.names[0].value.as_str(), "Vaduz");
     }
 }

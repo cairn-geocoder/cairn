@@ -15,6 +15,8 @@ path = "src/main.rs"
 
 [dependencies]
 cairn-api = { workspace = true }
+cairn-text = { workspace = true }
+cairn-spatial = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

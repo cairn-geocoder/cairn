@@ -15,3 +15,4 @@ tantivy = { workspace = true }
 fst = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+tracing = { workspace = true }

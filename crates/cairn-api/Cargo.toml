@@ -14,6 +14,7 @@ cairn-place = { workspace = true }
 cairn-text = { workspace = true }
 cairn-spatial = { workspace = true }
 cairn-parse = { workspace = true }
+cairn-tile = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower-http = { workspace = true }

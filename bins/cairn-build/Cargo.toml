@@ -16,6 +16,8 @@ path = "src/main.rs"
 [dependencies]
 cairn-place = { workspace = true }
 cairn-tile = { workspace = true }
+cairn-text = { workspace = true }
+cairn-spatial = { workspace = true }
 cairn-import-osm = { workspace = true }
 cairn-import-wof = { workspace = true }
 cairn-import-oa = { workspace = true }
@@ -24,3 +26,4 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+blake3 = { workspace = true }

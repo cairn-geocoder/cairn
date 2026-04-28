@@ -57,6 +57,7 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 # Storage / mmap / serialization
 memmap2 = "0.9"
 rkyv = { version = "0.7", features = ["validation"] }
+bytecheck = "0.6"
 blake3 = "1"
 zstd = "0.13"
 
@@ -64,8 +65,10 @@ zstd = "0.13"
 tantivy = "0.22"
 fst = "0.4"
 geo = "0.28"
-geo-types = "0.7"
+geo-types = { version = "0.7", features = ["serde"] }
 rstar = "0.12"
+geojson = "0.24"
+bincode = "1"
 
 # Importers
 osmpbf = "0.3"

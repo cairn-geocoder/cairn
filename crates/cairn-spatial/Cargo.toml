@@ -16,3 +16,6 @@ geo = { workspace = true }
 geo-types = { workspace = true }
 rstar = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+tracing = { workspace = true }
