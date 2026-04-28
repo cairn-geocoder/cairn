@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cairn — Geocoder Demo</title>
+  <meta name="description" content="Interactive demo of the Cairn offline geocoder. Pre-rendered query / response pairs against a Liechtenstein bundle." />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin="" />
+  <link rel="stylesheet" href="demo.css" />
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <a class="brand" href="../">CAIRN</a>
+      <nav class="nav">
+        <a href="https://github.com/cairn-geocoder/cairn">GitHub</a>
+        <a href="https://crates.io/crates/cairn-geocoder">crates.io</a>
+        <a href="../#endpoints">API</a>
+      </nav>
+    </div>
+    <div class="masthead-tag">
+      <h1>Pre-rendered geocoder demo</h1>
+      <p>Click a query. See exactly what the live <code>cairn-serve</code> binary returned against a Liechtenstein bundle (107 OSM places + 94 WhosOnFirst admins, 27 polygons).</p>
+      <p class="warn">Static — no live backend. To run real queries, see the <a href="https://github.com/cairn-geocoder/cairn#quick-start">Quick start</a>.</p>
+    </div>
+  </header>
+
+  <main class="grid">
+    <aside class="queries">
+      <h2>Queries</h2>
+      <ul id="query-list"></ul>
+    </aside>
+
+    <section class="panel">
+      <header class="panel-head">
+        <h2 id="panel-title">Pick a query</h2>
+        <code id="panel-url"></code>
+      </header>
+      <div class="panel-body">
+        <div id="map"></div>
+        <details open>
+          <summary>Response JSON</summary>
+          <pre><code id="panel-json"></code></pre>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>Cairn is dual-licensed MIT OR Apache-2.0 · <a href="https://github.com/cairn-geocoder/cairn/blob/main/ROADMAP.md">Roadmap</a></p>
+  </footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
+  <script src="demo.js"></script>
+</body>
+</html>

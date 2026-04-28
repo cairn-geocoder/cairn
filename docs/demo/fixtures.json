@@ -1,0 +1,461 @@
+[
+  {
+    "label": "search-vaduz",
+    "title": "Forward search: 'Vaduz'",
+    "url": "/v1/search?q=Vaduz&limit=5",
+    "body": {
+      "query": "Vaduz",
+      "mode": "search",
+      "results": [
+        {
+          "place_id": 5045926041189613885,
+          "name": "Vaduz",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.524293700000001,
+          "lat": 47.142675000000004,
+          "score": 7.2208304,
+          "admin_path": []
+        },
+        {
+          "place_id": 5045926041189614097,
+          "name": "Vaduz",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.523708000000001,
+          "lat": 47.1488475,
+          "score": 6.273032,
+          "admin_path": []
+        },
+        {
+          "place_id": 2333060869803474946,
+          "name": "Vaduz",
+          "kind": "city",
+          "level": 1,
+          "lon": 9.512335,
+          "lat": 47.167938,
+          "score": 6.2502494,
+          "admin_path": [
+            1708091313750016,
+            1708091313750017,
+            2333060869803474950
+          ]
+        },
+        {
+          "place_id": 5045926041189613803,
+          "name": "Dolce Vaduz",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.5221523,
+          "lat": 47.1397537,
+          "score": 5.4353867,
+          "admin_path": []
+        },
+        {
+          "place_id": 5045926041189613884,
+          "name": "Schloss Vaduz",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.524200200000001,
+          "lat": 47.140570100000005,
+          "score": 5.358083,
+          "admin_path": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "autocomplete-vad",
+    "title": "Autocomplete: 'Vad'",
+    "url": "/v1/search?q=Vad&mode=autocomplete&limit=5",
+    "body": {
+      "query": "Vad",
+      "mode": "autocomplete",
+      "results": [
+        {
+          "place_id": 5045926041189613885,
+          "name": "Vaduz",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.524293700000001,
+          "lat": 47.142675000000004,
+          "score": 23.372007,
+          "admin_path": []
+        },
+        {
+          "place_id": 2333060869803474946,
+          "name": "Vaduz",
+          "kind": "city",
+          "level": 1,
+          "lon": 9.512335,
+          "lat": 47.167938,
+          "score": 22.11622,
+          "admin_path": [
+            1708091313750016,
+            1708091313750017,
+            2333060869803474950
+          ]
+        },
+        {
+          "place_id": 5045926041189614097,
+          "name": "Vaduz",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.523708000000001,
+          "lat": 47.1488475,
+          "score": 19.999712,
+          "admin_path": []
+        },
+        {
+          "place_id": 2333060869803474961,
+          "name": "Vaduz",
+          "kind": "city",
+          "level": 1,
+          "lon": 9.5227962,
+          "lat": 47.1392862,
+          "score": 17.40138,
+          "admin_path": []
+        },
+        {
+          "place_id": 2333060869803474950,
+          "name": "Vaduz (Li)",
+          "kind": "county",
+          "level": 1,
+          "lon": 9.520471,
+          "lat": 47.144611,
+          "score": 17.147448,
+          "admin_path": [
+            1708091313750016,
+            1708091313750017
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "fuzzy-vaaduz",
+    "title": "Fuzzy (typo): 'vaaduz' with edit distance 2",
+    "url": "/v1/search?q=vaaduz&fuzzy=2&limit=3",
+    "body": {
+      "query": "vaaduz",
+      "mode": "search",
+      "results": [
+        {
+          "place_id": 5045926041189613582,
+          "name": "Post Vaduz",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.5222029,
+          "lat": 47.139095000000005,
+          "score": 1.0,
+          "admin_path": []
+        },
+        {
+          "place_id": 5045926041189613639,
+          "name": "Vaduz VP Bank",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.520123400000001,
+          "lat": 47.140441,
+          "score": 1.0,
+          "admin_path": []
+        },
+        {
+          "place_id": 5045926041189613697,
+          "name": "Jugendherberge Schaan-Vaduz",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.506134900000001,
+          "lat": 47.156905800000004,
+          "score": 1.0,
+          "admin_path": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "layer-street",
+    "title": "Layer filter: streets only — 'Aeulestrasse'",
+    "url": "/v1/search?q=Aeulestrasse&layer=street&limit=3",
+    "body": {
+      "query": "Aeulestrasse",
+      "mode": "search",
+      "results": [
+        {
+          "place_id": 5045926041189614622,
+          "name": "Aeulestrasse",
+          "kind": "street",
+          "level": 2,
+          "lon": 9.522733357142856,
+          "lat": 47.115709185714294,
+          "score": 9.628943,
+          "admin_path": []
+        },
+        {
+          "place_id": 5045926041189616413,
+          "name": "Aeulestrasse",
+          "kind": "street",
+          "level": 2,
+          "lon": 9.52268700625,
+          "lat": 47.11670036249999,
+          "score": 9.628943,
+          "admin_path": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "layer-poi",
+    "title": "Layer filter: POIs only — 'Restaurant'",
+    "url": "/v1/search?q=Restaurant&layer=poi&limit=5",
+    "body": {
+      "query": "Restaurant",
+      "mode": "search",
+      "results": [
+        {
+          "place_id": 5045926041189613577,
+          "name": "Restaurant Engel",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.522495000000001,
+          "lat": 47.140779900000005,
+          "score": 6.9785204,
+          "admin_path": []
+        },
+        {
+          "place_id": 5045926041189613584,
+          "name": "Restaurant Torkel",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.519501400000001,
+          "lat": 47.144222600000006,
+          "score": 6.9785204,
+          "admin_path": []
+        },
+        {
+          "place_id": 5045926041189613598,
+          "name": "Restaurant Pedroni",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.5252978,
+          "lat": 47.1083562,
+          "score": 6.9785204,
+          "admin_path": []
+        },
+        {
+          "place_id": 5045926041189613599,
+          "name": "Restaurant Schaefle",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.524957,
+          "lat": 47.108294900000004,
+          "score": 6.9785204,
+          "admin_path": []
+        },
+        {
+          "place_id": 5045926041189613649,
+          "name": "Restaurant Rössle",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.508604700000001,
+          "lat": 47.1644237,
+          "score": 6.9785204,
+          "admin_path": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "focus-bias",
+    "title": "Focus bias: 'S' near Schaan, autocomplete",
+    "url": "/v1/search?q=S&mode=autocomplete&focus.lat=47.165&focus.lon=9.51&focus.weight=2.0&limit=4",
+    "body": {
+      "query": "S",
+      "mode": "autocomplete",
+      "results": [
+        {
+          "place_id": 2333060869803474960,
+          "name": "Schaan",
+          "kind": "city",
+          "level": 1,
+          "lon": 9.50867,
+          "lat": 47.16498,
+          "score": 2.7182505,
+          "admin_path": [
+            1708091313750016,
+            1708091313750017,
+            2333060869803474949
+          ],
+          "distance_km": 0.10057308186224258
+        },
+        {
+          "place_id": 5045926041189614151,
+          "name": "Skino",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.5083356,
+          "lat": 47.1658516,
+          "score": 2.2632678,
+          "admin_path": [],
+          "distance_km": 0.157479027422924
+        },
+        {
+          "place_id": 5045926041189613840,
+          "name": "Spar",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.5095717,
+          "lat": 47.166855000000005,
+          "score": 2.171662,
+          "admin_path": [],
+          "distance_km": 0.2087927853177249
+        },
+        {
+          "place_id": 5045926041189613609,
+          "name": "Start",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.5261279,
+          "lat": 47.1665404,
+          "score": 0.8595341,
+          "admin_path": [],
+          "distance_km": 1.231229809650193
+        }
+      ]
+    }
+  },
+  {
+    "label": "structured-road-city",
+    "title": "Structured: road + city",
+    "url": "/v1/structured?road=Aeulestrasse&city=Vaduz",
+    "body": {
+      "query": "Aeulestrasse Vaduz",
+      "layer_hint": "street",
+      "results": [
+        {
+          "place_id": 5045926041189614622,
+          "name": "Aeulestrasse",
+          "kind": "street",
+          "level": 2,
+          "lon": 9.522733357142856,
+          "lat": 47.115709185714294,
+          "score": 9.628943,
+          "admin_path": []
+        },
+        {
+          "place_id": 5045926041189616413,
+          "name": "Aeulestrasse",
+          "kind": "street",
+          "level": 2,
+          "lon": 9.52268700625,
+          "lat": 47.11670036249999,
+          "score": 9.628943,
+          "admin_path": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "reverse-vaduz-castle",
+    "title": "Reverse @ Vaduz Castle (47.141, 9.523)",
+    "url": "/v1/reverse?lat=47.141&lon=9.523&limit=5",
+    "body": {
+      "lat": 47.141,
+      "lon": 9.523,
+      "source": "pip",
+      "results": [
+        {
+          "place_id": 2333060869803474946,
+          "name": "Vaduz",
+          "kind": "city",
+          "level": 1,
+          "lon": 9.512335,
+          "lat": 47.167938,
+          "admin_path": [
+            1708091313750016,
+            1708091313750017,
+            2333060869803474950
+          ],
+          "distance_km": 3.1020318185692672
+        },
+        {
+          "place_id": 2333060869803474950,
+          "name": "Vaduz (Li)",
+          "kind": "county",
+          "level": 1,
+          "lon": 9.520471,
+          "lat": 47.144611,
+          "admin_path": [
+            1708091313750016,
+            1708091313750017
+          ],
+          "distance_km": 0.4447562235539924
+        },
+        {
+          "place_id": 1708091313750016,
+          "name": "Liechtenstein",
+          "kind": "country",
+          "level": 0,
+          "lon": 9.559439,
+          "lat": 47.111405,
+          "admin_path": [],
+          "distance_km": 4.292959470430583
+        },
+        {
+          "place_id": 1708091313750017,
+          "name": "Liechtenstein",
+          "kind": "region",
+          "level": 0,
+          "lon": 9.566539,
+          "lat": 47.117998,
+          "admin_path": [
+            1708091313750016
+          ],
+          "distance_km": 4.170221828403215
+        }
+      ]
+    }
+  },
+  {
+    "label": "reverse-fallback-nearest",
+    "title": "Reverse outside Liechtenstein with nearest=3 fallback",
+    "url": "/v1/reverse?lat=48.0&lon=10.5&nearest=3",
+    "body": {
+      "lat": 48.0,
+      "lon": 10.5,
+      "source": "nearest",
+      "results": [
+        {
+          "place_id": 5047509337933611008,
+          "name": "Kiesgewinnung Rhein",
+          "kind": "poi",
+          "level": 2,
+          "lon": 9.6703764,
+          "lat": 47.5042824,
+          "admin_path": [],
+          "distance_km": 82.97655872053258
+        },
+        {
+          "place_id": 5045926041189615804,
+          "name": "Oberfresch",
+          "kind": "street",
+          "level": 2,
+          "lon": 9.565247733333335,
+          "lat": 47.24660267333334,
+          "admin_path": [],
+          "distance_km": 109.20397346882548
+        },
+        {
+          "place_id": 5046717689561612308,
+          "name": "1. Oberriederweg",
+          "kind": "street",
+          "level": 2,
+          "lon": 9.55596118666667,
+          "lat": 47.25787128666668,
+          "admin_path": [],
+          "distance_km": 108.69249998406764
+        }
+      ]
+    }
+  }
+]
