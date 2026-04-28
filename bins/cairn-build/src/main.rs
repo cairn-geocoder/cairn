@@ -228,6 +228,21 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         });
     }
 
+    // Dedupe Places across WoF + OSM. Both sources ship cities, POIs,
+    // and addresses; without this pass /v1/search returns "Vaduz" twice
+    // (one from each importer). Drop the duplicate that lands first.
+    let places_before = places.len();
+    places = cairn_place::dedupe_places(places);
+    let places_after = places.len();
+    if places_before != places_after {
+        tracing::info!(
+            before = places_before,
+            after = places_after,
+            dropped = places_before - places_after,
+            "Place layer deduplicated across sources"
+        );
+    }
+
     // Dedupe admin features across WoF + OSM before any downstream pass
     // so the AdminIndex used for admin_path enrichment matches the one
     // we eventually write.

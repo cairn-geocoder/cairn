@@ -130,6 +130,94 @@ pub struct Place {
     pub tags: Vec<(String, String)>,
 }
 
+/// Maximum distance between two Place centroids that still counts as
+/// the same physical entity for dedup purposes. 100 m comfortably
+/// covers OSM's common "entrance node a few dozen meters off the
+/// building polygon centroid" pattern (e.g. "Post Vaduz" at 56 m apart)
+/// without merging genuinely distinct same-name POIs in dense cities,
+/// which are typically separated by hundreds of meters.
+const DEDUP_RADIUS_M: f64 = 150.0;
+const EARTH_RADIUS_M: f64 = 6_371_000.0;
+
+fn primary_name_lc(p: &Place) -> String {
+    p.names
+        .iter()
+        .find(|n| n.lang == "default")
+        .or_else(|| p.names.first())
+        .map(|n| n.value.to_lowercase())
+        .unwrap_or_default()
+}
+
+fn place_score(p: &Place) -> (usize, usize) {
+    // Richer is better: longer admin_path beats shorter; more localized
+    // names beats fewer. Stays stable under permutations.
+    (p.admin_path.len(), p.names.len())
+}
+
+fn haversine_m(a: Coord, b: Coord) -> f64 {
+    let to_rad = std::f64::consts::PI / 180.0;
+    let phi1 = a.lat * to_rad;
+    let phi2 = b.lat * to_rad;
+    let dphi = (b.lat - a.lat) * to_rad;
+    let dlam = (b.lon - a.lon) * to_rad;
+    let h = (dphi / 2.0).sin().powi(2) + phi1.cos() * phi2.cos() * (dlam / 2.0).sin().powi(2);
+    2.0 * EARTH_RADIUS_M * h.sqrt().asin()
+}
+
+/// Collapse near-duplicate Places emitted by overlapping sources
+/// (typically WoF + OSM both shipping the same city / POI, or OSM
+/// emitting both a building polygon centroid and an entrance node for
+/// the same entity).
+///
+/// Two Places collide when they share `kind`, lowercased primary name,
+/// and their centroids are within `DEDUP_RADIUS_M`. The richer Place
+/// (longer admin_path, then more names) wins; the loser is dropped.
+///
+/// Order-stable: input order determines the winner on ties so building
+/// the same bundle twice produces byte-identical tile blobs. Within a
+/// (kind, name) bucket the algorithm is O(n²) but bucket sizes are
+/// tiny in practice — a city has only so many things called "Post".
+pub fn dedupe_places(places: Vec<Place>) -> Vec<Place> {
+    use std::collections::BTreeMap;
+    let mut buckets: BTreeMap<(u8, String), Vec<(usize, Place)>> = BTreeMap::new();
+    for (idx, p) in places.into_iter().enumerate() {
+        buckets
+            .entry((p.kind as u8, primary_name_lc(&p)))
+            .or_default()
+            .push((idx, p));
+    }
+    let mut kept: Vec<(usize, Place)> = Vec::new();
+    for (_, members) in buckets {
+        if members.len() == 1 {
+            kept.extend(members);
+            continue;
+        }
+        let mut absorbed = vec![false; members.len()];
+        for i in 0..members.len() {
+            if absorbed[i] {
+                continue;
+            }
+            let mut winner = i;
+            for j in (i + 1)..members.len() {
+                if absorbed[j] {
+                    continue;
+                }
+                let d = haversine_m(members[i].1.centroid, members[j].1.centroid);
+                if d <= DEDUP_RADIUS_M {
+                    absorbed[j] = true;
+                    if place_score(&members[j].1) > place_score(&members[winner].1) {
+                        winner = j;
+                    }
+                }
+            }
+            absorbed[i] = true;
+            kept.push((members[winner].0, members[winner].1.clone()));
+        }
+    }
+    kept.sort_by_key(|(idx, _)| *idx);
+    kept.into_iter().map(|(_, p)| p).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +264,101 @@ mod tests {
         assert_eq!(archived.id.0, place.id.0);
         assert_eq!(archived.names.len(), 1);
         assert_eq!(archived.names[0].value.as_str(), "Vaduz");
+    }
+
+    fn place_at(id: PlaceId, name: &str, kind: PlaceKind, lon: f64, lat: f64) -> Place {
+        Place {
+            id,
+            kind,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: name.into(),
+            }],
+            centroid: Coord { lon, lat },
+            admin_path: vec![],
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn dedupe_collapses_same_kind_same_name_same_centroid() {
+        let osm = place_at(
+            PlaceId::new(1, 49509, 1).unwrap(),
+            "Vaduz",
+            PlaceKind::City,
+            9.5209,
+            47.141,
+        );
+        let mut wof = place_at(
+            PlaceId::new(1, 49509, 2).unwrap(),
+            "Vaduz",
+            PlaceKind::City,
+            9.5209,
+            47.141,
+        );
+        wof.admin_path = vec![PlaceId::new(0, 0, 1).unwrap()];
+        let kept = dedupe_places(vec![osm, wof]);
+        assert_eq!(kept.len(), 1);
+        assert!(!kept[0].admin_path.is_empty(), "WoF (richer) should win");
+    }
+
+    #[test]
+    fn dedupe_keeps_distinct_kinds() {
+        let city = place_at(
+            PlaceId::new(1, 49509, 1).unwrap(),
+            "Vaduz",
+            PlaceKind::City,
+            9.5209,
+            47.141,
+        );
+        let poi = place_at(
+            PlaceId::new(2, 49509, 1).unwrap(),
+            "Vaduz",
+            PlaceKind::Poi,
+            9.5209,
+            47.141,
+        );
+        let kept = dedupe_places(vec![city, poi]);
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn dedupe_case_insensitive_on_name() {
+        let a = place_at(
+            PlaceId::new(2, 49509, 1).unwrap(),
+            "vaduz castle",
+            PlaceKind::Poi,
+            9.5208,
+            47.141,
+        );
+        let b = place_at(
+            PlaceId::new(2, 49509, 2).unwrap(),
+            "Vaduz Castle",
+            PlaceKind::Poi,
+            9.5208,
+            47.141,
+        );
+        let kept = dedupe_places(vec![a, b]);
+        assert_eq!(kept.len(), 1);
+    }
+
+    #[test]
+    fn dedupe_keeps_distant_centroids() {
+        let a = place_at(
+            PlaceId::new(2, 49509, 1).unwrap(),
+            "McDonald's",
+            PlaceKind::Poi,
+            9.50,
+            47.14,
+        );
+        let b = place_at(
+            PlaceId::new(2, 49509, 2).unwrap(),
+            "McDonald's",
+            PlaceKind::Poi,
+            9.55,
+            47.16,
+        );
+        let kept = dedupe_places(vec![a, b]);
+        assert_eq!(kept.len(), 2);
     }
 }
