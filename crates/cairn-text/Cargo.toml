@@ -16,6 +16,7 @@ fst = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
+deunicode = "1"
 
 [dev-dependencies]
 criterion = { workspace = true }

@@ -523,6 +523,7 @@ version = "0.0.2-alpha"
 dependencies = [
  "cairn-place",
  "criterion",
+ "deunicode",
  "fst",
  "serde",
  "tantivy",
@@ -813,6 +814,12 @@ dependencies = [
  "powerfmt",
  "serde_core",
 ]
+
+[[package]]
+name = "deunicode"
+version = "1.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abd57806937c9cc163efc8ea3910e00a62e2aeb0b8119f1793a978088f8f6b04"
 
 [[package]]
 name = "digest"

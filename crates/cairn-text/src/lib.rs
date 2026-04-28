@@ -32,6 +32,21 @@ const WRITER_HEAP: usize = 64 * 1024 * 1024;
 const RERANK_MULTIPLIER: usize = 5;
 const MAX_FUZZY_DISTANCE: u8 = 2;
 
+/// ASCII-fold + script transliterate a string via `deunicode`.
+/// Returns `None` when the result equals the input (already ASCII)
+/// — there's no point indexing it again. Used at index time to add
+/// "moskva" alongside "Москва", "athena" alongside "Αθήνα", and
+/// "Munchen" alongside "München", so a Latin-keyboard query finds
+/// non-Latin records and vice versa.
+pub fn ascii_fold(s: &str) -> Option<String> {
+    let folded = deunicode::deunicode(s);
+    if folded == s {
+        None
+    } else {
+        Some(folded)
+    }
+}
+
 /// Returns true if the input contains at least one character in the
 /// CJK script ranges. Picks up CJK Unified Ideographs, Hiragana,
 /// Katakana, Hangul, and the common compatibility blocks. Used to
@@ -112,6 +127,7 @@ struct TextSchema {
     name: Field,
     name_prefix: Field,
     name_cjk: Field,
+    name_translit: Field,
     place_id: Field,
     level: Field,
     kind: Field,
@@ -136,6 +152,11 @@ impl TextSchema {
         let name = sb.add_text_field("name", TEXT | STORED);
         let name_prefix = sb.add_text_field("name_prefix", prefix_options);
         let name_cjk = sb.add_text_field("name_cjk", cjk_options);
+        // ASCII-folded variant for cross-script search ("moskva" →
+        // "Москва"). Default analyzer is fine here — the input has
+        // already been romanized so whitespace/lowercase tokenization
+        // works as expected.
+        let name_translit = sb.add_text_field("name_translit", TEXT);
         let place_id = sb.add_u64_field("place_id", FAST | STORED | INDEXED);
         let level = sb.add_u64_field("level", FAST | STORED | INDEXED);
         let kind = sb.add_text_field("kind", STRING | STORED);
@@ -148,6 +169,7 @@ impl TextSchema {
             name,
             name_prefix,
             name_cjk,
+            name_translit,
             place_id,
             level,
             kind,
@@ -231,6 +253,9 @@ where
             doc.add_text(schema.name_prefix, &n.value);
             if has_cjk(&n.value) {
                 doc.add_text(schema.name_cjk, &n.value);
+            }
+            if let Some(folded) = ascii_fold(&n.value) {
+                doc.add_text(schema.name_translit, &folded);
             }
         }
         doc.add_u64(schema.place_id, place.id.0);
@@ -345,10 +370,15 @@ impl TextIndex {
             //
             // CJK queries also hit the bigram-tokenized `name_cjk` field so
             // that whitespace-less scripts find sub-string matches the
-            // default analyzer would miss.
+            // default analyzer would miss. Latin/ASCII queries also OR
+            // against `name_translit` so "moskva" finds "Москва".
             let mut fields = vec![field];
-            if matches!(opts.mode, SearchMode::Search) && has_cjk(query) {
-                fields.push(self.schema.name_cjk);
+            if matches!(opts.mode, SearchMode::Search) {
+                if has_cjk(query) {
+                    fields.push(self.schema.name_cjk);
+                } else {
+                    fields.push(self.schema.name_translit);
+                }
             }
             let parser = QueryParser::for_index(&self.index, fields);
             return Ok(parser.parse_query(query)?);
@@ -793,5 +823,88 @@ mod tests {
         assert!(has_cjk("서울"));
         assert!(!has_cjk("Vaduz"));
         assert!(!has_cjk("München"));
+    }
+
+    #[test]
+    fn ascii_fold_skips_already_ascii() {
+        assert_eq!(ascii_fold("Vaduz"), None);
+        assert_eq!(ascii_fold("New York"), None);
+        assert_eq!(ascii_fold(""), None);
+    }
+
+    #[test]
+    fn ascii_fold_romanizes_non_latin() {
+        assert_eq!(ascii_fold("München").as_deref(), Some("Munchen"));
+        assert!(ascii_fold("Москва").as_deref().unwrap_or("").contains("Mosk"));
+        assert!(!ascii_fold("Αθήνα").as_deref().unwrap_or("").is_empty());
+    }
+
+    fn moscow() -> Place {
+        Place {
+            id: PlaceId::new(1, 12345, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Москва".into(),
+            }],
+            centroid: Coord {
+                lon: 37.62,
+                lat: 55.75,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        }
+    }
+
+    fn munich() -> Place {
+        Place {
+            id: PlaceId::new(1, 23456, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "München".into(),
+            }],
+            centroid: Coord {
+                lon: 11.58,
+                lat: 48.14,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn translit_finds_cyrillic_via_latin_query() {
+        let dir = tempdir_for_test();
+        build_index(&dir, vec![moscow()]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let hits = idx.search("Moskva", &SearchOptions::default()).unwrap();
+        assert!(
+            hits.iter().any(|h| h.name == "Москва"),
+            "Latin 'Moskva' should match Cyrillic 'Москва', got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn translit_finds_diacritic_via_ascii_query() {
+        let dir = tempdir_for_test();
+        build_index(&dir, vec![munich()]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let hits = idx.search("Munchen", &SearchOptions::default()).unwrap();
+        assert!(
+            hits.iter().any(|h| h.name == "München"),
+            "ASCII 'Munchen' should match 'München', got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn translit_does_not_swallow_cjk_path() {
+        // CJK queries still go through name_cjk (bigram analyzer), not
+        // name_translit. Confirm Tokyo still resolves via 東京.
+        let dir = tempdir_for_test();
+        build_index(&dir, vec![tokyo()]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let hits = idx.search("東京", &SearchOptions::default()).unwrap();
+        assert!(hits.iter().any(|h| h.name == "Tokyo"));
     }
 }
