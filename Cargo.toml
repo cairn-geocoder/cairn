@@ -71,6 +71,7 @@ geojson = "0.24"
 bincode = "1"
 tar = "0.4"
 flate2 = "1"
+lru = "0.12"
 
 # Importers
 osmpbf = "0.3"

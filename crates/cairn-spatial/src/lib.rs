@@ -23,13 +23,21 @@
 use cairn_place::Coord;
 use cairn_tile::{Level, SpatialTileEntry, TileCoord};
 use geo_types::{Coord as GeoCoord, MultiPolygon, Rect};
+use lru::LruCache;
 use rstar::{RTree, RTreeObject, AABB};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tracing::debug;
+
+/// Default LRU capacity (per index) when the caller doesn't pick one.
+/// Each entry holds one tile's feature/point list. Country-scale bundles
+/// rarely exceed a few hundred non-empty tiles; planet-scale callers
+/// should tune this down once memory pressure shows up.
+pub const DEFAULT_TILE_CACHE_ENTRIES: usize = 1024;
 
 #[derive(Debug, Error)]
 pub enum SpatialError {
@@ -239,43 +247,52 @@ impl RTreeObject for TileEnvelope {
     }
 }
 
-struct AdminTileSlot {
-    abs_path: Option<PathBuf>,
-    cell: OnceLock<Arc<Vec<AdminFeature>>>,
-}
-
-impl AdminTileSlot {
-    fn load(&self) -> Arc<Vec<AdminFeature>> {
-        self.cell
-            .get_or_init(|| {
-                if let Some(path) = &self.abs_path {
-                    match std::fs::read(path) {
-                        Ok(bytes) => match bincode::deserialize::<AdminLayer>(&bytes) {
-                            Ok(layer) => Arc::new(layer.features),
-                            Err(err) => {
-                                debug!(?err, ?path, "admin tile decode failed");
-                                Arc::new(Vec::new())
-                            }
-                        },
-                        Err(err) => {
-                            debug!(?err, ?path, "admin tile read failed");
-                            Arc::new(Vec::new())
-                        }
-                    }
-                } else {
-                    // In-memory eager slot — should have been pre-set;
-                    // fall back to empty if it wasn't.
-                    Arc::new(Vec::new())
-                }
-            })
-            .clone()
-    }
+enum AdminTileSource {
+    Eager(Arc<Vec<AdminFeature>>),
+    Disk(PathBuf),
 }
 
 pub struct AdminIndex {
-    slots: Vec<AdminTileSlot>,
+    slots: Vec<AdminTileSource>,
     tree: RTree<TileEnvelope>,
+    cache: Mutex<LruCache<usize, Arc<Vec<AdminFeature>>>>,
     total_items: u64,
+}
+
+impl AdminIndex {
+    fn load_slot(&self, idx: usize) -> Arc<Vec<AdminFeature>> {
+        match &self.slots[idx] {
+            AdminTileSource::Eager(arc) => arc.clone(),
+            AdminTileSource::Disk(path) => {
+                {
+                    let mut cache = self.cache.lock().expect("admin cache poisoned");
+                    if let Some(arc) = cache.get(&idx) {
+                        return arc.clone();
+                    }
+                }
+                let arc = read_admin_tile(path);
+                let mut cache = self.cache.lock().expect("admin cache poisoned");
+                cache.put(idx, arc.clone());
+                arc
+            }
+        }
+    }
+}
+
+fn read_admin_tile(path: &Path) -> Arc<Vec<AdminFeature>> {
+    match std::fs::read(path) {
+        Ok(bytes) => match bincode::deserialize::<AdminLayer>(&bytes) {
+            Ok(layer) => Arc::new(layer.features),
+            Err(err) => {
+                debug!(?err, ?path, "admin tile decode failed");
+                Arc::new(Vec::new())
+            }
+        },
+        Err(err) => {
+            debug!(?err, ?path, "admin tile read failed");
+            Arc::new(Vec::new())
+        }
+    }
 }
 
 impl AdminIndex {
@@ -313,42 +330,50 @@ impl AdminIndex {
             [world_bbox.min().x, world_bbox.min().y],
             [world_bbox.max().x, world_bbox.max().y],
         );
-        let cell = OnceLock::new();
-        cell.set(Arc::new(layer.features)).ok();
-        let slot = AdminTileSlot {
-            abs_path: None,
-            cell,
-        };
+        let slot = AdminTileSource::Eager(Arc::new(layer.features));
         let tree = RTree::bulk_load(vec![TileEnvelope { aabb, slot_idx: 0 }]);
         Self {
             slots: vec![slot],
             tree,
+            cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(DEFAULT_TILE_CACHE_ENTRIES).unwrap(),
+            )),
             total_items,
         }
     }
 
-    /// Open a partitioned admin index. Tiles aren't loaded until first
-    /// touch.
+    /// Open a partitioned admin index with the default LRU cache size.
     pub fn open(bundle_root: &Path, entries: Vec<SpatialTileEntry>) -> Self {
-        let mut slots: Vec<AdminTileSlot> = Vec::with_capacity(entries.len());
+        Self::open_with_cache(bundle_root, entries, DEFAULT_TILE_CACHE_ENTRIES)
+    }
+
+    /// Open a partitioned admin index with a custom LRU cache size.
+    pub fn open_with_cache(
+        bundle_root: &Path,
+        entries: Vec<SpatialTileEntry>,
+        cache_entries: usize,
+    ) -> Self {
+        let mut slots: Vec<AdminTileSource> = Vec::with_capacity(entries.len());
         let mut envs: Vec<TileEnvelope> = Vec::with_capacity(entries.len());
         let mut total_items = 0u64;
         for (idx, e) in entries.iter().enumerate() {
             total_items += e.item_count;
-            slots.push(AdminTileSlot {
-                abs_path: Some(bundle_root.join(&e.rel_path)),
-                cell: OnceLock::new(),
-            });
+            slots.push(AdminTileSource::Disk(bundle_root.join(&e.rel_path)));
             envs.push(TileEnvelope {
                 aabb: AABB::from_corners([e.min_lon, e.min_lat], [e.max_lon, e.max_lat]),
                 slot_idx: idx,
             });
         }
         let tree = RTree::bulk_load(envs);
-        debug!(tile_count = slots.len(), total_items, "AdminIndex opened");
+        debug!(
+            tile_count = slots.len(),
+            total_items, cache_entries, "AdminIndex opened"
+        );
+        let capacity = NonZeroUsize::new(cache_entries.max(1)).unwrap();
         Self {
             slots,
             tree,
+            cache: Mutex::new(LruCache::new(capacity)),
             total_items,
         }
     }
@@ -361,23 +386,30 @@ impl AdminIndex {
         self.total_items == 0
     }
 
+    /// Number of per-tile feature lists currently held in the LRU cache.
+    pub fn cache_len(&self) -> usize {
+        self.cache.lock().map(|c| c.len()).unwrap_or(0)
+    }
+
     /// Reverse query: every feature whose polygon contains the point.
     /// Sorted finest-to-coarsest by bbox area (smallest first). Tiles
     /// are loaded lazily on first touch.
     pub fn point_in_polygon(&self, coord: Coord) -> Vec<AdminFeature> {
         let q = [coord.lon, coord.lat];
         let envelope = AABB::from_point(q);
-        let candidates = self.tree.locate_in_envelope_intersecting(&envelope);
+        let candidate_idxs: Vec<usize> = self
+            .tree
+            .locate_in_envelope_intersecting(&envelope)
+            .map(|entry| entry.slot_idx)
+            .collect();
 
         let probe = GeoCoord {
             x: coord.lon,
             y: coord.lat,
         };
-        // Dedupe replicated polygons by place_id; keep the smallest bbox.
         let mut by_place: BTreeMap<u64, (AdminFeature, f64)> = BTreeMap::new();
-        for entry in candidates {
-            let slot = &self.slots[entry.slot_idx];
-            let features = slot.load();
+        for idx in candidate_idxs {
+            let features = self.load_slot(idx);
             for feat in features.iter() {
                 if contains_point(&feat.polygon, probe) {
                     let area = bbox_area(&feat.polygon).unwrap_or(f64::MAX);
@@ -402,44 +434,53 @@ impl AdminIndex {
 // NearestIndex (R*-tree of tile bboxes + lazy per-tile load)
 // ============================================================
 
-struct PointTileSlot {
-    abs_path: Option<PathBuf>,
-    cell: OnceLock<Arc<Vec<PlacePoint>>>,
-}
-
-impl PointTileSlot {
-    fn load(&self) -> Arc<Vec<PlacePoint>> {
-        self.cell
-            .get_or_init(|| {
-                if let Some(path) = &self.abs_path {
-                    match std::fs::read(path) {
-                        Ok(bytes) => match bincode::deserialize::<PointLayer>(&bytes) {
-                            Ok(layer) => Arc::new(layer.points),
-                            Err(err) => {
-                                debug!(?err, ?path, "point tile decode failed");
-                                Arc::new(Vec::new())
-                            }
-                        },
-                        Err(err) => {
-                            debug!(?err, ?path, "point tile read failed");
-                            Arc::new(Vec::new())
-                        }
-                    }
-                } else {
-                    Arc::new(Vec::new())
-                }
-            })
-            .clone()
-    }
+enum PointTileSource {
+    Eager(Arc<Vec<PlacePoint>>),
+    Disk(PathBuf),
 }
 
 pub struct NearestIndex {
-    slots: Vec<PointTileSlot>,
+    slots: Vec<PointTileSource>,
     tree: RTree<TileEnvelope>,
+    cache: Mutex<LruCache<usize, Arc<Vec<PlacePoint>>>>,
     total_items: u64,
 }
 
+fn read_point_tile(path: &Path) -> Arc<Vec<PlacePoint>> {
+    match std::fs::read(path) {
+        Ok(bytes) => match bincode::deserialize::<PointLayer>(&bytes) {
+            Ok(layer) => Arc::new(layer.points),
+            Err(err) => {
+                debug!(?err, ?path, "point tile decode failed");
+                Arc::new(Vec::new())
+            }
+        },
+        Err(err) => {
+            debug!(?err, ?path, "point tile read failed");
+            Arc::new(Vec::new())
+        }
+    }
+}
+
 impl NearestIndex {
+    fn load_slot(&self, idx: usize) -> Arc<Vec<PlacePoint>> {
+        match &self.slots[idx] {
+            PointTileSource::Eager(arc) => arc.clone(),
+            PointTileSource::Disk(path) => {
+                {
+                    let mut cache = self.cache.lock().expect("nearest cache poisoned");
+                    if let Some(arc) = cache.get(&idx) {
+                        return arc.clone();
+                    }
+                }
+                let arc = read_point_tile(path);
+                let mut cache = self.cache.lock().expect("nearest cache poisoned");
+                cache.put(idx, arc.clone());
+                arc
+            }
+        }
+    }
+
     pub fn build(layer: PointLayer) -> Self {
         let total_items = layer.points.len() as u64;
         let aabb = if layer.points.is_empty() {
@@ -457,40 +498,48 @@ impl NearestIndex {
             }
             AABB::from_corners([min_lon, min_lat], [max_lon, max_lat])
         };
-        let cell = OnceLock::new();
-        cell.set(Arc::new(layer.points)).ok();
-        let slot = PointTileSlot {
-            abs_path: None,
-            cell,
-        };
+        let slot = PointTileSource::Eager(Arc::new(layer.points));
         let tree = RTree::bulk_load(vec![TileEnvelope { aabb, slot_idx: 0 }]);
         Self {
             slots: vec![slot],
             tree,
+            cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(DEFAULT_TILE_CACHE_ENTRIES).unwrap(),
+            )),
             total_items,
         }
     }
 
     pub fn open(bundle_root: &Path, entries: Vec<SpatialTileEntry>) -> Self {
-        let mut slots: Vec<PointTileSlot> = Vec::with_capacity(entries.len());
+        Self::open_with_cache(bundle_root, entries, DEFAULT_TILE_CACHE_ENTRIES)
+    }
+
+    pub fn open_with_cache(
+        bundle_root: &Path,
+        entries: Vec<SpatialTileEntry>,
+        cache_entries: usize,
+    ) -> Self {
+        let mut slots: Vec<PointTileSource> = Vec::with_capacity(entries.len());
         let mut envs: Vec<TileEnvelope> = Vec::with_capacity(entries.len());
         let mut total_items = 0u64;
         for (idx, e) in entries.iter().enumerate() {
             total_items += e.item_count;
-            slots.push(PointTileSlot {
-                abs_path: Some(bundle_root.join(&e.rel_path)),
-                cell: OnceLock::new(),
-            });
+            slots.push(PointTileSource::Disk(bundle_root.join(&e.rel_path)));
             envs.push(TileEnvelope {
                 aabb: AABB::from_corners([e.min_lon, e.min_lat], [e.max_lon, e.max_lat]),
                 slot_idx: idx,
             });
         }
         let tree = RTree::bulk_load(envs);
-        debug!(tile_count = slots.len(), total_items, "NearestIndex opened");
+        debug!(
+            tile_count = slots.len(),
+            total_items, cache_entries, "NearestIndex opened"
+        );
+        let capacity = NonZeroUsize::new(cache_entries.max(1)).unwrap();
         Self {
             slots,
             tree,
+            cache: Mutex::new(LruCache::new(capacity)),
             total_items,
         }
     }
@@ -501,6 +550,10 @@ impl NearestIndex {
 
     pub fn is_empty(&self) -> bool {
         self.total_items == 0
+    }
+
+    pub fn cache_len(&self) -> usize {
+        self.cache.lock().map(|c| c.len()).unwrap_or(0)
     }
 
     /// Return the `k` nearest places to the given coord. Tiles are
@@ -527,7 +580,7 @@ impl NearestIndex {
 
         let mut gathered: Vec<PlacePoint> = Vec::new();
         for (slot_idx, _) in ranked {
-            gathered.extend(self.slots[slot_idx].load().iter().cloned());
+            gathered.extend(self.load_slot(slot_idx).iter().cloned());
             if gathered.len() >= k * 4 {
                 break;
             }
@@ -760,6 +813,32 @@ mod tests {
             lat: 0.0,
         });
         assert!(miss.is_empty());
+    }
+
+    #[test]
+    fn admin_lru_evicts_when_capacity_exceeded() {
+        let dir = tempdir();
+        let layer = AdminLayer {
+            features: vec![
+                feature(10, "Alpha", "country", 0.5, 0.5),
+                feature(20, "Beta", "country", 7.0, 7.0),
+                feature(30, "Gamma", "country", -5.0, 12.0),
+            ],
+        };
+        let entries = write_admin_partitioned(&dir, &layer).unwrap();
+        // Cache size 1 — every fresh PIP that touches a different tile
+        // evicts the previous one.
+        let idx = AdminIndex::open_with_cache(&dir, entries, 1);
+        assert_eq!(idx.cache_len(), 0);
+        let _ = idx.point_in_polygon(Coord { lon: 0.5, lat: 0.5 });
+        assert_eq!(idx.cache_len(), 1);
+        let _ = idx.point_in_polygon(Coord { lon: 7.0, lat: 7.0 });
+        assert_eq!(idx.cache_len(), 1);
+        let _ = idx.point_in_polygon(Coord {
+            lon: -5.0,
+            lat: 12.0,
+        });
+        assert_eq!(idx.cache_len(), 1);
     }
 
     #[test]

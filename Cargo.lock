@@ -486,6 +486,7 @@ dependencies = [
  "cairn-tile",
  "geo",
  "geo-types",
+ "lru",
  "rstar 0.12.2",
  "serde",
  "thiserror 1.0.69",
