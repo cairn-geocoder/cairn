@@ -254,8 +254,16 @@ pub fn write_admin_partitioned(
     Ok(entries)
 }
 
-/// Write the point layer to per-tile files. Each PlacePoint lands in
-/// the single tile its centroid falls into.
+/// Write the point layer to per-tile bincode files. Each PlacePoint
+/// lands in the single tile its centroid falls into.
+///
+/// Format choice: bincode (not rkyv). Tried rkyv and measured a 68 %
+/// bundle-size regression on the Liechtenstein corpus
+/// (246 kB → 414 kB) — rkyv's per-field offset metadata dominates for
+/// String-heavy structs like PlacePoint, where rings of f64 vertices
+/// don't amortize the overhead. Linear-scan nearest-k doesn't benefit
+/// from zero-copy mmap either, so there's no runtime win to pay for
+/// the size penalty.
 pub fn write_points_partitioned(
     bundle_root: &Path,
     layer: &PointLayer,
