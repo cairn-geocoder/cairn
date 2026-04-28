@@ -480,6 +480,36 @@ async fn unknown_route_returns_404() {
 }
 
 #[tokio::test]
+async fn readyz_reports_per_component_status() {
+    let (status, body) = get_json(build_test_state(), "/readyz").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ready"], true);
+    assert_eq!(body["components"]["text"], true);
+    assert_eq!(body["components"]["admin"], true);
+    assert_eq!(body["components"]["nearest"], true);
+    assert!(body["bundle_id"].is_string());
+}
+
+#[tokio::test]
+async fn info_returns_bundle_metadata() {
+    let (status, body) = get_json(build_test_state(), "/v1/info").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["bundle_id"].is_string());
+    assert!(body["uptime_seconds"].is_u64());
+    assert!(body["admin_features"].is_u64());
+    assert!(body["point_count"].is_u64());
+    assert_eq!(body["auth_required"], false);
+    assert_eq!(body["rate_limited"], false);
+}
+
+#[tokio::test]
+async fn info_open_to_unauthenticated_clients() {
+    // /v1/info must not require an API key — used by health probes.
+    let (status, _) = get_json(build_test_state_with_key("secret"), "/v1/info").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn place_lookup_resolves_known_ids() {
     let state = build_test_state();
     // PlaceId for vaduz() in the test fixture.

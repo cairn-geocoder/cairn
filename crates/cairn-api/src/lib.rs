@@ -377,12 +377,13 @@ pub fn router(state: AppState) -> Router {
             require_api_key,
         ));
 
-    // Open routes (health / metrics / spec) bypass auth.
+    // Open routes (health / metrics / spec / info) bypass auth.
     let open = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
-        .route("/openapi.json", get(openapi_spec));
+        .route("/openapi.json", get(openapi_spec))
+        .route("/v1/info", get(info));
 
     open.merge(v1).with_state(state).layer(
         TraceLayer::new_for_http()
@@ -514,17 +515,77 @@ async fn healthz() -> Json<StatusBody> {
     Json(StatusBody { status: "ok" })
 }
 
-async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<StatusBody>) {
-    if state.text.is_some() {
-        (StatusCode::OK, Json(StatusBody { status: "ready" }))
+/// Per-component readiness body. `ready: true` only when the
+/// minimum-viable set is loaded (currently just the text index).
+/// `components` reports each subsystem so operators can tell which
+/// piece is missing on a degraded bundle.
+#[derive(Serialize)]
+struct ReadyBody {
+    ready: bool,
+    bundle_id: String,
+    components: ReadyComponents,
+}
+
+#[derive(Serialize)]
+struct ReadyComponents {
+    text: bool,
+    admin: bool,
+    nearest: bool,
+}
+
+async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<ReadyBody>) {
+    let components = ReadyComponents {
+        text: state.text.is_some(),
+        admin: state.admin.is_some(),
+        nearest: state.nearest.is_some(),
+    };
+    let ready = components.text;
+    let status = if ready {
+        StatusCode::OK
     } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(StatusBody {
-                status: "no_text_index",
-            }),
-        )
-    }
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let body = ReadyBody {
+        ready,
+        bundle_id: state.metrics.bundle_id.clone(),
+        components,
+    };
+    (status, Json(body))
+}
+
+#[derive(Serialize)]
+struct InfoBody {
+    bundle_id: String,
+    started_at_unix: u64,
+    uptime_seconds: u64,
+    admin_features: u64,
+    point_count: u64,
+    bundle_path: String,
+    auth_required: bool,
+    rate_limited: bool,
+}
+
+/// `/v1/info` — operational metadata about this serve process. Useful
+/// for clients that want to confirm which bundle they're talking to,
+/// how long it's been up, and whether auth / rate limiting are active.
+/// Does not require an API key (treated like /healthz so probes can
+/// hit it without credentials).
+async fn info(State(state): State<AppState>) -> Json<InfoBody> {
+    let started_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .saturating_sub(state.metrics.started.elapsed().as_secs());
+    Json(InfoBody {
+        bundle_id: state.metrics.bundle_id.clone(),
+        started_at_unix: started_unix,
+        uptime_seconds: state.metrics.started.elapsed().as_secs(),
+        admin_features: state.metrics.admin_features,
+        point_count: state.metrics.point_count,
+        bundle_path: state.bundle_path.display().to_string(),
+        auth_required: state.api_key.is_some(),
+        rate_limited: state.rate_limit.is_some(),
+    })
 }
 
 #[derive(Deserialize, Default)]

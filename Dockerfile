@@ -43,6 +43,11 @@ FROM alpine:${ALPINE_VERSION} AS bundler
 ARG BUNDLE_ID="li-cluster"
 ARG OSM_URL="https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf"
 ARG WOF_URL="https://data.geocode.earth/wof/dist/sqlite/whosonfirst-data-admin-li-latest.db.bz2"
+# Douglas-Peucker tolerance for admin polygons (meters). 100m is
+# invisible in any reverse-geocode UI and shrinks admin layer 80-90%
+# on dense bundles. Override at build time with --build-arg
+# SIMPLIFY_METERS=0 to disable.
+ARG SIMPLIFY_METERS="100"
 RUN apk add --no-cache curl bzip2 ca-certificates
 WORKDIR /data
 RUN curl -fsSL -o source.osm.pbf "$OSM_URL"
@@ -53,7 +58,8 @@ RUN /usr/local/bin/cairn-build build \
         --osm /data/source.osm.pbf \
         --wof /data/wof.db \
         --out /bundle \
-        --bundle-id "$BUNDLE_ID"
+        --bundle-id "$BUNDLE_ID" \
+        --simplify-meters "$SIMPLIFY_METERS"
 
 ############################################################
 # Final image: minimal runtime with binaries + baked bundle.
