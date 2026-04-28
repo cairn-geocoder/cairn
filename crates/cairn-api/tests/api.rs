@@ -480,6 +480,20 @@ async fn unknown_route_returns_404() {
 }
 
 #[tokio::test]
+async fn search_lang_param_passes_through_to_engine() {
+    // Test fixture has a single 'default' language tag on Vaduz, so
+    // lang=de doesn't surface a different result, but the hit's
+    // 'langs' array should be present and the request should not 4xx.
+    let (status, body) = get_json(build_test_state(), "/v1/search?q=Vaduz&lang=de").await;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(!results.is_empty());
+    // langs is skip-if-empty; index has 'default' so it's present.
+    let langs = results[0]["langs"].as_array().unwrap();
+    assert!(langs.iter().any(|v| v == "default"));
+}
+
+#[tokio::test]
 async fn readyz_reports_per_component_status() {
     let (status, body) = get_json(build_test_state(), "/readyz").await;
     assert_eq!(status, StatusCode::OK);

@@ -607,6 +607,10 @@ pub struct SearchQuery {
     pub focus_lon: Option<f64>,
     #[serde(default, rename = "focus.weight")]
     pub focus_weight: Option<f64>,
+    /// Preferred language code (`de`, `fr`, `en`, …). Hits with a
+    /// localized name in this language get a small score boost.
+    #[serde(default)]
+    pub lang: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -657,6 +661,12 @@ async fn search(
         layers,
         focus,
         focus_weight: params.focus_weight.unwrap_or(0.5),
+        prefer_lang: params
+            .lang
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     };
 
     let text = match state.text.as_ref() {
@@ -1028,6 +1038,7 @@ async fn structured(
         layers,
         focus,
         focus_weight: params.focus_weight.unwrap_or(0.5),
+        prefer_lang: None,
     };
 
     let text = match state.text.as_ref() {
@@ -1140,6 +1151,9 @@ struct PeliasSearchQuery {
     focus_lat: Option<f64>,
     #[serde(default, rename = "focus.point.lon")]
     focus_lon: Option<f64>,
+    /// Preferred language code (Pelias spec also supports `lang=`).
+    #[serde(default)]
+    lang: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Default, Debug)]
@@ -1277,6 +1291,12 @@ async fn pelias_search_impl(
         layers,
         focus,
         focus_weight: 0.5,
+        prefer_lang: params
+            .lang
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     };
     let text_idx = state
         .text
@@ -1347,6 +1367,7 @@ async fn pelias_reverse(
                 distance_km: Some(haversine_km(lat, lon, f.centroid.lat, f.centroid.lon)),
                 population: 0,
                 label: String::new(),
+                langs: Vec::new(),
             };
             hit_to_pelias_feature(hit)
         })

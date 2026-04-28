@@ -44,6 +44,12 @@ const EXACT_MATCH_BOOST: f32 = 4.0;
 /// enough to break ties — Berlin beats a 200-population hamlet that
 /// happens to match the query.
 const POPULATION_BOOST_RATE: f32 = 0.1;
+/// Multiplier applied when a hit ships a localized name in the
+/// `?lang=` preferred language. Modest — language match alone
+/// shouldn't override a much stronger BM25 / exact-match signal,
+/// but should cleanly break ties between two equivalently-matching
+/// hits (one in German, one in French) for a German-preferring user.
+const LANG_PREFERENCE_BOOST: f32 = 1.5;
 
 /// ASCII-fold + script transliterate a string via `deunicode`.
 /// Returns `None` when the result equals the input (already ASCII)
@@ -107,6 +113,12 @@ pub struct Hit {
     /// when the bundle has no admin_names sidecar.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub label: String,
+    /// Language codes this hit carries a localized name for
+    /// (e.g. `["default", "de", "fr"]`). Populates the `?lang=`
+    /// preference boost. Empty for older bundles that didn't index
+    /// the field.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub langs: Vec<String>,
 }
 
 fn is_zero_u64(n: &u64) -> bool {
@@ -134,6 +146,11 @@ pub struct SearchOptions {
     /// Weight for the distance penalty in the geo-bias re-rank step.
     /// final_score = bm25 / (1 + focus_weight * km).
     pub focus_weight: f64,
+    /// Optional preferred language code (`"de"`, `"fr"`, `"en"`, …).
+    /// Hits with a localized name in this language get a modest score
+    /// boost so multi-lingual users see results in their preferred
+    /// tongue when ties are close. Empty / `None` disables the boost.
+    pub prefer_lang: Option<String>,
 }
 
 impl Default for SearchOptions {
@@ -145,6 +162,7 @@ impl Default for SearchOptions {
             layers: Vec::new(),
             focus: None,
             focus_weight: 0.5,
+            prefer_lang: None,
         }
     }
 }
@@ -163,6 +181,10 @@ struct TextSchema {
     admin_path: Field,
     /// Optional population (`tags["population"]`). 0 = unknown.
     population: Field,
+    /// One token per localized-name language code that this Place
+    /// carries (`"default"`, `"de"`, `"fr"`, etc). Multi-value STORED;
+    /// drives the `?lang=` boost at query time.
+    lang_codes: Field,
 }
 
 impl TextSchema {
@@ -193,6 +215,9 @@ impl TextSchema {
         let lat = sb.add_f64_field("lat", STORED);
         let admin_path = sb.add_u64_field("admin_path", STORED);
         let population = sb.add_u64_field("population", FAST | STORED);
+        // STRING analyzer = whole-token, no folding — language codes
+        // ('default', 'de', 'fr-CH') stay verbatim for exact match.
+        let lang_codes = sb.add_text_field("lang_codes", STRING | STORED);
         let schema = sb.build();
         Self {
             schema,
@@ -207,6 +232,7 @@ impl TextSchema {
             lat,
             admin_path,
             population,
+            lang_codes,
         }
     }
 }
@@ -280,6 +306,8 @@ where
             continue;
         }
         let mut doc = TantivyDocument::default();
+        let mut langs_seen: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         for n in &place.names {
             doc.add_text(schema.name, &n.value);
             doc.add_text(schema.name_prefix, &n.value);
@@ -289,6 +317,12 @@ where
             if let Some(folded) = ascii_fold(&n.value) {
                 doc.add_text(schema.name_translit, &folded);
             }
+            if !n.lang.is_empty() {
+                langs_seen.insert(n.lang.clone());
+            }
+        }
+        for lang in langs_seen {
+            doc.add_text(schema.lang_codes, &lang);
         }
         doc.add_u64(schema.place_id, place.id.0);
         doc.add_u64(schema.level, place.id.level() as u64);
@@ -399,6 +433,9 @@ impl TextIndex {
             apply_exact_name_boost(&mut hits, trimmed);
         }
         apply_population_boost(&mut hits);
+        if let Some(lang) = opts.prefer_lang.as_deref() {
+            apply_lang_preference_boost(&mut hits, lang);
+        }
 
         if let Some(focus) = opts.focus {
             apply_geo_bias(&mut hits, focus, opts.focus_weight);
@@ -562,6 +599,10 @@ impl TextIndex {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
             label: String::new(),
+            langs: doc
+                .get_all(self.schema.lang_codes)
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
         }
     }
 }
@@ -592,6 +633,22 @@ fn apply_population_boost(hits: &mut [Hit]) {
         }
         let factor = 1.0 + ((h.population as f32 + 1.0).log10()) * POPULATION_BOOST_RATE;
         h.score *= factor;
+    }
+}
+
+/// Multiply each hit's score by [`LANG_PREFERENCE_BOOST`] when the hit
+/// has a localized name in `lang`. Case-insensitive on the language
+/// code. No-op when `lang` is empty or no hit carries it (so a query
+/// for `?lang=xx` won't reshuffle results when nothing matches).
+fn apply_lang_preference_boost(hits: &mut [Hit], lang: &str) {
+    let needle = lang.trim().to_lowercase();
+    if needle.is_empty() {
+        return;
+    }
+    for h in hits.iter_mut() {
+        if h.langs.iter().any(|l| l.to_lowercase() == needle) {
+            h.score *= LANG_PREFERENCE_BOOST;
+        }
     }
 }
 
@@ -1009,6 +1066,7 @@ mod tests {
             distance_km: None,
             population: 0,
             label: String::new(),
+            langs: Vec::new(),
         };
         let label = super::format_label(&hit, &admin_names);
         // leaf → root order, parenthetical suffix dedup against
@@ -1033,6 +1091,7 @@ mod tests {
             distance_km: None,
             population: 0,
             label: String::new(),
+            langs: Vec::new(),
         };
         let label = super::format_label(&hit, &admin_names);
         // 'Vaduz (Li)' folds to 'vaduz' which equals leaf 'Vaduz' →
@@ -1055,8 +1114,65 @@ mod tests {
             distance_km: None,
             population: 0,
             label: String::new(),
+            langs: Vec::new(),
         };
         assert_eq!(super::format_label(&hit, &admin_names), "");
+    }
+
+    #[test]
+    fn lang_preference_boosts_matching_language_hit() {
+        let dir = tempdir_for_test();
+        // Two records with the same name string. One ships only a
+        // 'default' language tag, the other adds 'de'. Asking for
+        // ?lang=de boosts the second.
+        let plain = Place {
+            id: PlaceId::new(1, 1, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Brixen".into(),
+            }],
+            centroid: Coord {
+                lon: 11.0,
+                lat: 46.7,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        let german = Place {
+            id: PlaceId::new(1, 1, 2).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![
+                LocalizedName {
+                    lang: "default".into(),
+                    value: "Brixen".into(),
+                },
+                LocalizedName {
+                    lang: "de".into(),
+                    value: "Brixen".into(),
+                },
+            ],
+            centroid: Coord {
+                lon: 11.6,
+                lat: 46.7,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        build_index(&dir, vec![plain, german]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let opts = SearchOptions {
+            prefer_lang: Some("de".into()),
+            ..Default::default()
+        };
+        let hits = idx.search("Brixen", &opts).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0].place_id,
+            PlaceId::new(1, 1, 2).unwrap().0,
+            "lang=de must promote the German-tagged record, got {hits:?}"
+        );
+        assert!(hits[0].langs.iter().any(|l| l == "de"));
     }
 
     #[test]

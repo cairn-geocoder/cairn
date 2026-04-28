@@ -9,6 +9,9 @@ expression: body
     {
       "admin_path": [],
       "kind": "country",
+      "langs": [
+        "default"
+      ],
       "lat": 47.13,
       "level": 0,
       "lon": 9.555,

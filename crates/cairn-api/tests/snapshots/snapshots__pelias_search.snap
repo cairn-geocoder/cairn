@@ -31,6 +31,7 @@ expression: body
     "query": {
       "focus.point.lat": null,
       "focus.point.lon": null,
+      "lang": null,
       "layers": null,
       "size": 2,
       "text": "Vaduz"

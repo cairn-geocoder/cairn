@@ -11,6 +11,9 @@ expression: body
         27217860589780993
       ],
       "kind": "city",
+      "langs": [
+        "default"
+      ],
       "lat": 47.141,
       "level": 1,
       "lon": 9.5209,
