@@ -11,3 +11,4 @@ Cargo.lock.bak
 *.osm.pbf
 *.tar
 *.tar.zst
+*.tar.gz
