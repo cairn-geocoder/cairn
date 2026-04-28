@@ -137,27 +137,37 @@ fn dedup_score(f: &AdminFeature) -> (usize, usize) {
 /// Collapse near-duplicate AdminFeatures emitted by overlapping sources
 /// (typically WoF + OSM both shipping the same country / region polygon).
 /// Two features collide when they share `kind` and their centroids quantize
-/// to the same ~100m grid cell. The richer feature (longer admin_path,
-/// then longer name) wins.
+/// to the same ~100m grid cell. Tiebreaker order:
+///   1. `--source-priority` rank (lower index wins).
+///   2. Richer feature (longer admin_path, then longer name).
+///
+/// `priority` is a list of [`SourceKind`]s in preferred order. Empty
+/// priority falls back to richness-only.
 ///
 /// Polygon geometry is left untouched on the winner; we don't try to
 /// reconcile slightly different OSM and WoF rings here, only avoid the
 /// duplicate user-visible result.
-pub fn dedupe_features(features: Vec<AdminFeature>) -> Vec<AdminFeature> {
-    let mut best: BTreeMap<(String, i32, i32), AdminFeature> = BTreeMap::new();
+pub fn dedupe_features(
+    items: Vec<(AdminFeature, cairn_place::SourceKind)>,
+    priority: &[cairn_place::SourceKind],
+) -> Vec<AdminFeature> {
+    let mut best: BTreeMap<(String, i32, i32), (AdminFeature, cairn_place::SourceKind)> =
+        BTreeMap::new();
     let mut dropped = 0usize;
-    for feat in features {
+    for (feat, src) in items {
         let key = (
             feat.kind.clone(),
             quantize_centroid(feat.centroid).0,
             quantize_centroid(feat.centroid).1,
         );
         match best.get(&key) {
-            Some(existing) if dedup_score(existing) >= dedup_score(&feat) => {
+            Some((existing, existing_src))
+                if !feature_better(&feat, src, existing, *existing_src, priority) =>
+            {
                 dropped += 1;
             }
             _ => {
-                if best.insert(key, feat).is_some() {
+                if best.insert(key, (feat, src)).is_some() {
                     dropped += 1;
                 }
             }
@@ -170,7 +180,24 @@ pub fn dedupe_features(features: Vec<AdminFeature>) -> Vec<AdminFeature> {
             "dedupe_features collapsed near-duplicates"
         );
     }
-    best.into_values().collect()
+    best.into_values().map(|(f, _)| f).collect()
+}
+
+fn feature_better(
+    a: &AdminFeature,
+    a_src: cairn_place::SourceKind,
+    b: &AdminFeature,
+    b_src: cairn_place::SourceKind,
+    priority: &[cairn_place::SourceKind],
+) -> bool {
+    let a_rank = priority.iter().position(|p| *p == a_src);
+    let b_rank = priority.iter().position(|p| *p == b_src);
+    match (a_rank, b_rank) {
+        (Some(ar), Some(br)) if ar != br => ar < br,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        _ => dedup_score(a) > dedup_score(b),
+    }
 }
 
 // ============================================================
@@ -968,7 +995,13 @@ mod tests {
             admin_path: vec![85633723, 102191581],
             polygon: unit_square_at(9.5554, 47.166),
         };
-        let kept = dedupe_features(vec![osm, wof]);
+        let kept = dedupe_features(
+            vec![
+                (osm, cairn_place::SourceKind::Unknown),
+                (wof, cairn_place::SourceKind::Unknown),
+            ],
+            &[],
+        );
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].place_id, 2, "WoF (richer admin_path) should win");
     }
@@ -977,7 +1010,13 @@ mod tests {
     fn dedupe_keeps_distinct_kinds() {
         let country = feature(1, "Liechtenstein", "country", 9.5554, 47.166);
         let region = feature(2, "Liechtenstein", "region", 9.5554, 47.166);
-        let kept = dedupe_features(vec![country, region]);
+        let kept = dedupe_features(
+            vec![
+                (country, cairn_place::SourceKind::Unknown),
+                (region, cairn_place::SourceKind::Unknown),
+            ],
+            &[],
+        );
         assert_eq!(kept.len(), 2);
     }
 
@@ -985,8 +1024,55 @@ mod tests {
     fn dedupe_keeps_distant_centroids() {
         let a = feature(1, "Townville", "city", 0.0, 0.0);
         let b = feature(2, "Townville", "city", 0.5, 0.5);
-        let kept = dedupe_features(vec![a, b]);
+        let kept = dedupe_features(
+            vec![
+                (a, cairn_place::SourceKind::Unknown),
+                (b, cairn_place::SourceKind::Unknown),
+            ],
+            &[],
+        );
         assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn dedupe_priority_overrides_admin_path_richness() {
+        let mut osm = AdminFeature {
+            place_id: 1,
+            level: 0,
+            kind: "country".into(),
+            name: "Liechtenstein".into(),
+            centroid: Coord {
+                lon: 9.5554,
+                lat: 47.166,
+            },
+            admin_path: vec![1, 2, 3], // pretend OSM has chain
+            polygon: unit_square_at(9.5554, 47.166),
+        };
+        let wof = AdminFeature {
+            place_id: 2,
+            level: 0,
+            kind: "country".into(),
+            name: "Liechtenstein".into(),
+            centroid: Coord {
+                lon: 9.5554,
+                lat: 47.166,
+            },
+            admin_path: vec![],
+            polygon: unit_square_at(9.5554, 47.166),
+        };
+        let _ = &mut osm;
+        let kept = dedupe_features(
+            vec![
+                (osm, cairn_place::SourceKind::Osm),
+                (wof, cairn_place::SourceKind::Wof),
+            ],
+            &[cairn_place::SourceKind::Wof, cairn_place::SourceKind::Osm],
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            kept[0].place_id, 2,
+            "WoF wins via priority even though OSM has the longer admin_path"
+        );
     }
 
     #[test]

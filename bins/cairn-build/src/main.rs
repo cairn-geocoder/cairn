@@ -43,6 +43,12 @@ enum Command {
         /// at the cost of a tiny CPU hit on first read.
         #[arg(long)]
         zstd: bool,
+        /// Comma-separated source priority for cross-source dedup.
+        /// Earlier in the list = higher trust. Tokens: osm, wof, oa,
+        /// geonames. Default `wof,osm,oa,geonames` (admin polygons +
+        /// parent chains from WoF preferred over OSM relations).
+        #[arg(long, default_value = "wof,osm,oa,geonames")]
+        source_priority: String,
     },
     /// Extract a regional bundle from an existing planet bundle.
     Extract {
@@ -136,6 +142,7 @@ fn main() -> Result<()> {
             out,
             bundle_id,
             zstd,
+            source_priority,
         } => cmd_build(BuildArgs {
             osm,
             wof,
@@ -143,6 +150,7 @@ fn main() -> Result<()> {
             geonames,
             out,
             bundle_id,
+            source_priority: parse_source_priority(&source_priority)?,
             compression: if zstd {
                 TileCompression::Zstd
             } else {
@@ -310,16 +318,42 @@ struct BuildArgs {
     out: PathBuf,
     bundle_id: String,
     compression: TileCompression,
+    source_priority: Vec<cairn_place::SourceKind>,
+}
+
+/// Parse the `--source-priority` CLI value: comma-separated source
+/// tokens. Unknown tokens are dropped with a warning. An empty result
+/// means richness-only dedup.
+fn parse_source_priority(raw: &str) -> Result<Vec<cairn_place::SourceKind>> {
+    let mut out = Vec::new();
+    for tok in raw.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        match cairn_place::SourceKind::parse(tok) {
+            Some(s) => {
+                if !out.contains(&s) {
+                    out.push(s);
+                }
+            }
+            None => tracing::warn!(token = tok, "unknown source-priority token; ignored"),
+        }
+    }
+    Ok(out)
 }
 
 fn cmd_build(args: BuildArgs) -> Result<()> {
     std::fs::create_dir_all(&args.out)
         .with_context(|| format!("creating bundle dir {}", args.out.display()))?;
 
-    let mut places: Vec<Place> = Vec::new();
+    // Each Place / AdminFeature is tagged with the source that emitted
+    // it; tags travel as a parallel Vec because Place itself doesn't
+    // persist source info.
+    let mut places: Vec<(Place, cairn_place::SourceKind)> = Vec::new();
+    let mut admin_items: Vec<(cairn_spatial::AdminFeature, cairn_place::SourceKind)> = Vec::new();
     let mut sources: Vec<SourceVersion> = Vec::new();
 
-    let mut admin_layer: Option<cairn_spatial::AdminLayer> = None;
     if let Some(osm_path) = args.osm.as_ref() {
         tracing::info!(path = %osm_path.display(), "ingesting OSM PBF");
         let imported = cairn_import_osm::import(osm_path)
@@ -329,10 +363,19 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             polygons = imported.admin_layer.features.len(),
             "OSM imported"
         );
-        places.extend(imported.places);
-        if !imported.admin_layer.features.is_empty() {
-            admin_layer = Some(imported.admin_layer);
-        }
+        places.extend(
+            imported
+                .places
+                .into_iter()
+                .map(|p| (p, cairn_place::SourceKind::Osm)),
+        );
+        admin_items.extend(
+            imported
+                .admin_layer
+                .features
+                .into_iter()
+                .map(|f| (f, cairn_place::SourceKind::Osm)),
+        );
         sources.push(SourceVersion {
             name: "osm".into(),
             version: osm_path.display().to_string(),
@@ -349,14 +392,19 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             polygons = imported.admin_layer.features.len(),
             "WoF imported"
         );
-        places.extend(imported.places);
-        admin_layer = match admin_layer.take() {
-            Some(mut existing) => {
-                existing.features.extend(imported.admin_layer.features);
-                Some(existing)
-            }
-            None => Some(imported.admin_layer),
-        };
+        places.extend(
+            imported
+                .places
+                .into_iter()
+                .map(|p| (p, cairn_place::SourceKind::Wof)),
+        );
+        admin_items.extend(
+            imported
+                .admin_layer
+                .features
+                .into_iter()
+                .map(|f| (f, cairn_place::SourceKind::Wof)),
+        );
         sources.push(SourceVersion {
             name: "wof".into(),
             version: wof_path.display().to_string(),
@@ -369,7 +417,11 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         let imported = cairn_import_oa::import(oa_path)
             .with_context(|| format!("OpenAddresses import failed: {}", oa_path.display()))?;
         tracing::info!(count = imported.len(), "OA places imported");
-        places.extend(imported);
+        places.extend(
+            imported
+                .into_iter()
+                .map(|p| (p, cairn_place::SourceKind::OpenAddresses)),
+        );
         sources.push(SourceVersion {
             name: "openaddresses".into(),
             version: oa_path.display().to_string(),
@@ -382,7 +434,11 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         let imported = cairn_import_geonames::import(geonames_path)
             .with_context(|| format!("Geonames import failed: {}", geonames_path.display()))?;
         tracing::info!(count = imported.len(), "Geonames places imported");
-        places.extend(imported);
+        places.extend(
+            imported
+                .into_iter()
+                .map(|p| (p, cairn_place::SourceKind::Geonames)),
+        );
         sources.push(SourceVersion {
             name: "geonames".into(),
             version: geonames_path.display().to_string(),
@@ -390,11 +446,19 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         });
     }
 
+    if !args.source_priority.is_empty() {
+        tracing::info!(
+            priority = ?args.source_priority.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "source-priority weighting active for cross-source dedup"
+        );
+    }
+
     // Dedupe Places across WoF + OSM. Both sources ship cities, POIs,
     // and addresses; without this pass /v1/search returns "Vaduz" twice
-    // (one from each importer). Drop the duplicate that lands first.
+    // (one from each importer). Source priority breaks ties first;
+    // richness (admin_path length, name count) is the fallback.
     let places_before = places.len();
-    places = cairn_place::dedupe_places(places);
+    let mut places = cairn_place::dedupe_places(places, &args.source_priority);
     let places_after = places.len();
     if places_before != places_after {
         tracing::info!(
@@ -408,10 +472,12 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     // Dedupe admin features across WoF + OSM before any downstream pass
     // so the AdminIndex used for admin_path enrichment matches the one
     // we eventually write.
-    let mut deduped_admin = admin_layer.take().map(|mut layer| {
-        let before = layer.features.len();
-        layer.features = cairn_spatial::dedupe_features(layer.features);
-        let after = layer.features.len();
+    let mut deduped_admin = if admin_items.is_empty() {
+        None
+    } else {
+        let before = admin_items.len();
+        let kept = cairn_spatial::dedupe_features(admin_items, &args.source_priority);
+        let after = kept.len();
         if before != after {
             tracing::info!(
                 before,
@@ -420,8 +486,8 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
                 "admin layer deduplicated across sources"
             );
         }
-        layer
-    });
+        Some(cairn_spatial::AdminLayer { features: kept })
+    };
 
     // Enrich admin_path via PIP. WoF places already carry a parent chain
     // so we leave them alone; OSM-sourced cities, POIs, addresses, and

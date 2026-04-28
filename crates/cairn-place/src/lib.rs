@@ -118,6 +118,42 @@ pub enum PlaceKind {
     Postcode,
 }
 
+/// Identifies which importer emitted a Place / AdminFeature. Used at
+/// build time to drive `--source-priority` weighting in dedup; not
+/// persisted in the bundle (kept out-of-band as a parallel Vec).
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum SourceKind {
+    Osm,
+    Wof,
+    OpenAddresses,
+    Geonames,
+    Unknown,
+}
+
+impl SourceKind {
+    /// Parse a CLI-friendly token. Accepts the canonical short names
+    /// plus a couple of common aliases.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "osm" | "openstreetmap" => Some(Self::Osm),
+            "wof" | "whosonfirst" => Some(Self::Wof),
+            "oa" | "openaddresses" => Some(Self::OpenAddresses),
+            "gn" | "geonames" => Some(Self::Geonames),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Osm => "osm",
+            Self::Wof => "wof",
+            Self::OpenAddresses => "oa",
+            Self::Geonames => "geonames",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
 #[archive(check_bytes)]
 #[archive_attr(derive(Debug))]
@@ -170,26 +206,34 @@ fn haversine_m(a: Coord, b: Coord) -> f64 {
 /// the same entity).
 ///
 /// Two Places collide when they share `kind`, lowercased primary name,
-/// and their centroids are within `DEDUP_RADIUS_M`. The richer Place
-/// (longer admin_path, then more names) wins; the loser is dropped.
+/// and their centroids are within `DEDUP_RADIUS_M`. Tiebreaker order
+/// for picking the winner inside a cluster:
+///   1. `--source-priority` rank (lower index = higher trust).
+///   2. Richer place (longer admin_path, then more localized names).
+///
+/// `priority` is a list of [`SourceKind`]s in preferred order. Empty
+/// priority falls back to richness-only (legacy behaviour).
 ///
 /// Order-stable: input order determines the winner on ties so building
 /// the same bundle twice produces byte-identical tile blobs. Within a
 /// (kind, name) bucket the algorithm is O(n²) but bucket sizes are
 /// tiny in practice — a city has only so many things called "Post".
-pub fn dedupe_places(places: Vec<Place>) -> Vec<Place> {
+pub fn dedupe_places(
+    items: Vec<(Place, SourceKind)>,
+    priority: &[SourceKind],
+) -> Vec<Place> {
     use std::collections::BTreeMap;
-    let mut buckets: BTreeMap<(u8, String), Vec<(usize, Place)>> = BTreeMap::new();
-    for (idx, p) in places.into_iter().enumerate() {
+    let mut buckets: BTreeMap<(u8, String), Vec<(usize, Place, SourceKind)>> = BTreeMap::new();
+    for (idx, (p, src)) in items.into_iter().enumerate() {
         buckets
             .entry((p.kind as u8, primary_name_lc(&p)))
             .or_default()
-            .push((idx, p));
+            .push((idx, p, src));
     }
     let mut kept: Vec<(usize, Place)> = Vec::new();
     for (_, members) in buckets {
         if members.len() == 1 {
-            kept.extend(members);
+            kept.extend(members.into_iter().map(|(idx, p, _)| (idx, p)));
             continue;
         }
         let mut absorbed = vec![false; members.len()];
@@ -205,7 +249,13 @@ pub fn dedupe_places(places: Vec<Place>) -> Vec<Place> {
                 let d = haversine_m(members[i].1.centroid, members[j].1.centroid);
                 if d <= DEDUP_RADIUS_M {
                     absorbed[j] = true;
-                    if place_score(&members[j].1) > place_score(&members[winner].1) {
+                    if better(
+                        &members[j].1,
+                        members[j].2,
+                        &members[winner].1,
+                        members[winner].2,
+                        priority,
+                    ) {
                         winner = j;
                     }
                 }
@@ -216,6 +266,26 @@ pub fn dedupe_places(places: Vec<Place>) -> Vec<Place> {
     }
     kept.sort_by_key(|(idx, _)| *idx);
     kept.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Returns `true` when `a` should win against `b` for dedup. Source
+/// priority dominates richness; ties on priority rank fall through to
+/// `place_score`.
+fn better(
+    a: &Place,
+    a_src: SourceKind,
+    b: &Place,
+    b_src: SourceKind,
+    priority: &[SourceKind],
+) -> bool {
+    let a_rank = priority.iter().position(|p| *p == a_src);
+    let b_rank = priority.iter().position(|p| *p == b_src);
+    match (a_rank, b_rank) {
+        (Some(ar), Some(br)) if ar != br => ar < br,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        _ => place_score(a) > place_score(b),
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +350,10 @@ mod tests {
         }
     }
 
+    fn unknown(p: Place) -> (Place, SourceKind) {
+        (p, SourceKind::Unknown)
+    }
+
     #[test]
     fn dedupe_collapses_same_kind_same_name_same_centroid() {
         let osm = place_at(
@@ -297,7 +371,7 @@ mod tests {
             47.141,
         );
         wof.admin_path = vec![PlaceId::new(0, 0, 1).unwrap()];
-        let kept = dedupe_places(vec![osm, wof]);
+        let kept = dedupe_places(vec![unknown(osm), unknown(wof)], &[]);
         assert_eq!(kept.len(), 1);
         assert!(!kept[0].admin_path.is_empty(), "WoF (richer) should win");
     }
@@ -318,7 +392,7 @@ mod tests {
             9.5209,
             47.141,
         );
-        let kept = dedupe_places(vec![city, poi]);
+        let kept = dedupe_places(vec![unknown(city), unknown(poi)], &[]);
         assert_eq!(kept.len(), 2);
     }
 
@@ -338,7 +412,7 @@ mod tests {
             9.5208,
             47.141,
         );
-        let kept = dedupe_places(vec![a, b]);
+        let kept = dedupe_places(vec![unknown(a), unknown(b)], &[]);
         assert_eq!(kept.len(), 1);
     }
 
@@ -358,7 +432,60 @@ mod tests {
             9.55,
             47.16,
         );
-        let kept = dedupe_places(vec![a, b]);
+        let kept = dedupe_places(vec![unknown(a), unknown(b)], &[]);
         assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn dedupe_priority_overrides_richness() {
+        // OSM is richer (admin_path), but priority puts WoF first.
+        // WoF wins anyway.
+        let mut osm = place_at(
+            PlaceId::new(1, 49509, 1).unwrap(),
+            "Vaduz",
+            PlaceKind::City,
+            9.5209,
+            47.141,
+        );
+        osm.admin_path = vec![PlaceId::new(0, 0, 1).unwrap(), PlaceId::new(0, 0, 2).unwrap()];
+        let wof = place_at(
+            PlaceId::new(1, 49509, 2).unwrap(),
+            "Vaduz",
+            PlaceKind::City,
+            9.5209,
+            47.141,
+        );
+        let kept = dedupe_places(
+            vec![(osm, SourceKind::Osm), (wof, SourceKind::Wof)],
+            &[SourceKind::Wof, SourceKind::Osm],
+        );
+        assert_eq!(kept.len(), 1);
+        assert!(
+            kept[0].admin_path.is_empty(),
+            "WoF (priority winner) should win even though OSM is richer"
+        );
+    }
+
+    #[test]
+    fn dedupe_priority_falls_back_to_richness_when_unranked() {
+        let bare = place_at(
+            PlaceId::new(1, 49509, 1).unwrap(),
+            "Vaduz",
+            PlaceKind::City,
+            9.5209,
+            47.141,
+        );
+        let mut richer = place_at(
+            PlaceId::new(1, 49509, 2).unwrap(),
+            "Vaduz",
+            PlaceKind::City,
+            9.5209,
+            47.141,
+        );
+        richer.admin_path = vec![PlaceId::new(0, 0, 1).unwrap()];
+        // Both Unknown, neither in priority list.
+        let kept = dedupe_places(vec![unknown(bare), unknown(richer)], &[SourceKind::Wof]);
+        assert_eq!(kept.len(), 1);
+        assert!(!kept[0].admin_path.is_empty());
     }
 }
