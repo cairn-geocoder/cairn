@@ -329,7 +329,7 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cairn-api"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "axum",
  "cairn-parse",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-build"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "anyhow",
  "blake3",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-geocoder"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "cairn-api",
  "cairn-parse",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-import-geonames"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "cairn-place",
  "cairn-tile",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-import-oa"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "cairn-place",
  "cairn-tile",
@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-import-osm"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "cairn-place",
  "cairn-tile",
@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-import-wof"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "cairn-place",
  "cairn-spatial",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-parse"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-place"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "rkyv",
  "serde",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-serve"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "anyhow",
  "axum",
@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-spatial"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "bincode",
  "cairn-place",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-text"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "cairn-place",
  "fst",
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "cairn-tile"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 dependencies = [
  "blake3",
  "cairn-place",
