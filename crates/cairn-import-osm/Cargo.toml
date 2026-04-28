@@ -16,5 +16,6 @@ cairn-spatial = { workspace = true }
 geo = { workspace = true }
 geo-types = { workspace = true }
 osmpbf = { workspace = true }
+rayon = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

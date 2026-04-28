@@ -432,6 +432,7 @@ dependencies = [
  "geo",
  "geo-types",
  "osmpbf",
+ "rayon",
  "thiserror 1.0.69",
  "tracing",
 ]
