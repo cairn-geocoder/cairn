@@ -14,7 +14,7 @@ use axum::{
     Router,
 };
 use cairn_place::Coord;
-use cairn_spatial::AdminIndex;
+use cairn_spatial::{AdminIndex, NearestIndex};
 use cairn_text::{Hit, SearchMode, SearchOptions, TextError, TextIndex};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -25,6 +25,7 @@ pub struct AppState {
     pub bundle_path: Arc<std::path::PathBuf>,
     pub text: Option<Arc<TextIndex>>,
     pub admin: Option<Arc<AdminIndex>>,
+    pub nearest: Option<Arc<NearestIndex>>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -160,6 +161,10 @@ pub struct ReverseQuery {
     pub lon: Option<f64>,
     #[serde(default)]
     pub limit: Option<usize>,
+    /// When PIP returns no admin features, fall back to the K nearest
+    /// place centroids. 0 disables fallback.
+    #[serde(default)]
+    pub nearest: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -178,6 +183,7 @@ struct ReverseHit {
 struct ReverseResponse {
     lat: f64,
     lon: f64,
+    source: &'static str,
     results: Vec<ReverseHit>,
 }
 
@@ -207,38 +213,82 @@ async fn reverse(
             .into_response();
     }
 
-    let admin = match state.admin.as_ref() {
-        Some(a) => a.clone(),
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({ "error": "admin layer not loaded" })),
-            )
-                .into_response();
-        }
-    };
-
     let limit = params.limit.unwrap_or(10).clamp(1, 50);
+    let nearest_k = params.nearest.unwrap_or(0).min(50);
     let probe = Coord { lon, lat };
-    let matches = admin.point_in_polygon(probe);
 
-    // Order is finest-containing-polygon first, courtesy of AdminIndex.
-    let results: Vec<ReverseHit> = matches
-        .iter()
-        .take(limit)
-        .map(|f| ReverseHit {
-            place_id: f.place_id,
-            name: f.name.clone(),
-            kind: f.kind.clone(),
-            level: f.level,
-            lon: f.centroid.lon,
-            lat: f.centroid.lat,
-            admin_path: f.admin_path.clone(),
-            distance_km: haversine_km(lat, lon, f.centroid.lat, f.centroid.lon),
-        })
-        .collect();
+    // PIP path first.
+    if let Some(admin) = state.admin.as_ref() {
+        let matches = admin.point_in_polygon(probe);
+        if !matches.is_empty() {
+            let results: Vec<ReverseHit> = matches
+                .iter()
+                .take(limit)
+                .map(|f| ReverseHit {
+                    place_id: f.place_id,
+                    name: f.name.clone(),
+                    kind: f.kind.clone(),
+                    level: f.level,
+                    lon: f.centroid.lon,
+                    lat: f.centroid.lat,
+                    admin_path: f.admin_path.clone(),
+                    distance_km: haversine_km(lat, lon, f.centroid.lat, f.centroid.lon),
+                })
+                .collect();
+            return Json(ReverseResponse {
+                lat,
+                lon,
+                source: "pip",
+                results,
+            })
+            .into_response();
+        }
+    }
 
-    Json(ReverseResponse { lat, lon, results }).into_response()
+    // Fallback: nearest-K centroid query.
+    if nearest_k > 0 {
+        if let Some(nearest) = state.nearest.as_ref() {
+            let hits = nearest.nearest_k(probe, nearest_k.min(limit));
+            let results: Vec<ReverseHit> = hits
+                .into_iter()
+                .map(|p| ReverseHit {
+                    place_id: p.place_id,
+                    name: p.name.clone(),
+                    kind: p.kind.clone(),
+                    level: p.level,
+                    lon: p.centroid.lon,
+                    lat: p.centroid.lat,
+                    admin_path: p.admin_path.clone(),
+                    distance_km: haversine_km(lat, lon, p.centroid.lat, p.centroid.lon),
+                })
+                .collect();
+            return Json(ReverseResponse {
+                lat,
+                lon,
+                source: "nearest",
+                results,
+            })
+            .into_response();
+        }
+    }
+
+    if state.admin.is_none() && state.nearest.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "no spatial layer loaded"
+            })),
+        )
+            .into_response();
+    }
+
+    Json(ReverseResponse {
+        lat,
+        lon,
+        source: "pip",
+        results: Vec::new(),
+    })
+    .into_response()
 }
 
 fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {

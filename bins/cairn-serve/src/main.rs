@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use cairn_api::{router, AppState};
-use cairn_spatial::{AdminIndex, AdminLayer};
+use cairn_spatial::{AdminIndex, AdminLayer, NearestIndex, PointLayer};
 use cairn_text::TextIndex;
 use clap::Parser;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -53,10 +53,24 @@ async fn main() -> Result<()> {
         None
     };
 
+    let points_path = cli.bundle.join("spatial/points.bin");
+    let nearest = if points_path.exists() {
+        tracing::info!(path = %points_path.display(), "loading point layer");
+        let layer = PointLayer::read_from(&points_path)
+            .with_context(|| format!("loading point layer at {}", points_path.display()))?;
+        let index = NearestIndex::build(layer);
+        tracing::info!(points = index.len(), "nearest index ready");
+        Some(Arc::new(index))
+    } else {
+        tracing::warn!(path = %points_path.display(), "no point layer; nearest fallback off");
+        None
+    };
+
     let state = AppState {
         bundle_path: Arc::new(cli.bundle.clone()),
         text,
         admin,
+        nearest,
     };
     let app = router(state);
 

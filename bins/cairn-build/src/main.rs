@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use cairn_place::Place;
+use cairn_spatial::{PlacePoint, PointLayer};
 use cairn_tile::{
     bucket_places, read_manifest, verify_bundle, write_manifest, write_tile, Level, Manifest,
     SourceVersion, TileCoord, TileEntry,
@@ -146,8 +147,21 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         });
     }
 
-    if args.oa.is_some() || args.geonames.is_some() {
-        tracing::warn!("OpenAddresses / Geonames importers are stubs in Phase 2");
+    if let Some(oa_path) = args.oa.as_ref() {
+        tracing::info!(path = %oa_path.display(), "ingesting OpenAddresses CSV");
+        let imported = cairn_import_oa::import(oa_path)
+            .with_context(|| format!("OpenAddresses import failed: {}", oa_path.display()))?;
+        tracing::info!(count = imported.len(), "OA places imported");
+        places.extend(imported);
+        sources.push(SourceVersion {
+            name: "openaddresses".into(),
+            version: oa_path.display().to_string(),
+            blake3: hash_file(oa_path)?,
+        });
+    }
+
+    if args.geonames.is_some() {
+        tracing::warn!("Geonames importer is still a stub");
     }
 
     // Build the text index from the full place set first; tile bucketing
@@ -203,6 +217,39 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             "admin layer written"
         );
     }
+
+    let point_layer = PointLayer {
+        points: places
+            .iter()
+            .map(|p| {
+                let default_name = p
+                    .names
+                    .iter()
+                    .find(|n| n.lang == "default")
+                    .or_else(|| p.names.first())
+                    .map(|n| n.value.clone())
+                    .unwrap_or_default();
+                PlacePoint {
+                    place_id: p.id.0,
+                    level: p.id.level(),
+                    kind: cairn_text::kind_str(p.kind).to_string(),
+                    name: default_name,
+                    centroid: p.centroid,
+                    admin_path: p.admin_path.iter().map(|a| a.0).collect(),
+                }
+            })
+            .collect(),
+    };
+    let points_path = args.out.join("spatial/points.bin");
+    let bytes = point_layer
+        .write_to(&points_path)
+        .with_context(|| format!("writing point layer to {}", points_path.display()))?;
+    tracing::info!(
+        points = point_layer.points.len(),
+        bytes,
+        path = %points_path.display(),
+        "point layer written"
+    );
 
     let manifest = Manifest {
         schema_version: 1,

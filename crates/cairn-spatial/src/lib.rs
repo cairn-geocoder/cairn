@@ -155,17 +155,102 @@ fn contains_point(mp: &MultiPolygon<f64>, p: GeoCoord<f64>) -> bool {
     mp.contains(&p)
 }
 
-/// Single-place spatial item kept around for legacy reverse-by-centroid use.
-#[derive(Clone, Debug)]
-pub struct SpatialEntry {
-    pub place_id: cairn_place::PlaceId,
+/// Compact place pointer used for the nearest-neighbour fallback layer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PlacePoint {
+    pub place_id: u64,
+    pub level: u8,
+    pub kind: String,
+    pub name: String,
     pub centroid: Coord,
+    pub admin_path: Vec<u64>,
 }
 
-impl RTreeObject for SpatialEntry {
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PointLayer {
+    pub points: Vec<PlacePoint>,
+}
+
+impl PointLayer {
+    pub fn write_to(&self, path: &Path) -> Result<u64, SpatialError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = bincode::serialize(self)?;
+        std::fs::write(path, &bytes)?;
+        Ok(bytes.len() as u64)
+    }
+
+    pub fn read_from(path: &Path) -> Result<Self, SpatialError> {
+        let bytes = std::fs::read(path)?;
+        let layer: PointLayer = bincode::deserialize(&bytes)?;
+        Ok(layer)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PointItem {
+    coords: [f64; 2],
+    point_idx: usize,
+}
+
+impl RTreeObject for PointItem {
     type Envelope = AABB<[f64; 2]>;
     fn envelope(&self) -> Self::Envelope {
-        AABB::from_point([self.centroid.lon, self.centroid.lat])
+        AABB::from_point(self.coords)
+    }
+}
+
+impl rstar::PointDistance for PointItem {
+    fn distance_2(&self, p: &[f64; 2]) -> f64 {
+        let dx = self.coords[0] - p[0];
+        let dy = self.coords[1] - p[1];
+        dx * dx + dy * dy
+    }
+}
+
+/// R*-tree of `PlacePoint` centroids for nearest-neighbour reverse fallback.
+pub struct NearestIndex {
+    tree: RTree<PointItem>,
+    points: Vec<PlacePoint>,
+}
+
+impl NearestIndex {
+    pub fn build(layer: PointLayer) -> Self {
+        let mut entries: Vec<PointItem> = Vec::with_capacity(layer.points.len());
+        for (idx, p) in layer.points.iter().enumerate() {
+            entries.push(PointItem {
+                coords: [p.centroid.lon, p.centroid.lat],
+                point_idx: idx,
+            });
+        }
+        let tree = RTree::bulk_load(entries);
+        Self {
+            tree,
+            points: layer.points,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.points.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty()
+    }
+
+    /// Return the `k` nearest places to the given coord by planar distance
+    /// in degree-space, sorted nearest first.
+    pub fn nearest_k(&self, coord: Coord, k: usize) -> Vec<&PlacePoint> {
+        if k == 0 || self.points.is_empty() {
+            return Vec::new();
+        }
+        let q = [coord.lon, coord.lat];
+        self.tree
+            .nearest_neighbor_iter(&q)
+            .take(k)
+            .map(|item| &self.points[item.point_idx])
+            .collect()
     }
 }
 
@@ -248,6 +333,46 @@ mod tests {
         assert_eq!(hit.len(), 2);
         assert_eq!(hit[0].name, "City", "smaller polygon must be first");
         assert_eq!(hit[1].name, "Country");
+    }
+
+    #[test]
+    fn nearest_index_finds_closest() {
+        let pl = PointLayer {
+            points: vec![
+                PlacePoint {
+                    place_id: 1,
+                    level: 1,
+                    kind: "city".into(),
+                    name: "A".into(),
+                    centroid: Coord { lon: 0.0, lat: 0.0 },
+                    admin_path: vec![],
+                },
+                PlacePoint {
+                    place_id: 2,
+                    level: 1,
+                    kind: "city".into(),
+                    name: "B".into(),
+                    centroid: Coord { lon: 5.0, lat: 5.0 },
+                    admin_path: vec![],
+                },
+                PlacePoint {
+                    place_id: 3,
+                    level: 1,
+                    kind: "city".into(),
+                    name: "C".into(),
+                    centroid: Coord {
+                        lon: 10.0,
+                        lat: 10.0,
+                    },
+                    admin_path: vec![],
+                },
+            ],
+        };
+        let idx = NearestIndex::build(pl);
+        let hits = idx.nearest_k(Coord { lon: 4.0, lat: 4.0 }, 2);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].name, "B");
+        assert_eq!(hits[1].name, "A");
     }
 
     #[test]
