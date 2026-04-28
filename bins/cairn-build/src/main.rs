@@ -228,8 +228,78 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         });
     }
 
-    // Build the text index from the full place set first; tile bucketing
-    // consumes the vec afterwards.
+    // Dedupe admin features across WoF + OSM before any downstream pass
+    // so the AdminIndex used for admin_path enrichment matches the one
+    // we eventually write.
+    let mut deduped_admin = admin_layer.take().map(|mut layer| {
+        let before = layer.features.len();
+        layer.features = cairn_spatial::dedupe_features(layer.features);
+        let after = layer.features.len();
+        if before != after {
+            tracing::info!(
+                before,
+                after,
+                dropped = before - after,
+                "admin layer deduplicated across sources"
+            );
+        }
+        layer
+    });
+
+    // Enrich admin_path via PIP. WoF places already carry a parent chain
+    // so we leave them alone; OSM-sourced cities, POIs, addresses, and
+    // admin relation polygons all enter with admin_path=[] and come out
+    // with country / region / county ancestors filled in. Same-kind and
+    // self matches are skipped.
+    if let Some(layer) = &deduped_admin {
+        let admin_idx = cairn_spatial::AdminIndex::build(layer.clone());
+
+        // Pass 1: enrich Place::admin_path (forward search, point fallback).
+        let place_kind_strs: Vec<&'static str> =
+            places.iter().map(|p| cairn_text::kind_str(p.kind)).collect();
+        let mut place_enriched = 0u64;
+        for (place, kind_str) in places.iter_mut().zip(place_kind_strs.iter()) {
+            if !place.admin_path.is_empty() {
+                continue;
+            }
+            let chain = pip_admin_chain(&admin_idx, place.centroid, kind_str, place.id.0);
+            if !chain.is_empty() {
+                place.admin_path = chain;
+                place_enriched += 1;
+            }
+        }
+        tracing::info!(enriched = place_enriched, "Place admin_path enriched");
+    }
+
+    // Pass 2: enrich AdminFeature::admin_path (reverse PIP hits) using
+    // the SAME index we just built. We need a fresh local index because
+    // mutating layer.features in place would invalidate the borrow; we
+    // collect chains first, then write them back.
+    if let Some(layer) = deduped_admin.as_mut() {
+        let admin_idx = cairn_spatial::AdminIndex::build(layer.clone());
+        let mut chains: Vec<Vec<cairn_place::PlaceId>> = Vec::with_capacity(layer.features.len());
+        for feat in &layer.features {
+            if !feat.admin_path.is_empty() {
+                chains.push(feat.admin_path.iter().map(|id| cairn_place::PlaceId(*id)).collect());
+                continue;
+            }
+            chains.push(pip_admin_chain_for_feature(&admin_idx, feat));
+        }
+        let mut admin_enriched = 0u64;
+        for (feat, chain) in layer.features.iter_mut().zip(chains.into_iter()) {
+            if feat.admin_path.is_empty() && !chain.is_empty() {
+                feat.admin_path = chain.into_iter().map(|p| p.0).collect();
+                admin_enriched += 1;
+            }
+        }
+        tracing::info!(
+            enriched = admin_enriched,
+            "AdminFeature admin_path enriched"
+        );
+    }
+
+    // Build the text index from the full (now enriched) place set first;
+    // tile bucketing consumes the vec afterwards.
     let text_dir = args.out.join("index/text");
     let docs = cairn_text::build_index(&text_dir, places.iter().cloned())
         .with_context(|| format!("building text index at {}", text_dir.display()))?;
@@ -271,18 +341,7 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     }
 
     let mut admin_tile_entries: Vec<cairn_tile::SpatialTileEntry> = Vec::new();
-    if let Some(mut layer) = admin_layer {
-        let before = layer.features.len();
-        layer.features = cairn_spatial::dedupe_features(layer.features);
-        let after = layer.features.len();
-        if before != after {
-            tracing::info!(
-                before,
-                after,
-                dropped = before - after,
-                "admin layer deduplicated across sources"
-            );
-        }
+    if let Some(layer) = deduped_admin {
         admin_tile_entries = cairn_spatial::write_admin_partitioned(&args.out, &layer)
             .with_context(|| {
                 format!("writing partitioned admin layer to {}", args.out.display())
@@ -832,6 +891,70 @@ fn cmd_info(bundle: &Path) -> Result<()> {
         println!("  - {} :: {}", s.name, s.version);
     }
     Ok(())
+}
+
+/// Numeric rank for an admin kind. Smaller = more root. Used to order
+/// chains independently of bbox area, since OSM and WoF polygons for
+/// the same admin level often have slightly different precision and
+/// area-based ordering produces inconsistent root-leaf chains.
+fn admin_kind_rank(kind: &str) -> Option<u8> {
+    match kind {
+        "country" => Some(0),
+        "region" => Some(1),
+        "county" => Some(2),
+        "city" => Some(3),
+        "district" => Some(4),
+        "neighborhood" => Some(5),
+        _ => None,
+    }
+}
+
+/// Build an admin_path for a Place from a PIP query against the admin
+/// index. Drop same-kind matches (a city shouldn't list a city-level
+/// polygon), drop unranked matches (POIs etc that shouldn't appear in
+/// admin chains), and sort root → leaf by `admin_kind_rank`.
+fn pip_admin_chain(
+    admin_idx: &cairn_spatial::AdminIndex,
+    centroid: cairn_place::Coord,
+    kind_str: &str,
+    self_id: u64,
+) -> Vec<cairn_place::PlaceId> {
+    let mut ranked: Vec<(u8, cairn_spatial::AdminFeature)> = admin_idx
+        .point_in_polygon(centroid)
+        .into_iter()
+        .filter(|f| f.place_id != self_id && f.kind != kind_str)
+        .filter_map(|f| admin_kind_rank(&f.kind).map(|r| (r, f)))
+        .collect();
+    ranked.sort_by_key(|(r, _)| *r);
+    ranked
+        .into_iter()
+        .map(|(_, f)| cairn_place::PlaceId(f.place_id))
+        .collect()
+}
+
+/// Build an admin_path for an AdminFeature. Same as `pip_admin_chain`
+/// but also enforces strict-parent semantics: drop any match whose kind
+/// rank is >= self's rank (a country can't have a region as parent).
+fn pip_admin_chain_for_feature(
+    admin_idx: &cairn_spatial::AdminIndex,
+    feat: &cairn_spatial::AdminFeature,
+) -> Vec<cairn_place::PlaceId> {
+    let self_rank = match admin_kind_rank(&feat.kind) {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let mut ranked: Vec<(u8, cairn_spatial::AdminFeature)> = admin_idx
+        .point_in_polygon(feat.centroid)
+        .into_iter()
+        .filter(|f| f.place_id != feat.place_id)
+        .filter_map(|f| admin_kind_rank(&f.kind).map(|r| (r, f)))
+        .filter(|(r, _)| *r < self_rank)
+        .collect();
+    ranked.sort_by_key(|(r, _)| *r);
+    ranked
+        .into_iter()
+        .map(|(_, f)| cairn_place::PlaceId(f.place_id))
+        .collect()
 }
 
 fn hash_file(path: &Path) -> Result<String> {
