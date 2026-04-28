@@ -9,7 +9,10 @@
 //!    nearest-k linear scan + sort cost.
 
 use cairn_place::Coord;
-use cairn_spatial::archived::{pip_archived, to_archived};
+use cairn_spatial::archived::{
+    pip_archived, pip_archived_ref, serialize_layer, to_archived, AdminTileArchive,
+    ArchivedAdminLayer,
+};
 use cairn_spatial::{AdminFeature, AdminIndex, AdminLayer, NearestIndex, PlacePoint, PointLayer};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use geo::Contains;
@@ -130,17 +133,31 @@ fn many_vertex_feature(vertex_count: usize) -> AdminFeature {
 }
 
 fn bench_pip_engines(c: &mut Criterion) {
-    // Compare ray-casting on flat ring vertices vs geo::Contains on
-    // hydrated MultiPolygon for the same shape. This is the call that
-    // gates the bincode → rkyv format flip.
+    // Compare three engines on the same 256-vertex polygon:
+    //   - geo::Contains over hydrated MultiPolygon<f64>
+    //   - pip_archived over owned ArchivedAdminFeature (deserialize-once)
+    //   - pip_archived_ref over rkyv archived form (zero-copy)
     let f = many_vertex_feature(256);
     let a = to_archived(&f);
+    let layer = ArchivedAdminLayer {
+        features: vec![a.clone()],
+    };
+    let blob = serialize_layer(&layer).unwrap();
+    let tile = AdminTileArchive::from_aligned(blob).unwrap();
+    let archived_layer = tile.archived();
+    let feat_ref = &archived_layer.features[0];
+
     let probe_in = GeoCoord { x: 0.1, y: 0.1 };
     let probe_out = GeoCoord { x: 5.0, y: 5.0 };
 
     c.bench_function("pip_archived_in", |b| {
         b.iter(|| {
             let _ = pip_archived(&a, black_box([0.1, 0.1]));
+        })
+    });
+    c.bench_function("pip_archived_ref_in", |b| {
+        b.iter(|| {
+            let _ = pip_archived_ref(feat_ref, black_box([0.1, 0.1]));
         })
     });
     c.bench_function("geo_contains_in", |b| {
@@ -151,6 +168,11 @@ fn bench_pip_engines(c: &mut Criterion) {
     c.bench_function("pip_archived_out", |b| {
         b.iter(|| {
             let _ = pip_archived(&a, black_box([5.0, 5.0]));
+        })
+    });
+    c.bench_function("pip_archived_ref_out", |b| {
+        b.iter(|| {
+            let _ = pip_archived_ref(feat_ref, black_box([5.0, 5.0]));
         })
     });
     c.bench_function("geo_contains_out", |b| {

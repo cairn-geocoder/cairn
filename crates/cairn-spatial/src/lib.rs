@@ -326,19 +326,19 @@ impl RTreeObject for TileEnvelope {
 }
 
 enum AdminTileSource {
-    Eager(Arc<archived::ArchivedAdminLayer>),
+    Eager(Arc<archived::AdminTileArchive>),
     Disk(PathBuf),
 }
 
 pub struct AdminIndex {
     slots: Vec<AdminTileSource>,
     tree: RTree<TileEnvelope>,
-    cache: Mutex<LruCache<usize, Arc<archived::ArchivedAdminLayer>>>,
+    cache: Mutex<LruCache<usize, Arc<archived::AdminTileArchive>>>,
     total_items: u64,
 }
 
 impl AdminIndex {
-    fn load_slot(&self, idx: usize) -> Arc<archived::ArchivedAdminLayer> {
+    fn load_slot(&self, idx: usize) -> Arc<archived::AdminTileArchive> {
         match &self.slots[idx] {
             AdminTileSource::Eager(arc) => arc.clone(),
             AdminTileSource::Disk(path) => {
@@ -357,27 +357,19 @@ impl AdminIndex {
     }
 }
 
-fn read_admin_tile(path: &Path) -> Arc<archived::ArchivedAdminLayer> {
-    match read_admin_tile_inner(path) {
-        Ok(layer) => Arc::new(layer),
+fn read_admin_tile(path: &Path) -> Arc<archived::AdminTileArchive> {
+    match archived::AdminTileArchive::from_path(path) {
+        Ok(t) => Arc::new(t),
         Err(err) => {
-            debug!(?err, ?path, "admin tile decode failed");
-            Arc::new(archived::ArchivedAdminLayer::default())
+            debug!(?err, ?path, "admin tile mmap+validate failed");
+            // Fallback: synthesize an empty archive so callers don't
+            // crash. An empty AdminTileArchive is built via from_aligned
+            // with a serialized empty layer.
+            let empty =
+                archived::serialize_layer(&archived::ArchivedAdminLayer::default()).unwrap();
+            Arc::new(archived::AdminTileArchive::from_aligned(empty).unwrap())
         }
     }
-}
-
-fn read_admin_tile_inner(path: &Path) -> Result<archived::ArchivedAdminLayer, archived::ArchivedError> {
-    // mmap: zero-copy file backing. memmap2's Mmap is read-only and
-    // safely sliceable. The archived deserialize step copies what it
-    // touches into owned types; subsequent PIP runs don't re-touch the
-    // mmap. We could keep the mmap alive and deref Archived* refs for
-    // true zero-copy, but the bbox prefilter shaves the per-feature
-    // cost so far that the marginal win at country scale is small —
-    // revisit at planet scale.
-    let file = std::fs::File::open(path)?;
-    let mmap = unsafe { memmap2::Mmap::map(&file)? };
-    archived::deserialize_layer(&mmap)
 }
 
 impl AdminIndex {
@@ -420,7 +412,11 @@ impl AdminIndex {
         let archived_layer = archived::ArchivedAdminLayer {
             features: archived_features,
         };
-        let slot = AdminTileSource::Eager(Arc::new(archived_layer));
+        let blob = archived::serialize_layer(&archived_layer)
+            .expect("serialize_layer infallible for in-memory data");
+        let tile = archived::AdminTileArchive::from_aligned(blob)
+            .expect("just-serialized layer must validate");
+        let slot = AdminTileSource::Eager(Arc::new(tile));
         let tree = RTree::bulk_load(vec![TileEnvelope { aabb, slot_idx: 0 }]);
         Self {
             slots: vec![slot],
@@ -483,12 +479,14 @@ impl AdminIndex {
 
     /// Reverse query: every feature whose polygon contains the point.
     /// Sorted finest-to-coarsest by bbox area (smallest first). Tiles
-    /// are loaded lazily on first touch (mmap + rkyv check + owned
-    /// deserialize). PIP runs directly on the archived ring vertices via
-    /// [`archived::pip_archived`] — `geo::Contains` over hydrated
-    /// `MultiPolygon` is no longer in the hot path. Hits hydrate to
-    /// [`AdminFeature`] only at return time.
+    /// are loaded lazily on first touch (mmap + rkyv `check_archived_root`
+    /// once, then zero-copy access on every subsequent call). PIP runs
+    /// directly on the archived ring vertices via
+    /// [`archived::pip_archived_ref`]; the runtime `MultiPolygon` /
+    /// `geo::Contains` path is gone. Hits hydrate to [`AdminFeature`]
+    /// only at return time via `Deserialize`.
     pub fn point_in_polygon(&self, coord: Coord) -> Vec<AdminFeature> {
+        use rkyv::Deserialize as RkyvDeserialize;
         let q = [coord.lon, coord.lat];
         let envelope = AABB::from_point(q);
         let candidate_idxs: Vec<usize> = self
@@ -497,36 +495,45 @@ impl AdminIndex {
             .map(|entry| entry.slot_idx)
             .collect();
 
-        let mut by_place: BTreeMap<u64, (archived::ArchivedAdminFeature, f64)> = BTreeMap::new();
+        // Collect (place_id, area) pairs for hits; defer hydration to
+        // the end so we touch the archived ring vertex array only once
+        // per PIP, and only deserialize the winners.
+        let mut hits: BTreeMap<u64, (archived::ArchivedAdminFeature, f64)> = BTreeMap::new();
         for idx in candidate_idxs {
-            let layer = self.load_slot(idx);
-            for feat in &layer.features {
-                if !archived::pip_archived(feat, q) {
+            let tile = self.load_slot(idx);
+            let layer_ref = tile.archived();
+            for feat_ref in layer_ref.features.iter() {
+                if !archived::pip_archived_ref(feat_ref, q) {
                     continue;
                 }
-                let area = archived_bbox_area(feat).unwrap_or(f64::MAX);
-                by_place
-                    .entry(feat.place_id)
+                let area = archived_ref_bbox_area(feat_ref).unwrap_or(f64::MAX);
+                let place_id = feat_ref.place_id;
+                let owned: archived::ArchivedAdminFeature =
+                    RkyvDeserialize::deserialize(feat_ref, &mut rkyv::Infallible)
+                        .expect("infallible deserializer");
+                hits.entry(place_id)
                     .and_modify(|e| {
                         if area < e.1 {
-                            *e = (feat.clone(), area);
+                            *e = (owned.clone(), area);
                         }
                     })
-                    .or_insert_with(|| (feat.clone(), area));
+                    .or_insert((owned, area));
             }
         }
-        let mut hits: Vec<(archived::ArchivedAdminFeature, f64)> = by_place.into_values().collect();
-        hits.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        hits.into_iter()
+        let mut sorted: Vec<(archived::ArchivedAdminFeature, f64)> = hits.into_values().collect();
+        sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        sorted
+            .into_iter()
             .map(|(f, _)| archived::from_archived(&f))
             .collect()
     }
 }
 
-/// Bbox area on the archived feature's first polygon. Used for the
-/// finest-first ordering at PIP return time. Returns `None` for
-/// features without geometry.
-fn archived_bbox_area(feat: &archived::ArchivedAdminFeature) -> Option<f64> {
+/// Bbox area on the archived ref's first polygon. Used for the
+/// finest-first ordering at PIP return time.
+fn archived_ref_bbox_area(
+    feat: &<archived::ArchivedAdminFeature as rkyv::Archive>::Archived,
+) -> Option<f64> {
     let bbox = feat.polygon_bboxes.first()?;
     if bbox[0].is_nan() {
         return None;

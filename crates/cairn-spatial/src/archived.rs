@@ -296,6 +296,165 @@ pub fn read_layer(path: &Path) -> Result<ArchivedAdminLayer, ArchivedError> {
     deserialize_layer(&buf)
 }
 
+// ============================================================
+// Zero-copy archived access
+// ============================================================
+
+/// Backing storage for a validated archived admin tile. Either an
+/// owned `AlignedVec` (eager-built path) or a memory-mapped file
+/// (disk path).
+enum AdminTileBytes {
+    Owned(AlignedVec),
+    Mapped(memmap2::Mmap),
+    /// Mapped-but-unaligned files re-stage into an `AlignedVec`. rkyv
+    /// requires 16-byte alignment on the payload; mmap usually
+    /// satisfies it but sufficiently weird filesystems / partial reads
+    /// can violate it, so we copy as a fallback.
+    OwnedMappedCopy(AlignedVec, #[allow(dead_code)] memmap2::Mmap),
+}
+
+/// Holds a tile's archived bytes and lets callers iterate the rkyv
+/// archived form directly, skipping the deserialize-into-owned step.
+/// Validation runs once at construction; subsequent `archived()`
+/// access uses unchecked `archived_root`, which is sound because the
+/// backing bytes are immutable for the lifetime of `Self`.
+pub struct AdminTileArchive {
+    bytes: AdminTileBytes,
+    body_offset: usize,
+    body_len: usize,
+    item_count: usize,
+}
+
+impl AdminTileArchive {
+    /// Build from an owned `AlignedVec` produced by
+    /// `serialize_layer`. The header is verified, the rkyv archive is
+    /// validated, and the body offsets are cached.
+    pub fn from_aligned(bytes: AlignedVec) -> Result<Self, ArchivedError> {
+        let (body_offset, body_len) = parse_header(&bytes, MAGIC)?;
+        let payload = &bytes[body_offset..body_offset + body_len];
+        let archived = rkyv::check_archived_root::<ArchivedAdminLayer>(payload)
+            .map_err(|e| ArchivedError::Validate(format!("{e:?}")))?;
+        let item_count = archived.features.len();
+        Ok(Self {
+            bytes: AdminTileBytes::Owned(bytes),
+            body_offset,
+            body_len,
+            item_count,
+        })
+    }
+
+    /// Build from a mmap-backed file. Falls back to an owned aligned
+    /// copy if the mmap payload isn't 16-byte aligned.
+    pub fn from_path(path: &Path) -> Result<Self, ArchivedError> {
+        let file = std::fs::File::open(path)?;
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        let (body_offset, body_len) = parse_header(&mmap, MAGIC)?;
+        let payload_ptr = unsafe { mmap.as_ptr().add(body_offset) };
+        if (payload_ptr as usize) % 16 != 0 {
+            let mut aligned = AlignedVec::with_capacity(body_len);
+            aligned.extend_from_slice(&mmap[body_offset..body_offset + body_len]);
+            let archived = rkyv::check_archived_root::<ArchivedAdminLayer>(&aligned)
+                .map_err(|e| ArchivedError::Validate(format!("{e:?}")))?;
+            let item_count = archived.features.len();
+            return Ok(Self {
+                bytes: AdminTileBytes::OwnedMappedCopy(aligned, mmap),
+                body_offset: 0,
+                body_len,
+                item_count,
+            });
+        }
+        let payload = &mmap[body_offset..body_offset + body_len];
+        let archived = rkyv::check_archived_root::<ArchivedAdminLayer>(payload)
+            .map_err(|e| ArchivedError::Validate(format!("{e:?}")))?;
+        let item_count = archived.features.len();
+        Ok(Self {
+            bytes: AdminTileBytes::Mapped(mmap),
+            body_offset,
+            body_len,
+            item_count,
+        })
+    }
+
+    fn payload(&self) -> &[u8] {
+        let raw: &[u8] = match &self.bytes {
+            AdminTileBytes::Owned(v) => v,
+            AdminTileBytes::Mapped(m) => &m[..],
+            AdminTileBytes::OwnedMappedCopy(v, _) => v,
+        };
+        &raw[self.body_offset..self.body_offset + self.body_len]
+    }
+
+    /// Zero-copy reference into the archived layer. Safe because every
+    /// constructor validates the bytes via `check_archived_root` first.
+    pub fn archived(&self) -> &<ArchivedAdminLayer as Archive>::Archived {
+        unsafe { rkyv::archived_root::<ArchivedAdminLayer>(self.payload()) }
+    }
+
+    pub fn item_count(&self) -> usize {
+        self.item_count
+    }
+}
+
+fn parse_header(raw: &[u8], expected_magic: &[u8; 4]) -> Result<(usize, usize), ArchivedError> {
+    if raw.len() < HEADER_LEN {
+        return Err(ArchivedError::Header("truncated header"));
+    }
+    if &raw[0..4] != expected_magic {
+        return Err(ArchivedError::Header("bad magic"));
+    }
+    let version = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+    if version != VERSION_RAW {
+        return Err(ArchivedError::Header("unknown version"));
+    }
+    let body_len = u64::from_le_bytes(raw[8..16].try_into().unwrap()) as usize;
+    if raw.len() < HEADER_LEN + body_len {
+        return Err(ArchivedError::Header("truncated body"));
+    }
+    Ok((HEADER_LEN, body_len))
+}
+
+/// Same algorithm as `pip_archived` but operates directly on the
+/// rkyv-archived form, skipping the runtime hydration into
+/// `ArchivedAdminFeature`. This is the zero-copy hot path used by
+/// [`AdminTileArchive::archived()`].
+pub fn pip_archived_ref(
+    feat: &<ArchivedAdminFeature as Archive>::Archived,
+    point: [f64; 2],
+) -> bool {
+    let (px, py) = (point[0], point[1]);
+    for (poly_idx, poly) in feat.polygon_rings.iter().enumerate() {
+        if poly.is_empty() {
+            continue;
+        }
+        if let Some(bbox) = feat.polygon_bboxes.get(poly_idx) {
+            if !bbox[0].is_nan() && !point_in_bbox(bbox, px, py) {
+                continue;
+            }
+        }
+        let outer_ref: &[[f64; 2]] = poly[0].as_slice();
+        if ring_crossings(outer_ref, px, py) % 2 == 0 {
+            continue;
+        }
+        let mut in_hole = false;
+        for hole_archived in poly.iter().skip(1) {
+            let hole: &[[f64; 2]] = hole_archived.as_slice();
+            if let Some(hbbox) = ring_bbox(hole) {
+                if !point_in_bbox(&hbbox, px, py) {
+                    continue;
+                }
+            }
+            if ring_crossings(hole, px, py) % 2 == 1 {
+                in_hole = true;
+                break;
+            }
+        }
+        if !in_hole {
+            return true;
+        }
+    }
+    false
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ArchivedError {
     #[error("io: {0}")]
@@ -396,6 +555,44 @@ mod tests {
             disagreements.is_empty(),
             "PIP disagreed at: {disagreements:?}"
         );
+    }
+
+    #[test]
+    fn pip_archived_ref_matches_owned() {
+        // pip_archived_ref (zero-copy on rkyv archived form) must give
+        // bit-identical answers to pip_archived (owned form).
+        let f = sample();
+        let layer = ArchivedAdminLayer {
+            features: vec![to_archived(&f)],
+        };
+        let blob = serialize_layer(&layer).unwrap();
+        let tile = AdminTileArchive::from_aligned(blob).unwrap();
+        let archived_layer = tile.archived();
+        let feat_ref = &archived_layer.features[0];
+        let owned = to_archived(&f);
+        for i in -3..=13 {
+            for j in -3..=13 {
+                let p = [i as f64 + 0.13, j as f64 + 0.27];
+                assert_eq!(
+                    pip_archived_ref(feat_ref, p),
+                    pip_archived(&owned, p),
+                    "mismatch at {p:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn admin_tile_archive_round_trips() {
+        let layer = ArchivedAdminLayer {
+            features: vec![to_archived(&sample()), to_archived(&sample())],
+        };
+        let blob = serialize_layer(&layer).unwrap();
+        let tile = AdminTileArchive::from_aligned(blob).unwrap();
+        assert_eq!(tile.item_count(), 2);
+        let arch = tile.archived();
+        assert_eq!(arch.features.len(), 2);
+        assert_eq!(arch.features[0].name.as_str(), "Atlantis");
     }
 
     #[test]

@@ -97,7 +97,20 @@ Tracks shipped phases and deferred work.
   blobs via memmap2 (`unsafe Mmap::map`) + `check_archived_root` and
   routes PIP through `pip_archived`; `geo::Contains` is no longer in
   the hot path. Manifest bumped to `schema_version = 3`. PointLayer
-  stays bincode for now (linear-scan workload doesn't benefit).
+  stays bincode (rkyv was 68 % larger on String-heavy points; linear
+  scan doesn't gain from zero-copy).
+
+  Follow-up: full zero-copy via `AdminTileArchive` + `pip_archived_ref`
+  is now wired. The slot holds a validated `Arc<AdminTileArchive>` (own
+  `AlignedVec` for eager builds, mmap'd file for disk tiles, with a
+  mmap-misaligned-payload fallback that copies into an `AlignedVec`).
+  `archived()` returns a `&Archived<ArchivedAdminLayer>` via unchecked
+  `archived_root` — sound because `check_archived_root` ran once at
+  construction. PIP iterates the archived form directly; only winners
+  hydrate to `AdminFeature` via `Deserialize` at return time. Bench
+  shows pip_archived_ref ties pip_archived (~92 ns inside, ~1.5 ns
+  outside-bbox); the real win is no per-tile heap allocation at first
+  PIP touch.
 
 Today `spatial/admin.bin` and `spatial/points.bin` are bundle-wide
 single bincode blobs read whole at startup. At country scale this
