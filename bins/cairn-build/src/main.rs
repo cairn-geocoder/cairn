@@ -5,6 +5,7 @@
 //! phases.
 
 use anyhow::{Context, Result};
+mod replication;
 use cairn_place::Place;
 use cairn_spatial::{PlacePoint, PointLayer};
 use cairn_tile::{
@@ -122,6 +123,30 @@ enum Command {
         #[arg(long)]
         tile: String,
     },
+    /// Fetch new OSM minutely diff files into `<bundle>/replication/`
+    /// and update `replication_state.toml`. Application of the diffs
+    /// to tile blobs is a separate follow-up step; this command only
+    /// stages them. Safe to run repeatedly.
+    ReplicateFetch {
+        #[arg(long)]
+        bundle: PathBuf,
+        /// Replication base URL, e.g.
+        /// `https://planet.openstreetmap.org/replication/minute`.
+        /// Required on first run; ignored afterwards (state file
+        /// remembers it).
+        #[arg(long)]
+        upstream: Option<String>,
+        /// Cap on number of diffs fetched per invocation. Default 60
+        /// (~one hour of minutely updates). Stale bundles get caught
+        /// up over multiple runs.
+        #[arg(long, default_value_t = 60)]
+        max: usize,
+    },
+    /// Print the current replication state for a bundle.
+    ReplicateStatus {
+        #[arg(long)]
+        bundle: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -178,7 +203,90 @@ fn main() -> Result<()> {
             grep,
         } => cmd_inspect_tile(&bundle, &tile, sample, grep.as_deref()),
         Command::InspectAdminTile { bundle, tile } => cmd_inspect_admin_tile(&bundle, &tile),
+        Command::ReplicateFetch {
+            bundle,
+            upstream,
+            max,
+        } => cmd_replicate_fetch(&bundle, upstream.as_deref(), max),
+        Command::ReplicateStatus { bundle } => cmd_replicate_status(&bundle),
     }
+}
+
+fn cmd_replicate_fetch(bundle: &Path, upstream_arg: Option<&str>, max: usize) -> Result<()> {
+    if !bundle.exists() {
+        anyhow::bail!("bundle does not exist: {}", bundle.display());
+    }
+    let mut state = match replication::read_state(bundle)? {
+        Some(s) => {
+            if let Some(new_url) = upstream_arg {
+                if new_url != s.upstream {
+                    tracing::info!(
+                        old = %s.upstream,
+                        new = new_url,
+                        "upstream URL change recorded"
+                    );
+                    let mut s = s;
+                    s.upstream = new_url.to_string();
+                    s
+                } else {
+                    s
+                }
+            } else {
+                s
+            }
+        }
+        None => {
+            let url = upstream_arg.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no replication state in this bundle yet — pass --upstream URL on the first run"
+                )
+            })?;
+            replication::ReplicationState::new(url.to_string())
+        }
+    };
+    let fetched = replication::fetch_pending(bundle, &mut state, max)?;
+    replication::write_state(bundle, &state)?;
+    println!(
+        "OK: fetched {} diff(s); last_fetched_seq={:?}, last_applied_seq={:?}",
+        fetched.len(),
+        state.last_fetched_seq,
+        state.last_applied_seq
+    );
+    Ok(())
+}
+
+fn cmd_replicate_status(bundle: &Path) -> Result<()> {
+    match replication::read_state(bundle)? {
+        Some(state) => {
+            println!("upstream         = {}", state.upstream);
+            println!(
+                "last_fetched_seq = {}",
+                state
+                    .last_fetched_seq
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "(none)".into())
+            );
+            println!(
+                "last_fetched_at  = {}",
+                state.last_fetched_at.as_deref().unwrap_or("(none)")
+            );
+            println!(
+                "last_applied_seq = {}",
+                state
+                    .last_applied_seq
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "(none)".into())
+            );
+            let lag = match (state.last_fetched_seq, state.last_applied_seq) {
+                (Some(f), Some(a)) => f.saturating_sub(a),
+                (Some(f), None) => f,
+                _ => 0,
+            };
+            println!("apply_lag        = {lag} diff(s)");
+        }
+        None => println!("(no replication state — run replicate-fetch --upstream URL first)"),
+    }
+    Ok(())
 }
 
 fn parse_tile_arg(spec: &str) -> Result<(Level, u32)> {

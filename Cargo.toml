@@ -74,6 +74,7 @@ flate2 = "1"
 lru = "0.12"
 criterion = "0.5"
 rayon = "1"
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 # Importers
 osmpbf = "0.3"
