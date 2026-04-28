@@ -50,6 +50,13 @@ enum Command {
         /// parent chains from WoF preferred over OSM relations).
         #[arg(long, default_value = "wof,osm,oa,geonames")]
         source_priority: String,
+        /// Douglas-Peucker simplification tolerance for admin polygons,
+        /// in METERS. 0 disables. Reasonable values: 50-200m for
+        /// admin boundaries; the user-visible difference is negligible
+        /// while bundle size typically drops 30-60% on dense
+        /// boundaries. Default 0 (off).
+        #[arg(long, default_value_t = 0.0)]
+        simplify_meters: f64,
     },
     /// Extract a regional bundle from an existing planet bundle.
     Extract {
@@ -168,6 +175,7 @@ fn main() -> Result<()> {
             bundle_id,
             zstd,
             source_priority,
+            simplify_meters,
         } => cmd_build(BuildArgs {
             osm,
             wof,
@@ -176,6 +184,7 @@ fn main() -> Result<()> {
             out,
             bundle_id,
             source_priority: parse_source_priority(&source_priority)?,
+            simplify_tolerance_deg: meters_to_degrees(simplify_meters),
             compression: if zstd {
                 TileCompression::Zstd
             } else {
@@ -419,6 +428,18 @@ struct BuildArgs {
     bundle_id: String,
     compression: TileCompression,
     source_priority: Vec<cairn_place::SourceKind>,
+    simplify_tolerance_deg: f64,
+}
+
+/// Convert a simplification tolerance from meters into degrees of
+/// lat/lon. Approximate enough — admin boundaries don't need WGS84
+/// precision for a noise-floor simplification step.
+fn meters_to_degrees(m: f64) -> f64 {
+    if m <= 0.0 {
+        0.0
+    } else {
+        m / 111_319.0
+    }
 }
 
 /// Parse the `--source-priority` CLI value: comma-separated source
@@ -705,7 +726,27 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     }
 
     let mut admin_tile_entries: Vec<cairn_tile::SpatialTileEntry> = Vec::new();
-    if let Some(layer) = deduped_admin {
+    if let Some(mut layer) = deduped_admin {
+        if args.simplify_tolerance_deg > 0.0 {
+            let before_verts: usize = layer
+                .features
+                .iter()
+                .map(|f| f.polygon.0.iter().map(|p| p.exterior().0.len()).sum::<usize>())
+                .sum();
+            cairn_spatial::simplify_admin_layer(&mut layer, args.simplify_tolerance_deg);
+            let after_verts: usize = layer
+                .features
+                .iter()
+                .map(|f| f.polygon.0.iter().map(|p| p.exterior().0.len()).sum::<usize>())
+                .sum();
+            tracing::info!(
+                tolerance_deg = args.simplify_tolerance_deg,
+                before_verts,
+                after_verts,
+                pct_kept = format!("{:.1}", after_verts as f64 / before_verts.max(1) as f64 * 100.0),
+                "admin polygons simplified"
+            );
+        }
         admin_tile_entries = cairn_spatial::write_admin_partitioned(&args.out, &layer)
             .with_context(|| {
                 format!("writing partitioned admin layer to {}", args.out.display())

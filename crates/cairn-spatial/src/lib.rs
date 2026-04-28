@@ -201,6 +201,33 @@ fn feature_better(
 }
 
 // ============================================================
+// Polygon simplification
+// ============================================================
+
+/// Apply Douglas–Peucker simplification to every AdminFeature's polygon
+/// in place. `tolerance_deg` is the maximum vertex deviation from the
+/// original ring, in degrees of latitude/longitude (no projection). At
+/// the equator, ~0.0001° ≈ 11 m, ~0.001° ≈ 111 m, ~0.01° ≈ 1.1 km.
+///
+/// Sub-meter tolerances barely shrink anything; admin boundaries don't
+/// need that resolution. Country / region / county polygons work well at
+/// 0.0005 – 0.005°. City polygons at 0.0001 – 0.0005°. Anything bigger
+/// risks visible simplification of dense urban edges.
+///
+/// Skipped when `tolerance_deg <= 0.0`. Mutates in place — callers
+/// already build the layer fresh per import, so reusing the same
+/// allocations is fine.
+pub fn simplify_admin_layer(layer: &mut AdminLayer, tolerance_deg: f64) {
+    if tolerance_deg <= 0.0 {
+        return;
+    }
+    use geo::Simplify;
+    for feat in &mut layer.features {
+        feat.polygon = feat.polygon.simplify(&tolerance_deg);
+    }
+}
+
+// ============================================================
 // Partitioned write
 // ============================================================
 
