@@ -389,6 +389,9 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         "point layer written (partitioned)"
     );
 
+    let text_files = walk_text_files(&text_dir, &args.out)?;
+    tracing::info!(count = text_files.len(), "text index files hashed");
+
     let manifest = Manifest {
         schema_version: 3,
         built_at: now_iso8601(),
@@ -397,6 +400,7 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         tiles: entries,
         admin_tiles: admin_tile_entries,
         point_tiles: point_tile_entries,
+        text_files,
     };
     let manifest_path = args.out.join("manifest.toml");
     write_manifest(&manifest_path, &manifest)?;
@@ -407,6 +411,45 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Walk the tantivy text index directory tree, hash every file with
+/// blake3, and return manifest entries with bundle-relative paths.
+/// Tantivy keeps a small flat-ish set of segment files (`meta.json`,
+/// per-segment `.term`, `.idx`, `.pos`, `.fast`, `.fieldnorm`,
+/// `.store`, etc), so a recursive walk hashes the full index footprint.
+fn walk_text_files(
+    text_dir: &Path,
+    bundle_root: &Path,
+) -> Result<Vec<cairn_tile::TextFileEntry>> {
+    let mut entries = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![text_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .with_context(|| format!("reading {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let bytes = std::fs::metadata(&path)?.len();
+            let hash = hash_file(&path)?;
+            let rel = path
+                .strip_prefix(bundle_root)
+                .with_context(|| format!("{} not under bundle root", path.display()))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            entries.push(cairn_tile::TextFileEntry {
+                rel_path: rel,
+                byte_size: bytes,
+                blake3: hash,
+            });
+        }
+    }
+    entries.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    Ok(entries)
 }
 
 fn cmd_extract(bundle: &Path, bbox_arg: &[f64], out: &Path, write_tar: bool) -> Result<()> {
@@ -519,6 +562,13 @@ fn cmd_extract(bundle: &Path, bbox_arg: &[f64], out: &Path, write_tar: bool) -> 
         tracing::info!(path = %text_dst.display(), docs, "text index rebuilt for bbox");
     }
 
+    let extract_text_dir = out.join("index/text");
+    let new_text_files = if extract_text_dir.exists() {
+        walk_text_files(&extract_text_dir, out)?
+    } else {
+        Vec::new()
+    };
+
     let new_manifest = Manifest {
         schema_version: src_manifest.schema_version,
         built_at: now_iso8601(),
@@ -527,6 +577,7 @@ fn cmd_extract(bundle: &Path, bbox_arg: &[f64], out: &Path, write_tar: bool) -> 
         tiles: new_tiles,
         admin_tiles: kept_admin_tiles,
         point_tiles: kept_point_tiles,
+        text_files: new_text_files,
     };
     let dst_manifest = out.join("manifest.toml");
     write_manifest(&dst_manifest, &new_manifest)?;
@@ -751,8 +802,9 @@ struct FileSig {
 }
 
 /// Collect every file in a manifest as `(rel_path, FileSig)`. Tile blobs
-/// live under `tiles/`, spatial files under `spatial/`. The text index
-/// directory isn't blake3-anchored in the manifest yet, so it's skipped.
+/// live under `tiles/`, spatial files under `spatial/`, and the tantivy
+/// segments live under `index/text/`. All three are blake3-anchored so
+/// the diff path can detect any byte-level corruption.
 fn collect_files(manifest: &Manifest) -> HashMap<String, FileSig> {
     let mut out = HashMap::new();
     for t in &manifest.tiles {
@@ -778,6 +830,15 @@ fn collect_files(manifest: &Manifest) -> HashMap<String, FileSig> {
         );
     }
     for e in &manifest.point_tiles {
+        out.insert(
+            e.rel_path.clone(),
+            FileSig {
+                blake3: e.blake3.clone(),
+                byte_size: e.byte_size,
+            },
+        );
+    }
+    for e in &manifest.text_files {
         out.insert(
             e.rel_path.clone(),
             FileSig {
@@ -823,10 +884,29 @@ fn cmd_verify(bundle: &Path) -> Result<()> {
 
     let manifest = read_manifest(&bundle.join("manifest.toml"))?;
 
-    // Text index: openable check (no manifest hash yet because tantivy is a
-    // multi-file directory; coverage upgrade lands when we walk segments).
+    // Text index: blake3 every segment file listed in the manifest, then
+    // open the index. A missing or corrupt file fails the verify before we
+    // ever hit the tantivy reader.
     let text_dir = bundle.join("index/text");
     let text_status = if text_dir.exists() {
+        if !manifest.text_files.is_empty() {
+            for entry in &manifest.text_files {
+                let abs = bundle.join(&entry.rel_path);
+                let actual = hash_file(&abs)?;
+                if actual != entry.blake3 {
+                    tracing::error!(
+                        path = %abs.display(),
+                        expected = %entry.blake3,
+                        actual = %actual,
+                        "blake3 mismatch on text segment"
+                    );
+                    anyhow::bail!(
+                        "text segment blake3 mismatch at {}",
+                        abs.display()
+                    );
+                }
+            }
+        }
         match cairn_text::TextIndex::open(&text_dir) {
             Ok(_) => "ok",
             Err(err) => {

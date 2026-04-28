@@ -171,6 +171,21 @@ pub struct Manifest {
     /// only on degenerate bundles with zero places.
     #[serde(default)]
     pub point_tiles: Vec<SpatialTileEntry>,
+    /// Per-file blake3 hashes for the tantivy text index segment files.
+    /// Populated by `cairn-build build` and recomputed by `cairn-build
+    /// verify` so a corrupt segment fails the integrity check.
+    #[serde(default)]
+    pub text_files: Vec<TextFileEntry>,
+}
+
+/// Manifest entry for a single tantivy index segment file. Identified
+/// by a path relative to the bundle root (e.g.
+/// `index/text/meta.json`); blake3 covers the on-disk bytes verbatim.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TextFileEntry {
+    pub rel_path: String,
+    pub byte_size: u64,
+    pub blake3: String,
 }
 
 /// Manifest entry for a single per-tile spatial file (admin polygons
@@ -556,6 +571,7 @@ mod tests {
             }],
             admin_tiles: vec![],
             point_tiles: vec![],
+            text_files: vec![],
         };
         write_manifest(&dir.join("manifest.toml"), &manifest).unwrap();
 
