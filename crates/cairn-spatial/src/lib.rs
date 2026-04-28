@@ -47,6 +47,8 @@ pub enum SpatialError {
     Io(#[from] std::io::Error),
     #[error("bincode: {0}")]
     Bincode(#[from] bincode::Error),
+    #[error("archived: {0}")]
+    Archived(String),
     #[error("unknown tile level {0}")]
     UnknownLevel(u8),
 }
@@ -178,6 +180,11 @@ pub fn dedupe_features(features: Vec<AdminFeature>) -> Vec<AdminFeature> {
 /// Write the admin layer to per-tile files under `bundle_root`. Each
 /// feature is replicated into every tile its bbox intersects so PIP
 /// queries in any of those tiles still find it.
+///
+/// On-disk format is rkyv (`cairn_spatial::archived::serialize_layer`)
+/// with a 16-byte aligned header. PIP at runtime ray-casts directly on
+/// the archived ring vertices via `pip_archived`, skipping
+/// `MultiPolygon<f64>` hydration entirely.
 pub fn write_admin_partitioned(
     bundle_root: &Path,
     layer: &AdminLayer,
@@ -221,11 +228,14 @@ pub fn write_admin_partitioned(
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let layer = AdminLayer {
-            features: feats.clone(),
+        let archived_features: Vec<archived::ArchivedAdminFeature> =
+            feats.iter().map(archived::to_archived).collect();
+        let archived_layer = archived::ArchivedAdminLayer {
+            features: archived_features,
         };
-        let bytes = bincode::serialize(&layer)?;
-        std::fs::write(&abs, &bytes)?;
+        let blob = archived::serialize_layer(&archived_layer)
+            .map_err(|e| SpatialError::Archived(format!("{e:?}")))?;
+        std::fs::write(&abs, &blob[..])?;
         let level = Level::from_u8(level_u8).ok_or(SpatialError::UnknownLevel(level_u8))?;
         let (min_lon, min_lat, max_lon, max_lat) = tile_bbox(level, tile_id);
         entries.push(SpatialTileEntry {
@@ -236,8 +246,8 @@ pub fn write_admin_partitioned(
             max_lon,
             max_lat,
             item_count: feats.len() as u64,
-            byte_size: bytes.len() as u64,
-            blake3: blake3::hash(&bytes).to_hex().to_string(),
+            byte_size: blob.len() as u64,
+            blake3: blake3::hash(&blob[..]).to_hex().to_string(),
             rel_path: rel,
         });
     }
@@ -308,19 +318,19 @@ impl RTreeObject for TileEnvelope {
 }
 
 enum AdminTileSource {
-    Eager(Arc<Vec<AdminFeature>>),
+    Eager(Arc<archived::ArchivedAdminLayer>),
     Disk(PathBuf),
 }
 
 pub struct AdminIndex {
     slots: Vec<AdminTileSource>,
     tree: RTree<TileEnvelope>,
-    cache: Mutex<LruCache<usize, Arc<Vec<AdminFeature>>>>,
+    cache: Mutex<LruCache<usize, Arc<archived::ArchivedAdminLayer>>>,
     total_items: u64,
 }
 
 impl AdminIndex {
-    fn load_slot(&self, idx: usize) -> Arc<Vec<AdminFeature>> {
+    fn load_slot(&self, idx: usize) -> Arc<archived::ArchivedAdminLayer> {
         match &self.slots[idx] {
             AdminTileSource::Eager(arc) => arc.clone(),
             AdminTileSource::Disk(path) => {
@@ -339,20 +349,27 @@ impl AdminIndex {
     }
 }
 
-fn read_admin_tile(path: &Path) -> Arc<Vec<AdminFeature>> {
-    match std::fs::read(path) {
-        Ok(bytes) => match bincode::deserialize::<AdminLayer>(&bytes) {
-            Ok(layer) => Arc::new(layer.features),
-            Err(err) => {
-                debug!(?err, ?path, "admin tile decode failed");
-                Arc::new(Vec::new())
-            }
-        },
+fn read_admin_tile(path: &Path) -> Arc<archived::ArchivedAdminLayer> {
+    match read_admin_tile_inner(path) {
+        Ok(layer) => Arc::new(layer),
         Err(err) => {
-            debug!(?err, ?path, "admin tile read failed");
-            Arc::new(Vec::new())
+            debug!(?err, ?path, "admin tile decode failed");
+            Arc::new(archived::ArchivedAdminLayer::default())
         }
     }
+}
+
+fn read_admin_tile_inner(path: &Path) -> Result<archived::ArchivedAdminLayer, archived::ArchivedError> {
+    // mmap: zero-copy file backing. memmap2's Mmap is read-only and
+    // safely sliceable. The archived deserialize step copies what it
+    // touches into owned types; subsequent PIP runs don't re-touch the
+    // mmap. We could keep the mmap alive and deref Archived* refs for
+    // true zero-copy, but the bbox prefilter shaves the per-feature
+    // cost so far that the marginal win at country scale is small —
+    // revisit at planet scale.
+    let file = std::fs::File::open(path)?;
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+    archived::deserialize_layer(&mmap)
 }
 
 impl AdminIndex {
@@ -390,7 +407,12 @@ impl AdminIndex {
             [world_bbox.min().x, world_bbox.min().y],
             [world_bbox.max().x, world_bbox.max().y],
         );
-        let slot = AdminTileSource::Eager(Arc::new(layer.features));
+        let archived_features: Vec<archived::ArchivedAdminFeature> =
+            layer.features.iter().map(archived::to_archived).collect();
+        let archived_layer = archived::ArchivedAdminLayer {
+            features: archived_features,
+        };
+        let slot = AdminTileSource::Eager(Arc::new(archived_layer));
         let tree = RTree::bulk_load(vec![TileEnvelope { aabb, slot_idx: 0 }]);
         Self {
             slots: vec![slot],
@@ -453,7 +475,11 @@ impl AdminIndex {
 
     /// Reverse query: every feature whose polygon contains the point.
     /// Sorted finest-to-coarsest by bbox area (smallest first). Tiles
-    /// are loaded lazily on first touch.
+    /// are loaded lazily on first touch (mmap + rkyv check + owned
+    /// deserialize). PIP runs directly on the archived ring vertices via
+    /// [`archived::pip_archived`] — `geo::Contains` over hydrated
+    /// `MultiPolygon` is no longer in the hot path. Hits hydrate to
+    /// [`AdminFeature`] only at return time.
     pub fn point_in_polygon(&self, coord: Coord) -> Vec<AdminFeature> {
         let q = [coord.lon, coord.lat];
         let envelope = AABB::from_point(q);
@@ -463,31 +489,41 @@ impl AdminIndex {
             .map(|entry| entry.slot_idx)
             .collect();
 
-        let probe = GeoCoord {
-            x: coord.lon,
-            y: coord.lat,
-        };
-        let mut by_place: BTreeMap<u64, (AdminFeature, f64)> = BTreeMap::new();
+        let mut by_place: BTreeMap<u64, (archived::ArchivedAdminFeature, f64)> = BTreeMap::new();
         for idx in candidate_idxs {
-            let features = self.load_slot(idx);
-            for feat in features.iter() {
-                if contains_point(&feat.polygon, probe) {
-                    let area = bbox_area(&feat.polygon).unwrap_or(f64::MAX);
-                    by_place
-                        .entry(feat.place_id)
-                        .and_modify(|e| {
-                            if area < e.1 {
-                                *e = (feat.clone(), area);
-                            }
-                        })
-                        .or_insert_with(|| (feat.clone(), area));
+            let layer = self.load_slot(idx);
+            for feat in &layer.features {
+                if !archived::pip_archived(feat, q) {
+                    continue;
                 }
+                let area = archived_bbox_area(feat).unwrap_or(f64::MAX);
+                by_place
+                    .entry(feat.place_id)
+                    .and_modify(|e| {
+                        if area < e.1 {
+                            *e = (feat.clone(), area);
+                        }
+                    })
+                    .or_insert_with(|| (feat.clone(), area));
             }
         }
-        let mut hits: Vec<(AdminFeature, f64)> = by_place.into_values().collect();
+        let mut hits: Vec<(archived::ArchivedAdminFeature, f64)> = by_place.into_values().collect();
         hits.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        hits.into_iter().map(|(f, _)| f).collect()
+        hits.into_iter()
+            .map(|(f, _)| archived::from_archived(&f))
+            .collect()
     }
+}
+
+/// Bbox area on the archived feature's first polygon. Used for the
+/// finest-first ordering at PIP return time. Returns `None` for
+/// features without geometry.
+fn archived_bbox_area(feat: &archived::ArchivedAdminFeature) -> Option<f64> {
+    let bbox = feat.polygon_bboxes.first()?;
+    if bbox[0].is_nan() {
+        return None;
+    }
+    Some((bbox[2] - bbox[0]).abs() * (bbox[3] - bbox[1]).abs())
 }
 
 // ============================================================
@@ -662,16 +698,6 @@ impl NearestIndex {
 fn bbox_of(mp: &MultiPolygon<f64>) -> Option<Rect<f64>> {
     use geo::BoundingRect;
     mp.bounding_rect()
-}
-
-fn bbox_area(mp: &MultiPolygon<f64>) -> Option<f64> {
-    let r = bbox_of(mp)?;
-    Some((r.max().x - r.min().x).abs() * (r.max().y - r.min().y).abs())
-}
-
-fn contains_point(mp: &MultiPolygon<f64>, p: GeoCoord<f64>) -> bool {
-    use geo::Contains;
-    mp.contains(&p)
 }
 
 /// Squared distance from a coord to a slot's tile bbox. 0 if inside.

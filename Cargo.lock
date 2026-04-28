@@ -497,6 +497,7 @@ dependencies = [
  "geo",
  "geo-types",
  "lru",
+ "memmap2 0.9.10",
  "rkyv",
  "rstar 0.12.2",
  "serde",

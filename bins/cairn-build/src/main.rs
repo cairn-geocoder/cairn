@@ -331,7 +331,7 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     );
 
     let manifest = Manifest {
-        schema_version: 2,
+        schema_version: 3,
         built_at: now_iso8601(),
         bundle_id: args.bundle_id,
         sources,

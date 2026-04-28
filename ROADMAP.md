@@ -83,19 +83,21 @@ Tracks shipped phases and deferred work.
 - libpostal FFI bindings (feature-gated unsafe calls): **shipped**
   (commit pending). Build prerequisites: `libpostal` C library +
   `libpostal_data download all` for the ~2 GB language model.
-- rkyv-archived AdminLayer: **scaffolded with archived PIP**
-  (`cairn_spatial::archived`): flat `ArchivedAdminFeature` with
-  `polygon_rings: Vec<Vec<Vec<[f64;2]>>>`, precomputed
-  `polygon_bboxes` for an O(1) prefilter, round-trip helpers, and a
-  16-byte aligned write/read pair sharing cairn-tile's header layout.
-  Custom `pip_archived` ray-casts directly on the flat ring vertices —
-  diff-tested against `geo::Contains` over a 17×17 probe grid;
-  benchmarks (256-vertex polygon): **128 ns inside (vs 172 ns geo,
-  25 % faster), 2.1 ns outside-bbox (vs 194 ns, 92× faster)**. Still
-  **not wired into the build** — flipping bincode → rkyv as the default
-  spatial tile format means swapping `AdminIndex` to read archived
-  blobs (mmap + zero-copy) and routing PIP through `pip_archived`.
-  That's the next concrete step.
+- rkyv-archived AdminLayer: **shipped** (`cairn_spatial::archived`).
+  Flat `ArchivedAdminFeature` with `polygon_rings:
+  Vec<Vec<Vec<[f64;2]>>>` and precomputed `polygon_bboxes` for an O(1)
+  prefilter; round-trip helpers; 16-byte aligned write/read pair
+  sharing cairn-tile's header layout. Custom `pip_archived` ray-casts
+  directly on the flat ring vertices — diff-tested against
+  `geo::Contains` across a 17×17 probe grid; benchmarks (256-vertex
+  polygon): **128 ns inside (vs 172 ns geo, 25 % faster), 2.1 ns
+  outside-bbox (vs 194 ns, 92× faster)**.
+
+  As of commit `d33444d`+1 the `AdminIndex` runtime path reads rkyv
+  blobs via memmap2 (`unsafe Mmap::map`) + `check_archived_root` and
+  routes PIP through `pip_archived`; `geo::Contains` is no longer in
+  the hot path. Manifest bumped to `schema_version = 3`. PointLayer
+  stays bincode for now (linear-scan workload doesn't benefit).
 
 Today `spatial/admin.bin` and `spatial/points.bin` are bundle-wide
 single bincode blobs read whole at startup. At country scale this
