@@ -75,6 +75,7 @@ pub fn expand(input: &str) -> Vec<String> {
     }
 }
 
+#[cfg_attr(feature = "libpostal", allow(dead_code))]
 fn heuristic_parse(input: &str) -> ParsedAddress {
     let mut out = ParsedAddress::default();
     let parts: Vec<&str> = input
@@ -129,6 +130,7 @@ fn heuristic_parse(input: &str) -> ParsedAddress {
     out
 }
 
+#[cfg_attr(feature = "libpostal", allow(dead_code))]
 fn split_leading_number(part: &str) -> (Option<String>, String) {
     let mut chars = part.chars().peekable();
     let mut num = String::new();
@@ -154,6 +156,7 @@ fn split_leading_number(part: &str) -> (Option<String>, String) {
     (Some(num), road)
 }
 
+#[cfg_attr(feature = "libpostal", allow(dead_code))]
 fn split_postcode_prefix(part: &str) -> (Option<String>, &str) {
     // Match a leading run of digits (3–8 chars) optionally followed by a
     // single letter, then a space.
@@ -176,10 +179,12 @@ fn split_postcode_prefix(part: &str) -> (Option<String>, &str) {
     (Some(postcode), remainder)
 }
 
+#[cfg_attr(feature = "libpostal", allow(dead_code))]
 fn looks_like_country(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_alphabetic() || c == ' ' || c == '.') && s.len() <= 32
 }
 
+#[cfg_attr(feature = "libpostal", allow(dead_code))]
 fn heuristic_expand(input: &str) -> String {
     let lowered = input.to_lowercase();
     let mut out = String::with_capacity(lowered.len());
@@ -208,18 +213,149 @@ fn heuristic_expand(input: &str) -> String {
     out
 }
 
+/// libpostal FFI bindings.
+///
+/// Build prerequisites (only needed when the `libpostal` feature is on):
+///   1. Install libpostal C library (`brew install libpostal` on macOS,
+///      `apt install libpostal-dev` once the package lands, or build
+///      from source: <https://github.com/openvenues/libpostal>).
+///   2. Download the language model with
+///      `libpostal_data download all $LIBPOSTAL_DATA_DIR`. ~2 GB.
+///   3. Set `LIBPOSTAL_DATA_DIR` env var at runtime to point at the
+///      installed model directory.
+///
+/// On first call, this module runs `libpostal_setup` +
+/// `libpostal_setup_parser`. Calls are guarded by `Once` so concurrent
+/// requests don't race.
 #[cfg(feature = "libpostal")]
 mod libpostal {
     use super::{ParseError, ParsedAddress};
-    // FFI integration is gated. The actual call sequence uses libpostal-sys
-    // bindings: libpostal_setup, libpostal_setup_parser,
-    // libpostal_parse_address, libpostal_address_parser_response_destroy.
-    // Wiring up the unsafe blocks lands in a follow-up commit.
-    pub(super) fn parse(_input: &str) -> Result<ParsedAddress, ParseError> {
-        Err(ParseError::NotInitialized)
+    use libpostal_sys::{
+        libpostal_address_parser_response_destroy, libpostal_expand_address,
+        libpostal_expansion_array_destroy, libpostal_get_address_parser_default_options,
+        libpostal_get_default_options, libpostal_parse_address, libpostal_setup,
+        libpostal_setup_language_classifier, libpostal_setup_parser, libpostal_teardown,
+        libpostal_teardown_language_classifier, libpostal_teardown_parser,
+    };
+    use std::ffi::{CStr, CString};
+    use std::os::raw::{c_char, c_void};
+    use std::sync::Once;
+
+    static INIT_PARSER: Once = Once::new();
+    static INIT_NORMALIZER: Once = Once::new();
+    static mut PARSER_OK: bool = false;
+    static mut NORMALIZER_OK: bool = false;
+
+    fn ensure_parser() -> bool {
+        // SAFETY: libpostal_setup + libpostal_setup_parser may only be
+        // called once per process. `Once` guarantees that. After the
+        // initial call the module-static `PARSER_OK` is read-only and
+        // safe to read concurrently.
+        unsafe {
+            INIT_PARSER.call_once(|| {
+                if libpostal_setup() && libpostal_setup_parser() {
+                    PARSER_OK = true;
+                    register_teardown();
+                }
+            });
+            PARSER_OK
+        }
     }
-    pub(super) fn expand(_input: &str) -> Vec<String> {
-        Vec::new()
+
+    fn ensure_normalizer() -> bool {
+        unsafe {
+            INIT_NORMALIZER.call_once(|| {
+                if libpostal_setup() && libpostal_setup_language_classifier() {
+                    NORMALIZER_OK = true;
+                    register_teardown();
+                }
+            });
+            NORMALIZER_OK
+        }
+    }
+
+    fn register_teardown() {
+        // libpostal_setup is reference-counted across setup_* helpers,
+        // so calling teardown* on shutdown matches. We register the
+        // process-exit hook once via `atexit`.
+        extern "C" fn shutdown() {
+            unsafe {
+                libpostal_teardown_parser();
+                libpostal_teardown_language_classifier();
+                libpostal_teardown();
+            }
+        }
+        unsafe {
+            libc_atexit(shutdown);
+        }
+    }
+
+    extern "C" {
+        fn atexit(cb: extern "C" fn()) -> i32;
+    }
+    unsafe fn libc_atexit(cb: extern "C" fn()) {
+        atexit(cb);
+    }
+
+    pub(super) fn parse(input: &str) -> Result<ParsedAddress, ParseError> {
+        if !ensure_parser() {
+            return Err(ParseError::NotInitialized);
+        }
+        let c_input = CString::new(input).map_err(|_| ParseError::Empty)?;
+        let mut out = ParsedAddress::default();
+        unsafe {
+            let opts = libpostal_get_address_parser_default_options();
+            let resp = libpostal_parse_address(c_input.as_ptr() as *mut c_char, opts);
+            if resp.is_null() {
+                return Err(ParseError::NotInitialized);
+            }
+            let r = &*resp;
+            let n = r.num_components as usize;
+            for i in 0..n {
+                let comp = CStr::from_ptr(*r.components.add(i))
+                    .to_string_lossy()
+                    .into_owned();
+                let label = CStr::from_ptr(*r.labels.add(i)).to_string_lossy();
+                match label.as_ref() {
+                    "house_number" => out.house_number = Some(comp),
+                    "road" => out.road = Some(comp),
+                    "unit" => out.unit = Some(comp),
+                    "postcode" => out.postcode = Some(comp),
+                    "city" | "city_district" => out.city = Some(comp),
+                    "state" | "state_district" => out.state = Some(comp),
+                    "country" | "country_region" => out.country = Some(comp),
+                    _ => {}
+                }
+            }
+            libpostal_address_parser_response_destroy(resp as *mut c_void as *mut _);
+        }
+        Ok(out)
+    }
+
+    pub(super) fn expand(input: &str) -> Vec<String> {
+        if !ensure_normalizer() {
+            return Vec::new();
+        }
+        let c_input = match CString::new(input) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        unsafe {
+            let opts = libpostal_get_default_options();
+            let mut n: libpostal_sys::size_t = 0;
+            let arr = libpostal_expand_address(c_input.as_ptr() as *mut c_char, opts, &mut n);
+            if arr.is_null() {
+                return Vec::new();
+            }
+            let count = n as usize;
+            let mut out = Vec::with_capacity(count);
+            for i in 0..count {
+                let s = CStr::from_ptr(*arr.add(i)).to_string_lossy().into_owned();
+                out.push(s);
+            }
+            libpostal_expansion_array_destroy(arr, n);
+            out
+        }
     }
 }
 

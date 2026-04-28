@@ -75,8 +75,19 @@ Tracks shipped phases and deferred work.
 
 ### Phase 6c — Per-tile spatial partitioning + mmap rkyv
 
-**Status:** scoped, not implemented. Long pole is rkyv-archiving
-`MultiPolygon<f64>`, since `geo_types` doesn't derive `Archive`.
+**Status:**
+- Per-tile partitioning + lazy load via `OnceLock` + LRU eviction:
+  **shipped** (commit `aa4142b`).
+- Differential tile updates (`cairn-build diff`/`apply`):
+  **shipped** (commit `78d8fa1`).
+- libpostal FFI bindings (feature-gated unsafe calls): **shipped**
+  (commit pending). Build prerequisites: `libpostal` C library +
+  `libpostal_data download all` for the ~2 GB language model.
+- rkyv-archived AdminLayer: **deferred**. Long pole is the second half:
+  point-in-polygon directly against archived ring data. Without that,
+  switching the file format from bincode → rkyv pays the conversion
+  cost back at PIP time and nets zero. Format change waits until the
+  custom PIP-on-archived implementation lands; both flip together.
 
 Today `spatial/admin.bin` and `spatial/points.bin` are bundle-wide
 single bincode blobs read whole at startup. At country scale this
