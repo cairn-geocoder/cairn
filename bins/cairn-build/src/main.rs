@@ -9,7 +9,7 @@ use cairn_place::Place;
 use cairn_spatial::{AdminLayer, PlacePoint, PointLayer};
 use cairn_tile::{
     bbox_contains, bbox_intersects, bucket_places, read_manifest, verify_bundle, write_manifest,
-    write_tile, Level, Manifest, SourceVersion, TileCoord, TileEntry,
+    write_tile, Level, Manifest, SourceVersion, TileCompression, TileCoord, TileEntry,
 };
 use clap::{Parser, Subcommand};
 use std::collections::{BTreeMap, HashMap};
@@ -39,6 +39,10 @@ enum Command {
         out: PathBuf,
         #[arg(long, default_value = "alpha-bundle")]
         bundle_id: String,
+        /// Compress every tile blob with zstd. Smaller bundle on disk
+        /// at the cost of a tiny CPU hit on first read.
+        #[arg(long)]
+        zstd: bool,
     },
     /// Extract a regional bundle from an existing planet bundle.
     Extract {
@@ -48,6 +52,10 @@ enum Command {
         bbox: Vec<f64>,
         #[arg(long)]
         out: PathBuf,
+        /// After extracting, write a `<out>.tar.gz` archive of the
+        /// resulting bundle directory and remove the staging directory.
+        #[arg(long)]
+        tar: bool,
     },
     /// Verify bundle integrity against its manifest.
     Verify {
@@ -78,6 +86,7 @@ fn main() -> Result<()> {
             geonames,
             out,
             bundle_id,
+            zstd,
         } => cmd_build(BuildArgs {
             osm,
             wof,
@@ -85,8 +94,18 @@ fn main() -> Result<()> {
             geonames,
             out,
             bundle_id,
+            compression: if zstd {
+                TileCompression::Zstd
+            } else {
+                TileCompression::None
+            },
         }),
-        Command::Extract { bundle, bbox, out } => cmd_extract(&bundle, &bbox, &out),
+        Command::Extract {
+            bundle,
+            bbox,
+            out,
+            tar,
+        } => cmd_extract(&bundle, &bbox, &out, tar),
         Command::Verify { bundle } => cmd_verify(&bundle),
         Command::Info { bundle } => cmd_info(&bundle),
     }
@@ -99,6 +118,7 @@ struct BuildArgs {
     geonames: Option<PathBuf>,
     out: PathBuf,
     bundle_id: String,
+    compression: TileCompression,
 }
 
 fn cmd_build(args: BuildArgs) -> Result<()> {
@@ -210,13 +230,14 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     for (_key, (coord, tile_places)) in sorted {
         let path = args.out.join(coord.relative_path());
         let count = tile_places.len() as u32;
-        let (hash, size) = write_tile(&path, &tile_places)?;
+        let (hash, size) = write_tile(&path, &tile_places, args.compression)?;
         entries.push(TileEntry {
             level: coord.level.as_u8(),
             tile_id: coord.id(),
             blake3: hash,
             byte_size: size,
             place_count: count,
+            compression: args.compression,
         });
     }
 
@@ -301,7 +322,7 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_extract(bundle: &Path, bbox_arg: &[f64], out: &Path) -> Result<()> {
+fn cmd_extract(bundle: &Path, bbox_arg: &[f64], out: &Path, write_tar: bool) -> Result<()> {
     if bbox_arg.len() != 4 {
         anyhow::bail!("--bbox needs 4 values: MIN_LON MIN_LAT MAX_LON MAX_LAT");
     }
@@ -433,12 +454,49 @@ fn cmd_extract(bundle: &Path, bbox_arg: &[f64], out: &Path) -> Result<()> {
         "extract manifest written"
     );
 
-    println!(
-        "OK: extracted {} tiles to {}",
-        new_manifest.tiles.len(),
-        out.display()
-    );
+    if write_tar {
+        let archive_path = out.with_extension("tar.gz");
+        let bytes = write_tar_gz(out, &archive_path)
+            .with_context(|| format!("writing tar archive {}", archive_path.display()))?;
+        std::fs::remove_dir_all(out)
+            .with_context(|| format!("removing staging dir {}", out.display()))?;
+        tracing::info!(
+            path = %archive_path.display(),
+            bytes,
+            "tar.gz archive written; staging directory removed"
+        );
+        println!(
+            "OK: extracted {} tiles → {} ({:.1} MB)",
+            new_manifest.tiles.len(),
+            archive_path.display(),
+            bytes as f64 / 1_048_576.0,
+        );
+    } else {
+        println!(
+            "OK: extracted {} tiles to {}",
+            new_manifest.tiles.len(),
+            out.display()
+        );
+    }
     Ok(())
+}
+
+/// Tar + gzip the given directory tree.
+fn write_tar_gz(src_dir: &Path, dst: &Path) -> Result<u64> {
+    use flate2::{write::GzEncoder, Compression};
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let f = std::fs::File::create(dst)?;
+    let gz = GzEncoder::new(f, Compression::default());
+    let mut tar = tar::Builder::new(gz);
+    let inner = src_dir
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("source has no file name"))?;
+    tar.append_dir_all(inner, src_dir)?;
+    tar.finish()?;
+    let len = std::fs::metadata(dst)?.len();
+    Ok(len)
 }
 
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {

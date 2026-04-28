@@ -476,6 +476,9 @@ fn interpolate_way_addresses(
     };
     let way_street = tag_value(&tags, "addr:street").map(str::to_string);
     let refs: Vec<i64> = way.refs().collect();
+    if refs.len() < 2 {
+        return;
+    }
     let synth = interpolate_addresses(
         interpolation,
         &refs,
@@ -528,8 +531,13 @@ struct InterpolatedAddress {
     centroid: Coord,
 }
 
-/// Pure logic for `addr:interpolation` expansion. Separated from the
-/// `Way` reader so it's unit-testable without an osmpbf fixture.
+/// Pure logic for `addr:interpolation` expansion. Walks the way's
+/// polyline by cumulative arc length so multi-segment ways place
+/// synthetic addresses at the right fraction along the path, not just
+/// linearly between the two endpoints.
+///
+/// Separated from the `Way` reader so it's unit-testable without an
+/// osmpbf fixture.
 fn interpolate_addresses(
     interpolation: &str,
     refs: &[i64],
@@ -537,10 +545,11 @@ fn interpolate_addresses(
     node_addrs: &NodeAddrs,
     way_street: Option<&str>,
 ) -> Vec<InterpolatedAddress> {
-    if refs.len() != 2 {
+    if refs.len() < 2 {
         return Vec::new();
     }
-    let (start_id, end_id) = (refs[0], refs[1]);
+    let start_id = *refs.first().unwrap();
+    let end_id = *refs.last().unwrap();
     let start_addr = match node_addrs.get(&start_id) {
         Some(a) => a,
         None => return Vec::new(),
@@ -565,23 +574,35 @@ fn interpolate_addresses(
         "all" | "1" => 1,
         _ => return Vec::new(),
     };
-    let start_coord = match node_coords.get(&start_id) {
-        Some(c) => *c,
-        None => return Vec::new(),
-    };
-    let end_coord = match node_coords.get(&end_id) {
-        Some(c) => *c,
-        None => return Vec::new(),
-    };
-    let (lo, hi, lo_coord, hi_coord) = if start_num <= end_num {
-        (start_num, end_num, start_coord, end_coord)
-    } else {
-        (end_num, start_num, end_coord, start_coord)
-    };
-    let total_span = (hi - lo) as f64;
-    if total_span <= 0.0 {
-        return Vec::new();
+
+    // Resolve every node coord; if any are missing, drop the whole way.
+    let mut polyline: Vec<[f64; 2]> = Vec::with_capacity(refs.len());
+    for id in refs {
+        match node_coords.get(id) {
+            Some(c) => polyline.push(*c),
+            None => return Vec::new(),
+        }
     }
+    if start_num > end_num {
+        polyline.reverse();
+    }
+    let (lo, hi) = (start_num.min(end_num), start_num.max(end_num));
+
+    // Cumulative arc length per node in the (now lo→hi) order. Planar
+    // approximation is fine for the short distances admin ways cover;
+    // any error in lon/lat space affects all positions equally and the
+    // fractional coordinates still land sensibly along the polyline.
+    let mut cum: Vec<f64> = Vec::with_capacity(polyline.len());
+    cum.push(0.0);
+    for w in polyline.windows(2) {
+        let dx = w[1][0] - w[0][0];
+        let dy = w[1][1] - w[0][1];
+        let last = *cum.last().unwrap();
+        cum.push(last + (dx * dx + dy * dy).sqrt());
+    }
+    let total = *cum.last().unwrap();
+    let span = (hi - lo) as f64;
+
     let street = way_street
         .map(str::to_string)
         .or_else(|| start_addr.street.clone())
@@ -596,9 +617,29 @@ fn interpolate_addresses(
             n += 1;
             continue;
         }
-        let t = (n - lo) as f64 / total_span;
-        let lon = lo_coord[0] + t * (hi_coord[0] - lo_coord[0]);
-        let lat = lo_coord[1] + t * (hi_coord[1] - lo_coord[1]);
+        let t = (n - lo) as f64 / span;
+        let (lon, lat) = if total > 0.0 {
+            // Find the segment whose cumulative length brackets `target`.
+            let target = t * total;
+            let seg_idx = cum
+                .windows(2)
+                .position(|w| target >= w[0] && target <= w[1])
+                .unwrap_or(cum.len() - 2);
+            let seg_start = cum[seg_idx];
+            let seg_end = cum[seg_idx + 1];
+            let seg_t = if seg_end > seg_start {
+                (target - seg_start) / (seg_end - seg_start)
+            } else {
+                0.0
+            };
+            let a = polyline[seg_idx];
+            let b = polyline[seg_idx + 1];
+            (a[0] + seg_t * (b[0] - a[0]), a[1] + seg_t * (b[1] - a[1]))
+        } else {
+            // Degenerate polyline (all coords equal); place every synth
+            // address at the start coord.
+            (polyline[0][0], polyline[0][1])
+        };
         let display_name = match street.as_deref() {
             Some(s) => format!("{n} {s}"),
             None => n.to_string(),
@@ -949,6 +990,46 @@ mod tests {
         let synth = interpolate_addresses("all", &[1, 2], &coords, &addrs, None);
         let nums: Vec<&str> = synth.iter().map(|s| s.housenumber.as_str()).collect();
         assert_eq!(nums, vec!["2", "3", "4"]);
+    }
+
+    #[test]
+    fn interpolation_multi_segment_arc_length() {
+        // L-shaped polyline: (0,0) → (10,0) → (10,10). Total length 20.
+        // Numbers 1..=11 odd: 1, 3, 5, 7, 9, 11 → endpoints + 4 synth.
+        // Synth #5 sits at fraction 4/10 = 0.4, arc target 0.4*20 = 8.0
+        // → still in first segment (0..10), so y=0, x=8.0.
+        // Synth #9 sits at fraction 8/10 = 0.8, arc target 16.0 → second
+        // segment (length 10), fraction 0.6 along → x=10, y=6.0.
+        let mut coords: NodeCoords = HashMap::new();
+        coords.insert(1, [0.0, 0.0]);
+        coords.insert(2, [10.0, 0.0]);
+        coords.insert(3, [10.0, 10.0]);
+        let mut addrs: NodeAddrs = HashMap::new();
+        addrs.insert(
+            1,
+            NodeAddr {
+                housenumber: "1".into(),
+                street: None,
+            },
+        );
+        addrs.insert(
+            3,
+            NodeAddr {
+                housenumber: "11".into(),
+                street: None,
+            },
+        );
+        let synth = interpolate_addresses("odd", &[1, 2, 3], &coords, &addrs, None);
+        let nums: Vec<&str> = synth.iter().map(|s| s.housenumber.as_str()).collect();
+        assert_eq!(nums, vec!["3", "5", "7", "9"]);
+
+        let five = synth.iter().find(|s| s.housenumber == "5").unwrap();
+        assert!((five.centroid.lon - 8.0).abs() < 1e-6);
+        assert!(five.centroid.lat.abs() < 1e-6);
+
+        let nine = synth.iter().find(|s| s.housenumber == "9").unwrap();
+        assert!((nine.centroid.lon - 10.0).abs() < 1e-6);
+        assert!((nine.centroid.lat - 6.0).abs() < 1e-6);
     }
 
     #[test]

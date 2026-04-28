@@ -69,6 +69,8 @@ geo-types = { version = "0.7", features = ["serde"] }
 rstar = "0.12"
 geojson = "0.24"
 bincode = "1"
+tar = "0.4"
+flate2 = "1"
 
 # Importers
 osmpbf = "0.3"

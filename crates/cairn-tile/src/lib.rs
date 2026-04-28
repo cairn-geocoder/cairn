@@ -19,15 +19,29 @@ use rkyv::Deserialize as RkyvDeserialize;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use thiserror::Error;
 
 pub const TILE_MAGIC: &[u8; 8] = b"CAIRN-T1";
-pub const TILE_FORMAT_VERSION: u32 = 1;
+/// Version 1: raw rkyv payload after the header.
+pub const TILE_FORMAT_VERSION_RAW: u32 = 1;
+/// Version 2: zstd-compressed rkyv payload after the header.
+pub const TILE_FORMAT_VERSION_ZSTD: u32 = 2;
+/// Latest supported tile-format version. Writers default to this; readers
+/// accept any known version.
+pub const TILE_FORMAT_VERSION: u32 = TILE_FORMAT_VERSION_RAW;
 /// Header is padded to 16 bytes so that the rkyv payload that follows is
 /// 16-aligned when the file is read into an `AlignedVec`.
 pub const HEADER_LEN: usize = 16;
+
+/// Compression scheme applied to a tile blob payload.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TileCompression {
+    #[default]
+    None,
+    Zstd,
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Level {
@@ -169,6 +183,15 @@ pub struct TileEntry {
     pub blake3: String,
     pub byte_size: u64,
     pub place_count: u32,
+    /// Compression scheme applied to the tile payload (default `None`
+    /// means raw rkyv bytes — preserves backward compatibility with v1
+    /// bundles that don't carry this field).
+    #[serde(default, skip_serializing_if = "is_compression_none")]
+    pub compression: TileCompression,
+}
+
+fn is_compression_none(c: &TileCompression) -> bool {
+    matches!(c, TileCompression::None)
 }
 
 /// Manifest entry for a single-file bundle artifact (admin polygons,
@@ -214,28 +237,42 @@ pub fn bucket_places(level: Level, places: Vec<Place>) -> HashMap<TileCoord, Vec
     map
 }
 
-/// Encode a tile blob to bytes (header + rkyv payload).
-pub fn encode_tile(places: &[Place]) -> Result<Vec<u8>, TileError> {
+/// Encode a tile blob to bytes (header + payload). Compression is opt-in
+/// via the `compression` argument; the version word in the header marks
+/// which scheme was used so readers can dispatch correctly.
+pub fn encode_tile(places: &[Place], compression: TileCompression) -> Result<Vec<u8>, TileError> {
     let mut serializer = AllocSerializer::<4096>::default();
     serializer
         .serialize_value(&places.to_vec())
         .map_err(|e| TileError::RkyvSerialize(format!("{e:?}")))?;
-    let payload = serializer.into_serializer().into_inner();
+    let raw = serializer.into_serializer().into_inner();
+
+    let (version, payload) = match compression {
+        TileCompression::None => (TILE_FORMAT_VERSION_RAW, raw.to_vec()),
+        TileCompression::Zstd => {
+            let compressed = zstd::stream::encode_all(raw.as_slice(), 0)?;
+            (TILE_FORMAT_VERSION_ZSTD, compressed)
+        }
+    };
 
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
     out.extend_from_slice(TILE_MAGIC);
-    out.extend_from_slice(&TILE_FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&[0u8; 4]); // padding to 16-byte alignment
     out.extend_from_slice(&payload);
     Ok(out)
 }
 
 /// Write a tile blob to disk; return blake3 hex digest + byte size.
-pub fn write_tile(path: &Path, places: &[Place]) -> Result<(String, u64), TileError> {
+pub fn write_tile(
+    path: &Path,
+    places: &[Place],
+    compression: TileCompression,
+) -> Result<(String, u64), TileError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let bytes = encode_tile(places)?;
+    let bytes = encode_tile(places, compression)?;
     let hash = blake3::hash(&bytes).to_hex().to_string();
     let len = bytes.len() as u64;
     let mut f = File::create(path)?;
@@ -249,18 +286,8 @@ pub fn write_tile(path: &Path, places: &[Place]) -> Result<(String, u64), TileEr
 /// Phase 1 deserializes eagerly; Phase 3 will switch reverse-geocoding
 /// hot paths to mmap + zero-copy archived access.
 pub fn read_tile(path: &Path) -> Result<Vec<Place>, TileError> {
-    let mut f = File::open(path)?;
-    let metadata = f.metadata()?;
-    let mut buf = rkyv::AlignedVec::with_capacity(metadata.len() as usize);
-    let mut tmp = vec![0u8; 64 * 1024];
-    loop {
-        let n = f.read(&mut tmp)?;
-        if n == 0 {
-            break;
-        }
-        buf.extend_from_slice(&tmp[..n]);
-    }
-    decode_tile(&buf, path)
+    let bytes = std::fs::read(path)?;
+    decode_tile(&bytes, path)
 }
 
 fn decode_tile(bytes: &[u8], path: &Path) -> Result<Vec<Place>, TileError> {
@@ -273,11 +300,26 @@ fn decode_tile(bytes: &[u8], path: &Path) -> Result<Vec<Place>, TileError> {
     let mut v = [0u8; 4];
     v.copy_from_slice(&bytes[8..12]);
     let version = u32::from_le_bytes(v);
-    if version != TILE_FORMAT_VERSION {
-        return Err(TileError::BadVersion(version));
-    }
     let payload = &bytes[HEADER_LEN..];
-    let archived = rkyv::check_archived_root::<Vec<Place>>(payload)
+
+    // Decompress (if needed) into an AlignedVec so rkyv's check sees the
+    // 16-byte alignment it requires.
+    let aligned = match version {
+        TILE_FORMAT_VERSION_RAW => {
+            let mut out = rkyv::AlignedVec::with_capacity(payload.len());
+            out.extend_from_slice(payload);
+            out
+        }
+        TILE_FORMAT_VERSION_ZSTD => {
+            let raw = zstd::stream::decode_all(payload)?;
+            let mut out = rkyv::AlignedVec::with_capacity(raw.len());
+            out.extend_from_slice(&raw);
+            out
+        }
+        _ => return Err(TileError::BadVersion(version)),
+    };
+
+    let archived = rkyv::check_archived_root::<Vec<Place>>(&aligned)
         .map_err(|e| TileError::RkyvValidate(format!("{e:?}")))?;
     let places: Vec<Place> =
         RkyvDeserialize::<Vec<Place>, _>::deserialize(archived, &mut rkyv::Infallible)
@@ -426,7 +468,7 @@ mod tests {
         let coord = TileCoord::from_coord(Level::L1, vaduz().centroid);
         let path = dir.join(coord.relative_path());
         let places = vec![vaduz()];
-        let (hash, size) = write_tile(&path, &places).unwrap();
+        let (hash, size) = write_tile(&path, &places, TileCompression::None).unwrap();
         assert!(size > HEADER_LEN as u64);
         assert_eq!(hash.len(), 64);
 
@@ -436,12 +478,46 @@ mod tests {
     }
 
     #[test]
+    fn tile_zstd_roundtrip_smaller_than_raw() {
+        let dir = tempdir_for_test();
+        // Build a non-trivial tile: 50 copies of vaduz with longer names.
+        let big: Vec<Place> = (0..50)
+            .map(|i| {
+                let mut p = vaduz();
+                p.id = PlaceId::new(1, 100, i).unwrap();
+                p.names = vec![cairn_place::LocalizedName {
+                    lang: "default".into(),
+                    value: format!("Vaduz alias number {i:04} for compression"),
+                }];
+                p
+            })
+            .collect();
+        let coord = TileCoord::from_coord(Level::L1, vaduz().centroid);
+        let raw_path = dir.join("raw.bin");
+        let zst_path = dir.join("zst.bin");
+        let (_, raw_size) = write_tile(&raw_path, &big, TileCompression::None).unwrap();
+        let (_, zst_size) = write_tile(&zst_path, &big, TileCompression::Zstd).unwrap();
+        assert!(
+            zst_size < raw_size,
+            "expected zstd to compress; raw={raw_size} zst={zst_size}"
+        );
+        // Read both back; they must yield identical Place lists.
+        let raw_back = read_tile(&raw_path).unwrap();
+        let zst_back = read_tile(&zst_path).unwrap();
+        assert_eq!(raw_back.len(), 50);
+        assert_eq!(zst_back.len(), 50);
+        assert_eq!(raw_back[0].names[0].value, zst_back[0].names[0].value);
+        // Quiet unused-coord warning when tests evolve.
+        let _ = coord;
+    }
+
+    #[test]
     fn manifest_verify_detects_corruption() {
         let dir = tempdir_for_test();
         let coord = TileCoord::from_coord(Level::L1, vaduz().centroid);
         let path = dir.join(coord.relative_path());
         let places = vec![vaduz()];
-        let (hash, size) = write_tile(&path, &places).unwrap();
+        let (hash, size) = write_tile(&path, &places, TileCompression::None).unwrap();
 
         let manifest = Manifest {
             schema_version: 1,
@@ -454,6 +530,7 @@ mod tests {
                 blake3: hash.clone(),
                 byte_size: size,
                 place_count: places.len() as u32,
+                compression: TileCompression::None,
             }],
             admin: None,
             points: None,

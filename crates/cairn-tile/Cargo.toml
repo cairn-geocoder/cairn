@@ -17,3 +17,4 @@ thiserror = { workspace = true }
 blake3 = { workspace = true }
 rkyv = { workspace = true }
 memmap2 = { workspace = true }
+zstd = { workspace = true }
