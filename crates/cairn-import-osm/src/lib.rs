@@ -110,29 +110,24 @@ pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
         "pass 2a done"
     );
 
-    info!("OSM PBF pass 2b: ways + interpolation + admin relations");
+    info!("OSM PBF pass 2b1: parallel way-place emit + way_nodes register");
+    let (way_places, way_nodes, way_counters) =
+        parallel_way_places(pbf_path, &node_coords, &node_addrs)?;
+    places.extend(way_places);
+    counters.merge(way_counters);
+    info!(
+        ways_seen = counters.ways_seen,
+        ways_emitted = counters.ways_emitted,
+        way_nodes = way_nodes.len(),
+        "pass 2b1 done"
+    );
+
+    info!("OSM PBF pass 2b2: sequential admin relations (small volume)");
     let mut admin_features: Vec<AdminFeature> = Vec::new();
     let mut admin_local_counters: HashMap<(u8, u32), u64> = HashMap::new();
-    let mut way_nodes: WayNodes = HashMap::new();
-    let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
     let reader = ElementReader::from_path(pbf_path)?;
-    reader.for_each(|element| match element {
-        Element::Way(w) => {
-            counters.ways_seen += 1;
-            way_nodes.insert(w.id(), w.refs().collect());
-            if let Some(p) = way_to_place(&w, &node_coords, &mut local_counters, &mut counters) {
-                places.push(p);
-            }
-            interpolate_way_addresses(
-                &w,
-                &node_coords,
-                &node_addrs,
-                &mut local_counters,
-                &mut counters,
-                &mut places,
-            );
-        }
-        Element::Relation(r) => {
+    reader.for_each(|element| {
+        if let Element::Relation(r) = element {
             counters.relations_seen += 1;
             if let Some(feat) = relation_to_admin(
                 &r,
@@ -144,8 +139,6 @@ pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
                 admin_features.push(feat);
             }
         }
-        // Nodes already handled in parallel pass 2a; ignore here.
-        _ => {}
     })?;
 
     // Renumber to deterministic, collision-free PlaceIds. Pass 2a's
@@ -235,6 +228,81 @@ fn parallel_node_places(pbf_path: &Path) -> Result<(Vec<Place>, Counters), Impor
                     av.extend(bv);
                     ac.merge(bc);
                     Ok((av, ac))
+                }
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            },
+        )
+}
+
+/// Block-level parallel emit of Places from `Element::Way` (named
+/// highways, addr:interpolation synthetic addresses) AND population
+/// of the per-block `WayNodes` map needed by relation assembly.
+///
+/// Each block runs independently; merging is a Vec extend + a
+/// `HashMap::extend` (smaller into larger to minimize rehash). At
+/// planet scale the way pass is a meaningful fraction of import
+/// wall-clock — every named highway in OSM passes through here, plus
+/// every `addr:interpolation` way arc-length expansion.
+fn parallel_way_places(
+    pbf_path: &Path,
+    node_coords: &NodeCoords,
+    node_addrs: &NodeAddrs,
+) -> Result<(Vec<Place>, WayNodes, Counters), ImportError> {
+    let blob_reader = BlobReader::from_path(pbf_path)?;
+    blob_reader
+        .par_bridge()
+        .map(
+            |blob| -> Result<(Vec<Place>, WayNodes, Counters), ImportError> {
+                let blob = blob?;
+                match blob.decode()? {
+                    BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
+                        Ok((Vec::new(), HashMap::new(), Counters::default()))
+                    }
+                    BlobDecode::OsmData(block) => {
+                        let mut places = Vec::new();
+                        let mut way_nodes: WayNodes = HashMap::new();
+                        let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
+                        let mut counters = Counters::default();
+                        for elem in block.elements() {
+                            if let Element::Way(w) = elem {
+                                counters.ways_seen += 1;
+                                way_nodes.insert(w.id(), w.refs().collect());
+                                if let Some(p) = way_to_place(
+                                    &w,
+                                    node_coords,
+                                    &mut local_counters,
+                                    &mut counters,
+                                ) {
+                                    places.push(p);
+                                }
+                                interpolate_way_addresses(
+                                    &w,
+                                    node_coords,
+                                    node_addrs,
+                                    &mut local_counters,
+                                    &mut counters,
+                                    &mut places,
+                                );
+                            }
+                        }
+                        Ok((places, way_nodes, counters))
+                    }
+                }
+            },
+        )
+        .reduce(
+            || Ok((Vec::new(), HashMap::new(), Counters::default())),
+            |a, b| match (a, b) {
+                (Ok((mut ap, aw, mut ac)), Ok((bp, bw, bc))) => {
+                    ap.extend(bp);
+                    let (mut big_w, small_w) = if aw.len() >= bw.len() {
+                        (aw, bw)
+                    } else {
+                        (bw, aw)
+                    };
+                    big_w.extend(small_w);
+                    ac.merge(bc);
+                    Ok((ap, big_w, ac))
                 }
                 (Err(e), _) | (_, Err(e)) => Err(e),
             },
