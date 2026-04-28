@@ -95,6 +95,26 @@ async fn main() -> Result<()> {
         tracing::warn!("CAIRN_API_KEY not set — /v1/* endpoints are open");
     }
 
+    // Per-IP token-bucket. CAIRN_RATE_LIMIT="rate,burst" both as
+    // floats. Common pattern: "10,20" = sustained 10 req/s, burst 20.
+    // Absent / malformed = unlimited (default).
+    let rate_limit = std::env::var("CAIRN_RATE_LIMIT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|raw| {
+            let parts: Vec<&str> = raw.split(',').collect();
+            let rate = parts.first()?.trim().parse::<f64>().ok()?;
+            let burst = parts
+                .get(1)
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .unwrap_or(rate * 2.0);
+            tracing::info!(rate_per_sec = rate, burst, "rate limiter enabled");
+            Some(Arc::new(cairn_api::RateLimiter::new(rate, burst)))
+        });
+    if rate_limit.is_none() {
+        tracing::info!("CAIRN_RATE_LIMIT not set — /v1/* unthrottled");
+    }
+
     let state = AppState {
         bundle_path: Arc::new(cli.bundle.clone()),
         text,
@@ -102,6 +122,7 @@ async fn main() -> Result<()> {
         nearest,
         metrics,
         api_key,
+        rate_limit,
     };
     let app = router(state);
 
@@ -112,7 +133,11 @@ async fn main() -> Result<()> {
     );
 
     let listener = tokio::net::TcpListener::bind(cli.bind).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 

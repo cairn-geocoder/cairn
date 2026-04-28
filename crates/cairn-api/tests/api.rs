@@ -9,8 +9,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode};
-use cairn_api::{router, AppState, Metrics};
+use cairn_api::{router, AppState, Metrics, RateLimiter};
 use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
 use cairn_spatial::{AdminFeature, AdminIndex, AdminLayer, NearestIndex, PlacePoint, PointLayer};
 use cairn_text::{build_index, TextIndex};
@@ -145,6 +146,7 @@ fn build_test_state() -> AppState {
         nearest: Some(Arc::new(nearest)),
         metrics: Arc::new(Metrics::new("test".into(), 1, 3)),
         api_key: None,
+        rate_limit: None,
     }
 }
 
@@ -473,6 +475,31 @@ async fn unknown_route_returns_404() {
     let req = Request::get("/v99/nope").body(Body::empty()).unwrap();
     let resp = router(build_test_state()).oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn rate_limiter_throttles_after_burst_exhausted() {
+    use std::net::SocketAddr;
+    let mut state = build_test_state();
+    state.rate_limit = Some(std::sync::Arc::new(RateLimiter::new(0.001, 2.0)));
+    let app = router(state)
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))));
+
+    let mut last_status = StatusCode::OK;
+    for _ in 0..5 {
+        let req = Request::get("/v1/search?q=Vaduz")
+            .body(Body::empty())
+            .unwrap();
+        last_status = tower::ServiceExt::oneshot(app.clone(), req)
+            .await
+            .unwrap()
+            .status();
+    }
+    assert_eq!(
+        last_status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "after burst, requests must 429"
+    );
 }
 
 #[tokio::test]

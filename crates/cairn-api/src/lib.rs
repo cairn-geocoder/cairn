@@ -8,7 +8,7 @@
 
 use axum::http::header;
 use axum::{
-    extract::{Query, State},
+    extract::{ConnectInfo, Query, State},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
@@ -19,6 +19,8 @@ use cairn_place::Coord;
 use cairn_spatial::{AdminIndex, NearestIndex};
 use cairn_text::{Hit, SearchMode, SearchOptions, TextError, TextIndex};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -74,6 +76,98 @@ pub struct AppState {
     /// Optional API key. When `Some`, every request to `/v1/*` must
     /// present `X-API-Key: <key>` (or `?api_key=<key>`) or 401.
     pub api_key: Option<Arc<String>>,
+    /// Optional per-IP token-bucket rate limiter. When `Some`, requests
+    /// to `/v1/*` are throttled; absent = unlimited (default).
+    pub rate_limit: Option<Arc<RateLimiter>>,
+}
+
+/// Token-bucket rate limiter, per remote IP. `rate_per_sec` tokens
+/// refill into a bucket with capacity `burst`; each request consumes
+/// one. Out-of-tokens → 429.
+pub struct RateLimiter {
+    rate_per_sec: f64,
+    burst: f64,
+    /// Per-IP buckets. Stale entries (> 5 min idle) get evicted on
+    /// every Nth check so the map doesn't grow unbounded under DDoS.
+    buckets: std::sync::Mutex<HashMap<std::net::IpAddr, RateBucket>>,
+}
+
+struct RateBucket {
+    tokens: f64,
+    last: std::time::Instant,
+}
+
+impl RateLimiter {
+    /// Build a limiter that allows `rate_per_sec` sustained rate with a
+    /// `burst` allowance. Burst < 1 is clamped to 1 so a single request
+    /// always succeeds in isolation.
+    pub fn new(rate_per_sec: f64, burst: f64) -> Self {
+        Self {
+            rate_per_sec: rate_per_sec.max(0.001),
+            burst: burst.max(1.0),
+            buckets: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Try to consume one token for `ip`. Returns `true` on allow,
+    /// `false` on deny.
+    pub fn check(&self, ip: std::net::IpAddr) -> bool {
+        let now = std::time::Instant::now();
+        let mut map = self.buckets.lock().expect("rate limiter poisoned");
+        // Stale eviction: drop entries idle for > 5 min on every 1024th
+        // check to amortize the cost. Cheap O(n) walk.
+        if map.len() > 0 && map.len().is_multiple_of(1024) {
+            let cutoff = std::time::Duration::from_secs(300);
+            map.retain(|_, b| now.duration_since(b.last) < cutoff);
+        }
+        let bucket = map.entry(ip).or_insert(RateBucket {
+            tokens: self.burst,
+            last: now,
+        });
+        let elapsed = now.duration_since(bucket.last).as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * self.rate_per_sec).min(self.burst);
+        bucket.last = now;
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn bucket_count(&self) -> usize {
+        self.buckets.lock().map(|m| m.len()).unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn allows_burst_then_throttles() {
+        // 1 req/s sustained, burst 5: 5 immediate calls allowed,
+        // 6th rejected.
+        let rl = RateLimiter::new(1.0, 5.0);
+        let ip = std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        for _ in 0..5 {
+            assert!(rl.check(ip));
+        }
+        assert!(!rl.check(ip));
+    }
+
+    #[test]
+    fn separate_ips_have_separate_buckets() {
+        let rl = RateLimiter::new(1.0, 1.0);
+        let a = std::net::IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let b = std::net::IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        assert!(rl.check(a));
+        assert!(rl.check(b));
+        // Both exhausted now.
+        assert!(!rl.check(a));
+        assert!(!rl.check(b));
+    }
 }
 
 /// Standard error envelope for every non-2xx JSON response.
@@ -143,6 +237,12 @@ pub fn router(state: AppState) -> Router {
         .route("/search", get(pelias_search))
         .route("/autocomplete", get(pelias_autocomplete))
         .route("/reverse", get(pelias_reverse))
+        // Layer order (last .route_layer is outermost → runs first):
+        //   1. require_api_key  (cheap; unauthenticated traffic fails
+        //      fast and never burns rate-limit tokens)
+        //   2. rate_limit       (per-IP token bucket)
+        //   3. handler
+        .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key,
@@ -161,6 +261,40 @@ pub fn router(state: AppState) -> Router {
             .on_request(DefaultOnRequest::new().level(Level::INFO))
             .on_response(DefaultOnResponse::new().level(Level::INFO)),
     )
+}
+
+/// Reject requests from IPs that have exhausted their token bucket.
+/// When `state.rate_limit` is `None`, the layer is a no-op. The peer
+/// address comes from `ConnectInfo<SocketAddr>` (axum injects it when
+/// the server is started with `into_make_service_with_connect_info`).
+/// Behind a reverse proxy with `X-Forwarded-For`, the per-connection
+/// IP is the proxy's — fine for in-cluster deploys, less useful for
+/// public exposure (reverse-proxy-aware client IP extraction is a
+/// follow-up).
+async fn rate_limit(
+    State(state): State<AppState>,
+    addr: Option<ConnectInfo<SocketAddr>>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let Some(limiter) = state.rate_limit.as_deref() else {
+        return Ok(next.run(request).await);
+    };
+    // ConnectInfo is None when the request comes through `oneshot`
+    // (e.g. integration tests) instead of the actual TCP listener.
+    // Treat that as "skip rate-limiting" — production paths always
+    // have it.
+    let Some(ConnectInfo(sa)) = addr else {
+        return Ok(next.run(request).await);
+    };
+    if !limiter.check(sa.ip()) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "request rate exceeded for this client",
+        ));
+    }
+    Ok(next.run(request).await)
 }
 
 /// Reject requests that don't carry the configured `X-API-Key` header
