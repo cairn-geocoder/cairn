@@ -305,6 +305,28 @@ impl TextIndex {
         Ok(hits)
     }
 
+    /// Resolve a list of `place_id` values to [`Hit`]s. Used by Pelias's
+    /// `/v1/place?ids=…` endpoint; missing IDs are silently skipped.
+    /// Result order mirrors `ids` so callers can correlate.
+    pub fn lookup_by_ids(&self, ids: &[u64]) -> Result<Vec<Hit>, TextError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let searcher = self.reader.searcher();
+        let mut hits_by_id: std::collections::HashMap<u64, Hit> =
+            std::collections::HashMap::with_capacity(ids.len());
+        for &id in ids {
+            let term = tantivy::Term::from_field_u64(self.schema.place_id, id);
+            let q: Box<dyn Query> = Box::new(TermQuery::new(term, IndexRecordOption::Basic));
+            let raw = searcher.search(&q, &TopDocs::with_limit(1))?;
+            if let Some((score, addr)) = raw.into_iter().next() {
+                let doc: TantivyDocument = searcher.doc(addr)?;
+                hits_by_id.insert(id, self.hit_from_doc(score, &doc));
+            }
+        }
+        Ok(ids.iter().filter_map(|id| hits_by_id.remove(id)).collect())
+    }
+
     fn build_text_query(
         &self,
         query: &str,

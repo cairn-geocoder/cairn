@@ -239,11 +239,14 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/structured", get(structured))
         .route("/v1/parse", get(parse_addr))
         .route("/v1/expand", get(expand_addr))
+        .route("/v1/place", get(place_lookup))
+        .route("/v1/layers", get(layers_metadata))
         // Pelias-compatible aliases share the same handlers.
         .route("/v1/autocomplete", get(pelias_autocomplete))
         .route("/search", get(pelias_search))
         .route("/autocomplete", get(pelias_autocomplete))
         .route("/reverse", get(pelias_reverse))
+        .route("/place", get(place_lookup))
         // Layer order (last .route_layer is outermost → runs first):
         //   1. require_api_key  (cheap; unauthenticated traffic fails
         //      fast and never burns rate-limit tokens)
@@ -1155,6 +1158,84 @@ async fn pelias_reverse(
         },
         kind: "FeatureCollection",
         features,
+    }))
+}
+
+/// Pelias-compatible `/v1/place?ids=X,Y`. Resolves comma-separated
+/// place_ids to a Pelias FeatureCollection. Missing IDs are dropped
+/// silently; a list with no matches returns an empty `features` array.
+#[derive(Debug, Deserialize, Serialize)]
+struct PlaceLookupQuery {
+    ids: Option<String>,
+}
+
+async fn place_lookup(
+    State(state): State<AppState>,
+    Query(params): Query<PlaceLookupQuery>,
+) -> Result<Json<PeliasFeatureCollection<'static>>, ApiError> {
+    let raw = params.ids.as_deref().unwrap_or("").trim();
+    if raw.is_empty() {
+        return Err(ApiError::bad_request(
+            "missing_ids",
+            "the 'ids' query parameter is required (comma-separated place_ids)",
+        ));
+    }
+    let ids: Vec<u64> = raw
+        .split(',')
+        .filter_map(|s| s.trim().parse::<u64>().ok())
+        .collect();
+    if ids.is_empty() {
+        return Err(ApiError::bad_request(
+            "bad_ids",
+            "no valid u64 place_ids in 'ids' parameter",
+        ));
+    }
+    let text = state
+        .text
+        .as_ref()
+        .ok_or_else(|| ApiError::unavailable("text_index_unloaded", "text index not loaded"))?
+        .clone();
+    let hits = text
+        .lookup_by_ids(&ids)
+        .map_err(|err| ApiError::internal("text_lookup_failed", err.to_string()))?;
+    Ok(Json(PeliasFeatureCollection {
+        geocoding: PeliasGeocodingMeta {
+            version: "0.2",
+            attribution: "© OpenStreetMap contributors, WhosOnFirst, OpenAddresses",
+            engine: PeliasEngine {
+                name: "cairn",
+                bundle_id: bundle_id_static(&state),
+            },
+            query: serde_json::to_value(&params).unwrap_or_default(),
+        },
+        kind: "FeatureCollection",
+        features: hits.into_iter().map(hit_to_pelias_feature).collect(),
+    }))
+}
+
+/// `/v1/layers` — list every layer/kind cairn understands. Pelias has
+/// no equivalent endpoint but clients building a layer-filter UI need
+/// the canonical list, so we expose it here.
+async fn layers_metadata() -> Json<serde_json::Value> {
+    use cairn_place::PlaceKind;
+    let layers: Vec<&'static str> = [
+        PlaceKind::Country,
+        PlaceKind::Region,
+        PlaceKind::County,
+        PlaceKind::City,
+        PlaceKind::District,
+        PlaceKind::Neighborhood,
+        PlaceKind::Street,
+        PlaceKind::Address,
+        PlaceKind::Poi,
+        PlaceKind::Postcode,
+    ]
+    .into_iter()
+    .map(cairn_text::kind_str)
+    .collect();
+    Json(serde_json::json!({
+        "layers": layers,
+        "description": "Allowed values for the 'layer' query parameter on /v1/search and /v1/reverse",
     }))
 }
 

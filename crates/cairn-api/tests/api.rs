@@ -479,6 +479,59 @@ async fn unknown_route_returns_404() {
 }
 
 #[tokio::test]
+async fn place_lookup_resolves_known_ids() {
+    let state = build_test_state();
+    // PlaceId for vaduz() in the test fixture.
+    let vaduz_id = PlaceId::new(1, 49509, 1).unwrap().0;
+    let url = format!("/v1/place?ids={vaduz_id}");
+    let (status, body) = get_json(state, &url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["type"], "FeatureCollection");
+    let features = body["features"].as_array().unwrap();
+    assert_eq!(features.len(), 1);
+    assert_eq!(features[0]["properties"]["name"], "Vaduz");
+}
+
+#[tokio::test]
+async fn place_lookup_skips_unknown_ids() {
+    let state = build_test_state();
+    let vaduz_id = PlaceId::new(1, 49509, 1).unwrap().0;
+    let url = format!("/v1/place?ids={vaduz_id},9999999999999999");
+    let (_, body) = get_json(state, &url).await;
+    let features = body["features"].as_array().unwrap();
+    assert_eq!(features.len(), 1, "unknown id should be silently dropped");
+    assert_eq!(features[0]["properties"]["name"], "Vaduz");
+}
+
+#[tokio::test]
+async fn place_lookup_missing_ids_400() {
+    let (status, body) = get_json(build_test_state(), "/v1/place").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "missing_ids");
+}
+
+#[tokio::test]
+async fn place_lookup_bad_ids_400() {
+    let (status, body) = get_json(build_test_state(), "/v1/place?ids=not-a-number,xyz").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "bad_ids");
+}
+
+#[tokio::test]
+async fn layers_endpoint_lists_kinds() {
+    let (status, body) = get_json(build_test_state(), "/v1/layers").await;
+    assert_eq!(status, StatusCode::OK);
+    let layers = body["layers"].as_array().unwrap();
+    let names: Vec<&str> = layers.iter().filter_map(|v| v.as_str()).collect();
+    for expected in ["country", "region", "city", "poi", "address", "postcode"] {
+        assert!(
+            names.contains(&expected),
+            "expected '{expected}' in /v1/layers, got {names:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn rate_limiter_throttles_after_burst_exhausted() {
     use std::net::SocketAddr;
     let mut state = build_test_state();
