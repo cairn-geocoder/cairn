@@ -1,0 +1,114 @@
+/* Comparison subpage — extends ../site.css with the matrix table styling
+   and a tighter hero. */
+
+.hero-compact {
+  padding: 48px 0 36px;
+}
+.hero-compact .lede {
+  margin: 12px 0 0;
+  font-size: 17px;
+  color: #2a2a2a;
+  max-width: 64ch;
+}
+.hero-compact .kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.hero-compact h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(30px, 3.4vw, 42px);
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  font-weight: 600;
+}
+
+.matrix-scroll {
+  overflow-x: auto;
+  margin: 8px 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  background: #fff;
+}
+
+.matrix thead th {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: left;
+  background: var(--surface);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.matrix thead th:nth-child(2) {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.matrix tbody th {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  white-space: nowrap;
+  width: 1%;
+}
+
+.matrix tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  color: #2a2a2a;
+}
+
+.matrix tbody td:nth-child(2) {
+  background: rgba(31, 95, 166, 0.04);
+}
+
+.matrix tbody tr:last-child th,
+.matrix tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.matrix code {
+  font-size: 12px;
+}
+
+.caveat {
+  font-size: 14px;
+  color: var(--muted);
+  border-left: 3px solid var(--border);
+  padding: 6px 0 6px 12px;
+  margin: 12px 0 8px;
+  max-width: 64ch;
+}
+
+.topbar nav a[aria-current="page"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+@media (max-width: 720px) {
+  .matrix thead th,
+  .matrix tbody th,
+  .matrix tbody td {
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+}

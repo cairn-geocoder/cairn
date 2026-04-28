@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cairn vs Pelias, Photon, Nominatim — comparison</title>
+  <meta name="description" content="How Cairn compares to Pelias, Photon, and Nominatim on architecture, runtime dependencies, on-disk format, license, and measured query latency." />
+  <link rel="stylesheet" href="../site.css" />
+  <link rel="stylesheet" href="comparison.css" />
+  <link rel="icon" type="image/svg+xml" href="../assets/cairn-mark.svg" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="../">
+        <img src="../assets/cairn-mark.svg" alt="" width="28" height="28" class="brand-mark" />
+        <span>cairn</span>
+      </a>
+      <nav>
+        <a href="../#install">Install</a>
+        <a href="../#examples">Examples</a>
+        <a href="../#api">API</a>
+        <a href="../demo/">Live demo</a>
+        <a href="./" aria-current="page">Comparison</a>
+        <a href="https://github.com/cairn-geocoder/cairn">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero hero-compact">
+    <div class="container">
+      <p class="kicker">Comparison</p>
+      <h1>How does Cairn stack up?</h1>
+      <p class="lede">
+        Cairn is the newest entrant in the OSM-stack geocoder space. This
+        page is the honest read on what we share with Pelias, Photon, and
+        Nominatim — and where we make different tradeoffs. Numbers are
+        from public docs and our own criterion benches; nothing here is
+        marketing.
+      </p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <h2>The landscape, in one paragraph each</h2>
+
+      <h3>Pelias</h3>
+      <p>
+        Geocoder originally built at Mapzen, now community-maintained.
+        Multi-service Node.js stack on top of Elasticsearch. Strong on
+        global coverage, breadth of importers (OSM, WhosOnFirst,
+        OpenAddresses, Geonames, OpenStreetCam), and ranking quality.
+        Production-ready but operationally heavy: a real Pelias deploy is
+        roughly ten cooperating services plus an Elasticsearch cluster.
+        MIT-licensed.
+      </p>
+
+      <h3>Photon</h3>
+      <p>
+        Single-JAR Java geocoder built on Elasticsearch by komoot.
+        Smaller scope than Pelias — forward + autocomplete only, no
+        structured queries, no reverse-on-OpenAddresses. Very fast on the
+        autocomplete path because it's purpose-built for it. Apache-2.0.
+        Still ships an Elasticsearch alongside the JAR.
+      </p>
+
+      <h3>Nominatim</h3>
+      <p>
+        Reference OpenStreetMap geocoder. PHP application backed by
+        PostgreSQL + PostGIS. The canonical answer for OSM-only
+        deployments and the engine behind <code>nominatim.openstreetmap.org</code>.
+        Best-in-class reverse geocoding, careful address normalization,
+        but forward search latency is bound by the database. GPL-2.0.
+      </p>
+
+      <h3>Cairn</h3>
+      <p>
+        Single static Rust binary plus a flat-file bundle. tantivy for
+        text, custom rkyv tile blobs for places, R*-tree on bbox plus
+        <code>geo::Contains</code> for reverse. No daemon dependencies, no
+        cluster, no database. MIT or Apache-2.0. Alpha — not yet
+        production-tested at planet scale; country-scale bundles work today.
+      </p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <h2>Architecture matrix</h2>
+      <div class="matrix-scroll">
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>&nbsp;</th>
+              <th>Cairn</th>
+              <th>Pelias</th>
+              <th>Photon</th>
+              <th>Nominatim</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Language</th>
+              <td>Rust</td>
+              <td>Node.js + Java (ES)</td>
+              <td>Java</td>
+              <td>PHP + C + SQL</td>
+            </tr>
+            <tr>
+              <th>Storage</th>
+              <td>flat files: tantivy + rkyv + bincode</td>
+              <td>Elasticsearch</td>
+              <td>Elasticsearch</td>
+              <td>PostgreSQL + PostGIS</td>
+            </tr>
+            <tr>
+              <th>Runtime deps</th>
+              <td><strong>none</strong></td>
+              <td>ES cluster + ~10 services</td>
+              <td>ES cluster + JVM</td>
+              <td>PG + PHP-FPM + nginx</td>
+            </tr>
+            <tr>
+              <th>Single binary</th>
+              <td>yes (musl-statable)</td>
+              <td>no</td>
+              <td>JAR (needs JVM)</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <th>Airgap</th>
+              <td>bundle copy</td>
+              <td>full stack mirror</td>
+              <td>JAR + ES + index dir</td>
+              <td>full stack mirror</td>
+            </tr>
+            <tr>
+              <th>Diff updates</th>
+              <td><code>cairn-build diff/apply</code></td>
+              <td>minutely OSM replication</td>
+              <td>periodic full rebuild</td>
+              <td>minutely OSM replication</td>
+            </tr>
+            <tr>
+              <th>Forward search</th>
+              <td>yes</td>
+              <td>yes</td>
+              <td>yes</td>
+              <td>yes</td>
+            </tr>
+            <tr>
+              <th>Autocomplete</th>
+              <td>yes (prefix-ngram)</td>
+              <td>yes</td>
+              <td>yes (specialty)</td>
+              <td>limited</td>
+            </tr>
+            <tr>
+              <th>Reverse geocode</th>
+              <td>yes (PIP + nearest fallback)</td>
+              <td>yes</td>
+              <td>yes</td>
+              <td>yes (best-in-class)</td>
+            </tr>
+            <tr>
+              <th>Structured queries</th>
+              <td>yes</td>
+              <td>yes</td>
+              <td>no</td>
+              <td>yes</td>
+            </tr>
+            <tr>
+              <th>libpostal parsing</th>
+              <td>optional FFI</td>
+              <td>yes (built-in service)</td>
+              <td>no</td>
+              <td>partial</td>
+            </tr>
+            <tr>
+              <th>Importers</th>
+              <td>OSM, WoF, OA, Geonames</td>
+              <td>OSM, WoF, OA, Geonames, ++</td>
+              <td>OSM (via Nominatim DB)</td>
+              <td>OSM</td>
+            </tr>
+            <tr>
+              <th>License</th>
+              <td>MIT or Apache-2.0</td>
+              <td>MIT</td>
+              <td>Apache-2.0</td>
+              <td>GPL-2.0</td>
+            </tr>
+            <tr>
+              <th>Maturity</th>
+              <td>alpha</td>
+              <td>production</td>
+              <td>production</td>
+              <td>production (reference)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <h2>Cairn measured latency</h2>
+      <p>
+        Numbers from <code>cargo bench</code> on an Apple M-series laptop
+        in release mode. Synthetic in-memory datasets, single-thread, no
+        network round-trip. They isolate the engine cost; real
+        end-to-end latency adds HTTP framing on top (~50–200 µs).
+      </p>
+      <table class="api">
+        <thead>
+          <tr>
+            <th>Workload</th>
+            <th>Dataset</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Exact forward search</td>
+            <td>5,000 places</td>
+            <td><code>6.1 µs</code></td>
+          </tr>
+          <tr>
+            <td>Autocomplete (3-char prefix)</td>
+            <td>5,000 places</td>
+            <td><code>48.8 µs</code></td>
+          </tr>
+          <tr>
+            <td>Fuzzy search (1 typo)</td>
+            <td>5,000 places</td>
+            <td><code>54.8 µs</code></td>
+          </tr>
+          <tr>
+            <td>Point-in-polygon (PIP)</td>
+            <td>1,024 admin polygons</td>
+            <td><code>25 ns</code></td>
+          </tr>
+          <tr>
+            <td>Nearest-k (k = 10)</td>
+            <td>4,096 points</td>
+            <td><code>514 µs</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="caveat">
+        For honest comparison numbers against Pelias / Photon /
+        Nominatim, the right benchmark is end-to-end p50/p99 on identical
+        hardware with the same query set. We have not run that yet — when
+        we do, results land here. Vendor-published numbers vary too widely
+        with cluster shape to be apples-to-apples.
+      </p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <h2>When to pick what</h2>
+
+      <h3>Pick Pelias when</h3>
+      <ul class="bullet">
+        <li>You need the broadest set of importers and ranking knobs out of the box.</li>
+        <li>Operating an Elasticsearch cluster is part of your platform anyway.</li>
+        <li>You have a multi-service deploy story and a team to maintain it.</li>
+      </ul>
+
+      <h3>Pick Photon when</h3>
+      <ul class="bullet">
+        <li>Your hot path is autocomplete and you don't need structured queries.</li>
+        <li>You want a JVM single-JAR deploy plus an ES, nothing more.</li>
+        <li>You're okay re-importing a Nominatim DB to seed the index.</li>
+      </ul>
+
+      <h3>Pick Nominatim when</h3>
+      <ul class="bullet">
+        <li>Reverse geocoding correctness is the top priority.</li>
+        <li>OSM-only is fine; no OpenAddresses or Geonames needs.</li>
+        <li>GPL-2.0 is acceptable for your downstream.</li>
+        <li>You already run PostgreSQL.</li>
+      </ul>
+
+      <h3>Pick Cairn when</h3>
+      <ul class="bullet">
+        <li>Airgap or edge deploy: you want to <code>scp</code> a tarball and a binary, not stand up a cluster.</li>
+        <li>You want a single static binary you can ship inside a Docker image, a Lambda layer, or a customer's VPN.</li>
+        <li>You're comfortable with alpha software at country scale and willing to file issues at planet scale.</li>
+        <li>You want differential bundle updates without a replication daemon.</li>
+        <li>You want MIT or Apache-2.0 in your dependency graph.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <h2>Honesty notes</h2>
+      <ul class="bullet">
+        <li>
+          Cairn is alpha. Pelias, Photon, and Nominatim are battle-tested
+          at scale. Don't pick Cairn because of a 6 µs benchmark; pick it
+          because the deploy story matches what you can operate.
+        </li>
+        <li>
+          The architecture matrix reflects each project's typical /
+          documented deployment. You can run Pelias without all ten
+          services, Nominatim without nginx, etc.; we describe the
+          common shape.
+        </li>
+        <li>
+          Cairn doesn't cover every importer Pelias supports yet —
+          OpenStreetCam, transit feeds, custom CSVs need work. The four
+          we ship (OSM / WoF / OpenAddresses / Geonames) cover the big
+          coverage holes.
+        </li>
+        <li>
+          Numbers will move. This page is updated when our benches change.
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <div class="container">
+      <p>
+        Cairn is offline geocoding software written in Rust.
+        <a href="https://github.com/cairn-geocoder/cairn">GitHub</a> ·
+        <a href="../">Home</a>
+      </p>
+    </div>
+  </footer>
+</body>
+</html>
