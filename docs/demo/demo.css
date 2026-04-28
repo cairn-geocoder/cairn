@@ -172,6 +172,101 @@ code, pre {
   color: var(--muted);
   font-size: 0.8125rem;
   word-break: break-all;
+  margin-top: 4px;
+}
+
+#panel-status {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+#panel-status[data-kind="live"] {
+  color: oklch(82% 0.16 145);
+  border-color: oklch(45% 0.12 145);
+  background: oklch(20% 0.04 145 / 0.4);
+}
+
+#panel-status[data-kind="loading"] {
+  color: oklch(80% 0.10 250);
+  border-color: oklch(40% 0.06 250);
+  background: oklch(20% 0.02 250 / 0.4);
+}
+
+#panel-status[data-kind="stale"] {
+  color: var(--warn);
+  border-color: oklch(45% 0.12 70);
+  background: oklch(20% 0.04 70 / 0.4);
+}
+
+#panel-status[data-kind="error"] {
+  color: oklch(78% 0.20 25);
+  border-color: oklch(45% 0.18 25);
+  background: oklch(20% 0.04 25 / 0.4);
+}
+
+.custom {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  margin-top: var(--space);
+}
+
+.custom label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.custom select,
+.custom input {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+.custom select:focus,
+.custom input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.custom button {
+  align-self: flex-end;
+  background: var(--accent);
+  color: oklch(15% 0.02 145);
+  border: none;
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: filter 120ms ease;
+}
+
+.custom button:hover {
+  filter: brightness(1.1);
 }
 
 .panel-body {

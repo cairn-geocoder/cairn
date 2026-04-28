@@ -1,8 +1,14 @@
 (() => {
+  const BACKEND = "https://cairn.kaldera.dev";
+
   const listEl = document.getElementById("query-list");
   const titleEl = document.getElementById("panel-title");
   const urlEl = document.getElementById("panel-url");
   const jsonEl = document.getElementById("panel-json");
+  const statusEl = document.getElementById("panel-status");
+  const formEl = document.getElementById("custom-form");
+  const customEndpointEl = document.getElementById("custom-endpoint");
+  const customParamsEl = document.getElementById("custom-params");
 
   const map = L.map("map", {
     zoomControl: true,
@@ -16,7 +22,6 @@
   }).addTo(map);
 
   let activeMarkers = [];
-  let activeQuery = null;
 
   function clearMarkers() {
     activeMarkers.forEach((m) => map.removeLayer(m));
@@ -50,6 +55,7 @@
 
   function pointsFromBody(body) {
     const out = [];
+    if (!body || typeof body !== "object") return out;
     if (Array.isArray(body.results)) {
       for (const r of body.results) {
         if (Number.isFinite(r.lat) && Number.isFinite(r.lon)) {
@@ -63,7 +69,6 @@
       }
     }
     if (Number.isFinite(body.lat) && Number.isFinite(body.lon)) {
-      // /v1/reverse echoes the query point at the top level.
       out.push({
         lat: body.lat,
         lon: body.lon,
@@ -75,23 +80,24 @@
     return out;
   }
 
-  function renderFixture(fx) {
-    activeQuery = fx.label;
-    document.querySelectorAll("#query-list button").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.label === fx.label);
-    });
-
-    titleEl.textContent = fx.title;
-    urlEl.textContent = `GET ${fx.url}`;
-    jsonEl.innerHTML = syntaxHighlight(fx.body);
+  function renderBody(title, urlPath, body, statusLabel) {
+    titleEl.textContent = title;
+    urlEl.textContent = `GET ${BACKEND}${urlPath}`;
+    statusEl.textContent = statusLabel;
+    statusEl.dataset.kind = statusLabel.startsWith("error")
+      ? "error"
+      : statusLabel === "live"
+        ? "live"
+        : "stale";
+    jsonEl.innerHTML = syntaxHighlight(body);
 
     clearMarkers();
-    const points = pointsFromBody(fx.body);
+    const points = pointsFromBody(body);
     if (!points.length) {
       return;
     }
     const bounds = L.latLngBounds([]);
-    points.forEach((p, i) => {
+    points.forEach((p) => {
       const isProbe = p.probe === true;
       const marker = L.circleMarker([p.lat, p.lon], {
         radius: isProbe ? 9 : 7,
@@ -112,17 +118,63 @@
     }
   }
 
+  async function runQuery({ title, urlPath, fallback }) {
+    document.querySelectorAll("#query-list button").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.url === urlPath);
+    });
+    statusEl.textContent = "loading…";
+    statusEl.dataset.kind = "loading";
+    try {
+      const resp = await fetch(`${BACKEND}${urlPath}`, { cache: "no-store" });
+      const body = await resp.json();
+      renderBody(title, urlPath, body, resp.ok ? "live" : `error ${resp.status}`);
+    } catch (err) {
+      if (fallback) {
+        renderBody(
+          title,
+          urlPath,
+          fallback,
+          `offline (cached) — ${err.message}`,
+        );
+      } else {
+        renderBody(
+          title,
+          urlPath,
+          { error: String(err) },
+          `error — ${err.message}`,
+        );
+      }
+    }
+  }
+
   function buildQueryList(fixtures) {
     listEl.innerHTML = "";
     for (const fx of fixtures) {
       const li = document.createElement("li");
       const btn = document.createElement("button");
       btn.dataset.label = fx.label;
+      btn.dataset.url = fx.url;
       btn.textContent = fx.title;
-      btn.addEventListener("click", () => renderFixture(fx));
+      btn.addEventListener("click", () =>
+        runQuery({ title: fx.title, urlPath: fx.url, fallback: fx.body }),
+      );
       li.appendChild(btn);
       listEl.appendChild(li);
     }
+  }
+
+  function setupCustomForm() {
+    formEl.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const endpoint = customEndpointEl.value;
+      const params = customParamsEl.value.trim();
+      const urlPath = params ? `${endpoint}?${params}` : endpoint;
+      runQuery({
+        title: `Custom: ${endpoint}`,
+        urlPath,
+        fallback: null,
+      });
+    });
   }
 
   fetch("./fixtures.json", { cache: "no-store" })
@@ -132,12 +184,18 @@
     })
     .then((fixtures) => {
       buildQueryList(fixtures);
+      setupCustomForm();
       if (fixtures.length) {
-        renderFixture(fixtures[0]);
+        runQuery({
+          title: fixtures[0].title,
+          urlPath: fixtures[0].url,
+          fallback: fixtures[0].body,
+        });
       }
     })
     .catch((err) => {
       titleEl.textContent = "Failed to load fixtures";
       urlEl.textContent = String(err);
+      setupCustomForm();
     });
 })();

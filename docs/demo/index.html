@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Cairn — Geocoder Demo</title>
-  <meta name="description" content="Interactive demo of the Cairn offline geocoder. Pre-rendered query / response pairs against a Liechtenstein bundle." />
+  <title>Cairn — Live Geocoder Demo</title>
+  <meta name="description" content="Live demo of the Cairn offline geocoder against a Liechtenstein bundle hosted on Hetzner." />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
         crossorigin="" />
@@ -17,26 +17,47 @@
       <nav class="nav">
         <a href="https://github.com/cairn-geocoder/cairn">GitHub</a>
         <a href="https://crates.io/crates/cairn-geocoder">crates.io</a>
-        <a href="../#endpoints">API</a>
+        <a href="https://cairn.kaldera.dev/healthz" target="_blank" rel="noopener">backend</a>
       </nav>
     </div>
     <div class="masthead-tag">
-      <h1>Pre-rendered geocoder demo</h1>
-      <p>Click a query. See exactly what the live <code>cairn-serve</code> binary returned against a Liechtenstein bundle (107 OSM places + 94 WhosOnFirst admins, 27 polygons).</p>
-      <p class="warn">Static — no live backend. To run real queries, see the <a href="https://github.com/cairn-geocoder/cairn#quick-start">Quick start</a>.</p>
+      <h1>Live geocoder demo</h1>
+      <p>Every query below is dispatched live to <code>https://cairn.kaldera.dev/</code> — a single <code>cairn-serve</code> pod on Hetzner k3s with a Liechtenstein bundle (3553 OSM places + 94 WhosOnFirst admins, 27 polygons). Fall back to cached responses if the box is down.</p>
     </div>
   </header>
 
   <main class="grid">
     <aside class="queries">
-      <h2>Queries</h2>
+      <h2>Preset queries</h2>
       <ul id="query-list"></ul>
+
+      <h2>Custom query</h2>
+      <form id="custom-form" class="custom">
+        <label>
+          Endpoint
+          <select id="custom-endpoint">
+            <option value="/v1/search">/v1/search</option>
+            <option value="/v1/structured">/v1/structured</option>
+            <option value="/v1/reverse">/v1/reverse</option>
+            <option value="/healthz">/healthz</option>
+          </select>
+        </label>
+        <label>
+          Query string
+          <input id="custom-params" type="text"
+                 placeholder="q=Vaduz&amp;limit=5"
+                 spellcheck="false"
+                 autocomplete="off" />
+        </label>
+        <button type="submit">Run</button>
+      </form>
     </aside>
 
     <section class="panel">
       <header class="panel-head">
         <h2 id="panel-title">Pick a query</h2>
         <code id="panel-url"></code>
+        <span id="panel-status" data-kind="idle">idle</span>
       </header>
       <div class="panel-body">
         <div id="map"></div>
@@ -49,7 +70,7 @@
   </main>
 
   <footer class="foot">
-    <p>Cairn is dual-licensed MIT OR Apache-2.0 · <a href="https://github.com/cairn-geocoder/cairn/blob/main/ROADMAP.md">Roadmap</a></p>
+    <p>Cairn is dual-licensed MIT OR Apache-2.0 · <a href="https://github.com/cairn-geocoder/cairn/blob/main/ROADMAP.md">Roadmap</a> · <a href="https://github.com/cairn-geocoder/cairn">Source</a></p>
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
