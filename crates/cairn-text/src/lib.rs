@@ -274,18 +274,38 @@ impl TextIndex {
             return Ok(parser.parse_query(query)?);
         }
 
-        // Forward search with fuzzy distance: union FuzzyTermQuery per token.
+        // Forward search with fuzzy distance.
+        //
+        // Per-token edit distance is clamped by token length so that
+        // 3-char tokens don't mass-match the index. Damerau is enabled
+        // (transposition_cost_one = true) so swapped-letter typos like
+        // "Vauzd" → "Vaduz" cost 1 instead of 2.
+        //
+        // For multi-token queries, switch from SHOULD to MUST so that
+        // every token must fuzzy-match. SHOULD over-recalls when the
+        // user types a real address ("Vaduz Liechtenstein" should match
+        // both, not either).
         let lowered = query.to_lowercase();
         let tokens: Vec<&str> = lowered.split_whitespace().collect();
         if tokens.is_empty() {
             let parser = QueryParser::for_index(&self.index, vec![field]);
             return Ok(parser.parse_query(query)?);
         }
+        let occur = if tokens.len() >= 2 {
+            Occur::Must
+        } else {
+            Occur::Should
+        };
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(tokens.len());
         for tok in tokens {
+            let per_token = effective_fuzzy_distance(tok, fuzzy);
             let term = Term::from_field_text(field, tok);
-            let q = FuzzyTermQuery::new(term, fuzzy, true);
-            clauses.push((Occur::Should, Box::new(q) as Box<dyn Query>));
+            let q: Box<dyn Query> = if per_token == 0 {
+                Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs))
+            } else {
+                Box::new(FuzzyTermQuery::new(term, per_token, true))
+            };
+            clauses.push((occur, q));
         }
         Ok(Box::new(BooleanQuery::new(clauses)))
     }
@@ -359,6 +379,22 @@ fn apply_geo_bias(hits: &mut [Hit], focus: Coord, weight: f64) {
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+}
+
+/// Pick an edit distance for a token given the user-requested maximum.
+///
+/// Short tokens (3 chars or fewer) get exact match — at distance 1, a
+/// 3-char token matches half the dictionary. Longer tokens scale up
+/// linearly, capped at the user's requested max and the index-wide
+/// fuzzy limit.
+fn effective_fuzzy_distance(token: &str, requested_max: u8) -> u8 {
+    let len = token.chars().count();
+    let cap = match len {
+        0..=3 => 0,
+        4..=5 => 1,
+        _ => MAX_FUZZY_DISTANCE,
+    };
+    requested_max.min(cap)
 }
 
 fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
@@ -512,6 +548,56 @@ mod tests {
         };
         let hits = idx.search("liechtenstein", &only_city).unwrap();
         assert!(hits.is_empty(), "country must not leak into city layer");
+    }
+
+    #[test]
+    fn fuzzy_clamped_for_short_tokens() {
+        assert_eq!(effective_fuzzy_distance("v", 2), 0);
+        assert_eq!(effective_fuzzy_distance("vad", 2), 0);
+        assert_eq!(effective_fuzzy_distance("vad", 1), 0);
+        assert_eq!(effective_fuzzy_distance("vadu", 2), 1);
+        assert_eq!(effective_fuzzy_distance("vaduz", 2), 1);
+        assert_eq!(effective_fuzzy_distance("vaduzz", 2), 2);
+        // requested distance is the upper bound, not the floor
+        assert_eq!(effective_fuzzy_distance("vaduzz", 1), 1);
+    }
+
+    #[test]
+    fn fuzzy_recovers_transposition() {
+        let dir = tempdir_for_test();
+        build_index(&dir, vec![vaduz(), schaan()]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        // "Vadzu" is "Vaduz" with the trailing u/z swapped → a single
+        // adjacent transposition. Damerau-Levenshtein with
+        // transposition_cost_one=true counts this as distance 1.
+        let opts = SearchOptions {
+            fuzzy: 1,
+            ..Default::default()
+        };
+        let hits = idx.search("Vadzu", &opts).unwrap();
+        assert!(
+            hits.iter().any(|h| h.name == "Vaduz"),
+            "expected Vaduz via Damerau transposition, got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn fuzzy_multi_token_requires_all() {
+        let dir = tempdir_for_test();
+        build_index(&dir, vec![vaduz(), schaan(), liechtenstein_country()]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        // "vaduz schaan" → Vaduz alone shouldn't match because "schaan"
+        // doesn't appear in its names. Only docs containing both tokens
+        // (none here) come back.
+        let opts = SearchOptions {
+            fuzzy: 2,
+            ..Default::default()
+        };
+        let hits = idx.search("vaduz schaan", &opts).unwrap();
+        assert!(
+            hits.is_empty(),
+            "multi-token AND must not return docs missing one of the tokens"
+        );
     }
 
     #[test]

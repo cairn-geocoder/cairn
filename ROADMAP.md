@@ -75,23 +75,30 @@ Tracks shipped phases and deferred work.
 
 ### Phase 6c — Per-tile spatial partitioning + mmap rkyv
 
-**Status:** scoped, not implemented.
+**Status:** scoped, not implemented. Long pole is rkyv-archiving
+`MultiPolygon<f64>`, since `geo_types` doesn't derive `Archive`.
 
 Today `spatial/admin.bin` and `spatial/points.bin` are bundle-wide
 single bincode blobs read whole at startup. At country scale this
 costs <250 MB RAM; at planet scale it's a non-starter.
 
 **Plan:**
-1. Build-time: bucket AdminFeatures into `(level, tile_id)` keys,
-   emit `spatial/admin/<level>/<bucket>/<id>.bin` per non-empty tile.
-2. Replace bincode with `rkyv` (same trick the tile blobs use): 16-byte
-   aligned header + archived `Vec<AdminFeature>`. AdminLayer
-   becomes mmap-friendly + zero-copy at read time.
-3. Runtime: AdminIndex turns into a coarse R*-tree over per-tile
-   bboxes; the tile is mmap'd lazily on first PIP that touches it.
-   LRU eviction on a configurable byte budget.
-4. Same treatment for PointLayer.
-5. Manifest gains a `[[admin_tiles]]` and `[[point_tiles]]` array
+1. Define a flat, rkyv-friendly mirror of `AdminFeature` —
+   `polygon_rings: Vec<Vec<Vec<[f64; 2]>>>` instead of
+   `MultiPolygon`. Round-trip helpers convert at write/read.
+2. Build-time: bucket AdminFeatures into `(level, tile_id)` keys
+   based on polygon-bbox / tile-bbox intersection (a polygon spanning
+   tiles is replicated into each). Emit
+   `spatial/admin/<level>/<bucket>/<id>.bin` per non-empty tile.
+   Same 16-byte aligned header pattern the tile blobs use.
+3. Runtime: `AdminIndex` becomes an R*-tree over per-tile bboxes
+   plus a `Vec<TileSlot>` where each slot's archive is loaded lazily
+   via `OnceLock<Mmap>`. PIP touches only tiles intersecting the
+   query.
+4. LRU eviction on a configurable byte budget once memory becomes
+   relevant (planet scale only).
+5. Same treatment for PointLayer.
+6. Manifest gains a `[[admin_tiles]]` and `[[point_tiles]]` array
    alongside `[[tiles]]`.
 
 Useful when the bundle exceeds ~200 MB of polygons. Skip until then.
