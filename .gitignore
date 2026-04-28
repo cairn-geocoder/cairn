@@ -6,6 +6,7 @@ Cargo.lock.bak
 .vscode/
 *.swp
 /bundle/
+/bundle-*/
 /data/
 *.osm.pbf
 *.tar

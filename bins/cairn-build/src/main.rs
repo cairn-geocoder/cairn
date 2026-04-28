@@ -6,10 +6,10 @@
 
 use anyhow::{Context, Result};
 use cairn_place::Place;
-use cairn_spatial::{PlacePoint, PointLayer};
+use cairn_spatial::{AdminLayer, PlacePoint, PointLayer};
 use cairn_tile::{
-    bucket_places, read_manifest, verify_bundle, write_manifest, write_tile, Level, Manifest,
-    SourceVersion, TileCoord, TileEntry,
+    bbox_contains, bbox_intersects, bucket_places, read_manifest, verify_bundle, write_manifest,
+    write_tile, Level, Manifest, SourceVersion, TileCoord, TileEntry,
 };
 use clap::{Parser, Subcommand};
 use std::collections::{BTreeMap, HashMap};
@@ -86,14 +86,7 @@ fn main() -> Result<()> {
             out,
             bundle_id,
         }),
-        Command::Extract { bundle, out, .. } => {
-            tracing::warn!(
-                src = %bundle.display(),
-                dst = %out.display(),
-                "extract not implemented in Phase 1"
-            );
-            Ok(())
-        }
+        Command::Extract { bundle, bbox, out } => cmd_extract(&bundle, &bbox, &out),
         Command::Verify { bundle } => cmd_verify(&bundle),
         Command::Info { bundle } => cmd_info(&bundle),
     }
@@ -205,17 +198,25 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         });
     }
 
+    let mut admin_artifact: Option<cairn_tile::ArtifactEntry> = None;
     if let Some(layer) = admin_layer {
         let admin_path = args.out.join("spatial/admin.bin");
         let bytes = layer
             .write_to(&admin_path)
             .with_context(|| format!("writing admin layer to {}", admin_path.display()))?;
+        let blake = hash_file(&admin_path)?;
         tracing::info!(
             features = layer.features.len(),
             bytes,
+            blake3 = %blake,
             path = %admin_path.display(),
             "admin layer written"
         );
+        admin_artifact = Some(cairn_tile::ArtifactEntry {
+            blake3: blake,
+            byte_size: bytes,
+            item_count: layer.features.len() as u64,
+        });
     }
 
     let point_layer = PointLayer {
@@ -244,12 +245,19 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     let bytes = point_layer
         .write_to(&points_path)
         .with_context(|| format!("writing point layer to {}", points_path.display()))?;
+    let points_blake = hash_file(&points_path)?;
     tracing::info!(
         points = point_layer.points.len(),
         bytes,
+        blake3 = %points_blake,
         path = %points_path.display(),
         "point layer written"
     );
+    let points_artifact = cairn_tile::ArtifactEntry {
+        blake3: points_blake,
+        byte_size: bytes,
+        item_count: point_layer.points.len() as u64,
+    };
 
     let manifest = Manifest {
         schema_version: 1,
@@ -257,6 +265,8 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         bundle_id: args.bundle_id,
         sources,
         tiles: entries,
+        admin: admin_artifact,
+        points: Some(points_artifact),
     };
     let manifest_path = args.out.join("manifest.toml");
     write_manifest(&manifest_path, &manifest)?;
@@ -266,6 +276,162 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         "manifest written"
     );
 
+    Ok(())
+}
+
+fn cmd_extract(bundle: &Path, bbox_arg: &[f64], out: &Path) -> Result<()> {
+    if bbox_arg.len() != 4 {
+        anyhow::bail!("--bbox needs 4 values: MIN_LON MIN_LAT MAX_LON MAX_LAT");
+    }
+    let q = (bbox_arg[0], bbox_arg[1], bbox_arg[2], bbox_arg[3]);
+    if q.0 > q.2 || q.1 > q.3 {
+        anyhow::bail!("bbox min must be <= max in both dimensions");
+    }
+
+    let manifest_path = bundle.join("manifest.toml");
+    let src_manifest = read_manifest(&manifest_path)?;
+    tracing::info!(
+        src_tiles = src_manifest.tiles.len(),
+        bbox = ?q,
+        "starting bbox extract"
+    );
+
+    std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+
+    // Tile copy: anything whose tile bbox intersects the query.
+    let mut new_tiles: Vec<TileEntry> = Vec::new();
+    let mut tile_count = 0u64;
+    let mut tile_bytes_total = 0u64;
+    for entry in &src_manifest.tiles {
+        let level = Level::from_u8(entry.level)
+            .ok_or_else(|| anyhow::anyhow!("unknown level {}", entry.level))?;
+        let coord = TileCoord::from_id(level, entry.tile_id);
+        if !bbox_intersects(coord.bbox(), q) {
+            continue;
+        }
+        let rel = coord.relative_path();
+        let src = bundle.join(&rel);
+        let dst = out.join(&rel);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&src, &dst)
+            .with_context(|| format!("copy {} → {}", src.display(), dst.display()))?;
+        // Verify hash matches the source manifest (cheap correctness gate).
+        let actual = hash_file(&dst)?;
+        if actual != entry.blake3 {
+            anyhow::bail!(
+                "blake3 mismatch on {} after copy ({} vs {})",
+                dst.display(),
+                actual,
+                entry.blake3
+            );
+        }
+        new_tiles.push(entry.clone());
+        tile_count += 1;
+        tile_bytes_total += entry.byte_size;
+    }
+    tracing::info!(tile_count, tile_bytes = tile_bytes_total, "tiles copied");
+
+    // Admin layer: filter by polygon bbox intersect.
+    let admin_path_src = bundle.join("spatial/admin.bin");
+    let admin_artifact = if admin_path_src.exists() {
+        let layer = AdminLayer::read_from(&admin_path_src)?;
+        let kept: Vec<_> = layer
+            .features
+            .into_iter()
+            .filter(|f| {
+                f.bbox()
+                    .map(|r| bbox_intersects((r.min().x, r.min().y, r.max().x, r.max().y), q))
+                    .unwrap_or(false)
+            })
+            .collect();
+        tracing::info!(features = kept.len(), "admin features kept");
+        let dst = out.join("spatial/admin.bin");
+        let new_layer = AdminLayer { features: kept };
+        let bytes = new_layer.write_to(&dst)?;
+        let blake = hash_file(&dst)?;
+        Some(cairn_tile::ArtifactEntry {
+            blake3: blake,
+            byte_size: bytes,
+            item_count: new_layer.features.len() as u64,
+        })
+    } else {
+        None
+    };
+
+    // Point layer: filter centroids inside the bbox.
+    let points_path_src = bundle.join("spatial/points.bin");
+    let points_artifact = if points_path_src.exists() {
+        let layer = PointLayer::read_from(&points_path_src)?;
+        let kept: Vec<PlacePoint> = layer
+            .points
+            .into_iter()
+            .filter(|p| bbox_contains(q, p.centroid.lon, p.centroid.lat))
+            .collect();
+        tracing::info!(points = kept.len(), "points kept");
+        let dst = out.join("spatial/points.bin");
+        let new_layer = PointLayer { points: kept };
+        let bytes = new_layer.write_to(&dst)?;
+        let blake = hash_file(&dst)?;
+        Some(cairn_tile::ArtifactEntry {
+            blake3: blake,
+            byte_size: bytes,
+            item_count: new_layer.points.len() as u64,
+        })
+    } else {
+        None
+    };
+
+    // Text index: copy wholesale. Filtering tantivy segments by bbox would
+    // require rebuilding the index from kept Places — out of scope for this
+    // extract pass. The unfiltered text index over a regional bundle is
+    // still functional; oversized but correct.
+    let text_src = bundle.join("index/text");
+    if text_src.exists() {
+        let text_dst = out.join("index/text");
+        copy_dir_all(&text_src, &text_dst)?;
+        tracing::info!(path = %text_dst.display(), "text index copied");
+    }
+
+    let new_manifest = Manifest {
+        schema_version: src_manifest.schema_version,
+        built_at: now_iso8601(),
+        bundle_id: format!("{}-extract", src_manifest.bundle_id),
+        sources: src_manifest.sources.clone(),
+        tiles: new_tiles,
+        admin: admin_artifact,
+        points: points_artifact,
+    };
+    let dst_manifest = out.join("manifest.toml");
+    write_manifest(&dst_manifest, &new_manifest)?;
+    tracing::info!(
+        path = %dst_manifest.display(),
+        tiles = new_manifest.tiles.len(),
+        "extract manifest written"
+    );
+
+    println!(
+        "OK: extracted {} tiles to {}",
+        new_manifest.tiles.len(),
+        out.display()
+    );
+    Ok(())
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&path, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
     Ok(())
 }
 
@@ -290,9 +456,10 @@ fn cmd_verify(bundle: &Path) -> Result<()> {
         anyhow::bail!("{} tiles failed integrity check", report.failures.len());
     }
 
-    // Optional layers: text index + admin polygons + nearest-fallback points.
-    // Each is verified by attempting to open / parse the artifact. Missing
-    // artifacts are warnings, not failures.
+    let manifest = read_manifest(&bundle.join("manifest.toml"))?;
+
+    // Text index: openable check (no manifest hash yet because tantivy is a
+    // multi-file directory; coverage upgrade lands when we walk segments).
     let text_dir = bundle.join("index/text");
     let text_status = if text_dir.exists() {
         match cairn_text::TextIndex::open(&text_dir) {
@@ -307,42 +474,59 @@ fn cmd_verify(bundle: &Path) -> Result<()> {
     };
 
     let admin_path = bundle.join("spatial/admin.bin");
-    let admin_status = if admin_path.exists() {
-        match cairn_spatial::AdminLayer::read_from(&admin_path) {
-            Ok(layer) => {
-                tracing::info!(features = layer.features.len(), "admin layer ok");
-                "ok"
-            }
-            Err(err) => {
-                tracing::error!(?err, path = %admin_path.display(), "admin layer broken");
-                anyhow::bail!("admin.bin at {} failed to parse", admin_path.display());
-            }
-        }
-    } else {
-        "missing"
-    };
+    let admin_status = verify_artifact(&admin_path, manifest.admin.as_ref(), "admin")?;
+    if admin_path.exists() {
+        let layer = cairn_spatial::AdminLayer::read_from(&admin_path)
+            .with_context(|| format!("parsing admin.bin at {}", admin_path.display()))?;
+        tracing::info!(features = layer.features.len(), "admin layer parsed");
+    }
 
     let points_path = bundle.join("spatial/points.bin");
-    let points_status = if points_path.exists() {
-        match cairn_spatial::PointLayer::read_from(&points_path) {
-            Ok(layer) => {
-                tracing::info!(points = layer.points.len(), "point layer ok");
-                "ok"
-            }
-            Err(err) => {
-                tracing::error!(?err, path = %points_path.display(), "point layer broken");
-                anyhow::bail!("points.bin at {} failed to parse", points_path.display());
-            }
-        }
-    } else {
-        "missing"
-    };
+    let points_status = verify_artifact(&points_path, manifest.points.as_ref(), "points")?;
+    if points_path.exists() {
+        let layer = cairn_spatial::PointLayer::read_from(&points_path)
+            .with_context(|| format!("parsing points.bin at {}", points_path.display()))?;
+        tracing::info!(points = layer.points.len(), "point layer parsed");
+    }
 
     println!(
         "OK: {} tiles verified, text={}, admin={}, points={} at {}",
         report.tiles_checked, text_status, admin_status, points_status, report.manifest_path
     );
     Ok(())
+}
+
+fn verify_artifact(
+    path: &Path,
+    entry: Option<&cairn_tile::ArtifactEntry>,
+    label: &str,
+) -> Result<&'static str> {
+    if !path.exists() {
+        return Ok("missing");
+    }
+    let actual = hash_file(path)?;
+    if let Some(e) = entry {
+        if actual != e.blake3 {
+            tracing::error!(
+                path = %path.display(),
+                expected = %e.blake3,
+                actual = %actual,
+                label,
+                "blake3 mismatch on artifact"
+            );
+            anyhow::bail!("{} blake3 mismatch at {}", label, path.display());
+        }
+        Ok("ok")
+    } else {
+        // Artifact present on disk but not in manifest — older bundle or
+        // out-of-band copy. Still useful, but flag.
+        tracing::warn!(
+            path = %path.display(),
+            label,
+            "artifact on disk but missing from manifest"
+        );
+        Ok("present-no-manifest-entry")
+    }
 }
 
 fn cmd_info(bundle: &Path) -> Result<()> {

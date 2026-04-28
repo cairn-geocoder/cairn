@@ -108,6 +108,35 @@ impl TileCoord {
             id = id,
         )
     }
+
+    /// Bounding box of this tile in (`min_lon`, `min_lat`, `max_lon`,
+    /// `max_lat`) lon/lat degrees.
+    pub fn bbox(self) -> (f64, f64, f64, f64) {
+        let cell = self.level.cell_deg();
+        let min_lon = -180.0 + self.col as f64 * cell;
+        let min_lat = -90.0 + self.row as f64 * cell;
+        (min_lon, min_lat, min_lon + cell, min_lat + cell)
+    }
+
+    /// Reconstruct a `TileCoord` from a serialized `(level, tile_id)` pair.
+    pub fn from_id(level: Level, tile_id: u32) -> Self {
+        let cols = level.columns();
+        Self {
+            level,
+            row: tile_id / cols,
+            col: tile_id % cols,
+        }
+    }
+}
+
+/// Returns true if the two `(min_lon, min_lat, max_lon, max_lat)` boxes overlap.
+pub fn bbox_intersects(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
+    !(a.2 < b.0 || a.0 > b.2 || a.3 < b.1 || a.1 > b.3)
+}
+
+/// Returns true if `(lon, lat)` lies inside `(min_lon, min_lat, max_lon, max_lat)`.
+pub fn bbox_contains(bbox: (f64, f64, f64, f64), lon: f64, lat: f64) -> bool {
+    lon >= bbox.0 && lon <= bbox.2 && lat >= bbox.1 && lat <= bbox.3
 }
 
 /// Top-level bundle manifest. Serialized as `manifest.toml` at bundle root.
@@ -120,6 +149,10 @@ pub struct Manifest {
     pub sources: Vec<SourceVersion>,
     #[serde(default)]
     pub tiles: Vec<TileEntry>,
+    #[serde(default)]
+    pub admin: Option<ArtifactEntry>,
+    #[serde(default)]
+    pub points: Option<ArtifactEntry>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -136,6 +169,15 @@ pub struct TileEntry {
     pub blake3: String,
     pub byte_size: u64,
     pub place_count: u32,
+}
+
+/// Manifest entry for a single-file bundle artifact (admin polygons,
+/// nearest-fallback points, etc.).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ArtifactEntry {
+    pub blake3: String,
+    pub byte_size: u64,
+    pub item_count: u64,
 }
 
 #[derive(Debug, Error)]
@@ -352,6 +394,33 @@ mod tests {
     }
 
     #[test]
+    fn tile_bbox_round_trips_via_from_id() {
+        let c = Coord {
+            lon: 8.5417,
+            lat: 47.3769,
+        };
+        let t = TileCoord::from_coord(Level::L1, c);
+        let id = t.id();
+        let restored = TileCoord::from_id(Level::L1, id);
+        assert_eq!(t, restored);
+
+        let (min_lon, min_lat, max_lon, max_lat) = t.bbox();
+        assert!(min_lon <= c.lon && c.lon <= max_lon);
+        assert!(min_lat <= c.lat && c.lat <= max_lat);
+        assert!((max_lon - min_lon - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bbox_intersects_predicate() {
+        // Liechtenstein box ≈ (9.47, 47.05, 9.64, 47.27)
+        let li = (9.47, 47.05, 9.64, 47.27);
+        // L1 tile around (9, 47) → bbox (9, 47, 10, 48)
+        assert!(bbox_intersects((9.0, 47.0, 10.0, 48.0), li));
+        // Far away tile in the Pacific
+        assert!(!bbox_intersects((-160.0, 0.0, -159.0, 1.0), li));
+    }
+
+    #[test]
     fn tile_blob_roundtrip() {
         let dir = tempdir_for_test();
         let coord = TileCoord::from_coord(Level::L1, vaduz().centroid);
@@ -386,6 +455,8 @@ mod tests {
                 byte_size: size,
                 place_count: places.len() as u32,
             }],
+            admin: None,
+            points: None,
         };
         write_manifest(&dir.join("manifest.toml"), &manifest).unwrap();
 
