@@ -1,4 +1,0 @@
-theme: jekyll-theme-cayman
-title: Cairn
-description: Offline, airgap-ready geocoder written in Rust.
-show_downloads: false

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cairn — offline geocoder in Rust</title>
+  <meta name="description" content="Cairn is an offline, airgap-ready geocoder written in Rust. Forward search, autocomplete, fuzzy matching, structured queries, and reverse geocoding from a single static binary." />
+  <link rel="stylesheet" href="site.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="./">cairn</a>
+      <nav>
+        <a href="#install">Install</a>
+        <a href="#examples">Examples</a>
+        <a href="#api">API</a>
+        <a href="demo/">Live demo</a>
+        <a href="https://github.com/cairn-geocoder/cairn">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-text">
+        <p class="kicker">Geocoding</p>
+        <h1>Offline, airgap-ready geocoder.</h1>
+        <p class="lede">
+          Cairn turns OpenStreetMap and WhosOnFirst data into a single
+          on-disk bundle, then serves forward search, autocomplete,
+          fuzzy matching, structured queries, and reverse geocoding from
+          one static Rust binary. No cluster. No cloud. No daemon
+          dependencies.
+        </p>
+        <div class="hero-cta">
+          <a class="btn primary" href="#install">Get started</a>
+          <a class="btn ghost" href="demo/">Try it live</a>
+        </div>
+      </div>
+      <pre class="hero-code"><code><span class="cmt"># 1. build a Liechtenstein bundle</span>
+<span class="cmd">$</span> cairn build \
+    --osm liechtenstein-latest.osm.pbf \
+    --wof whosonfirst-data-admin-li.db \
+    --out bundle
+
+<span class="cmt"># 2. serve it</span>
+<span class="cmd">$</span> cairn serve --bundle bundle
+
+<span class="cmt"># 3. query it</span>
+<span class="cmd">$</span> curl 'http://localhost:8080/v1/search?q=Vaduz'
+{
+  "results": [{
+    "name": "Vaduz",
+    "kind": "city",
+    "lon": 9.522,
+    "lat": 47.139
+  }]
+}</code></pre>
+    </div>
+  </section>
+
+  <section id="overview" class="container section">
+    <h2>Overview</h2>
+    <p>
+      Geocoding turns the name of a place into coordinates and the
+      coordinates of a point into a chain of administrative places. It
+      is what powers the search box on a map, the address autocomplete
+      on a checkout form, and the &ldquo;you are here&rdquo; on a
+      satellite image. Pelias, Photon, and Nominatim cover this for
+      online services with Elasticsearch or PostgreSQL behind them.
+    </p>
+    <p>
+      Cairn is the same thing without the cluster. It targets
+      deployments where the geocoder must run on a single box, in a
+      datacentre with no internet, on a vehicle, or on a developer
+      laptop without warming up Postgres. The runtime is one statically
+      linked binary; the data is one directory of mmap-ready files.
+    </p>
+    <ul class="bullet">
+      <li>Pure Rust at runtime. Single static musl binary.</li>
+      <li>One directory of files; the entire bundle ships in a tar.</li>
+      <li>Tantivy + R*-tree on disk; no cluster, no JVM, no Postgres.</li>
+      <li>Multilingual names, fuzzy matching, layer filters, focus bias.</li>
+      <li>OSM + WhosOnFirst + OpenAddresses + Geonames in one importer.</li>
+    </ul>
+  </section>
+
+  <section id="install" class="container section">
+    <h2>Install</h2>
+    <h3>From a binary release</h3>
+    <pre><code><span class="cmt"># Linux x86_64 (musl, statically linked)</span>
+<span class="cmd">$</span> curl -fsSL -o cairn.tar.gz \
+    https://github.com/cairn-geocoder/cairn/releases/latest/download/cairn-v0.0.1-alpha-linux-x86_64-musl.tar.gz
+<span class="cmd">$</span> tar xzf cairn.tar.gz &amp;&amp; cd cairn-*/
+<span class="cmd">$</span> ./cairn-build --version</code></pre>
+
+    <h3>From source</h3>
+    <pre><code><span class="cmd">$</span> git clone https://github.com/cairn-geocoder/cairn
+<span class="cmd">$</span> cd cairn
+<span class="cmd">$</span> cargo build --release -p cairn-build -p cairn-serve</code></pre>
+
+    <h3>From a container</h3>
+    <pre><code><span class="cmd">$</span> docker run --rm -p 8080:8080 \
+    ghcr.io/cairn-geocoder/cairn:latest</code></pre>
+  </section>
+
+  <section id="examples" class="container section">
+    <h2>Examples</h2>
+
+    <h3>Forward search</h3>
+    <p>
+      Free-text query. Returns ranked Places with coordinates and admin
+      ancestry.
+    </p>
+    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/search?q=Vaduz&amp;limit=2'
+{
+  "query": "Vaduz",
+  "results": [
+    { "name": "Vaduz", "kind": "city",  "lon": 9.522, "lat": 47.139 },
+    { "name": "Vaduz", "kind": "county","lon": 9.520, "lat": 47.144 }
+  ]
+}</code></pre>
+
+    <h3>Autocomplete</h3>
+    <p>
+      Prefix match against a per-character ngram index. Cheap enough for
+      keystroke-grain UI.
+    </p>
+    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/search?q=Vad&amp;mode=autocomplete'</code></pre>
+
+    <h3>Fuzzy</h3>
+    <p>
+      Edit-distance recovery. Lets users mis-type. Forward mode only;
+      autocomplete stays exact.
+    </p>
+    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/search?q=vaaduz&amp;fuzzy=2'
+<span class="cmt"># &rarr; matches "Vaduz" (1 edit)</span></code></pre>
+
+    <h3>Layer filter + focus bias</h3>
+    <p>
+      Restrict to one or more place kinds, and re-rank by distance from
+      a focus point. Useful when the same name appears across kinds (a
+      city and a county both named &ldquo;Vaduz&rdquo;).
+    </p>
+    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/search?q=Vaduz \
+    &amp;layer=city \
+    &amp;focus.lat=47.165&amp;focus.lon=9.51 \
+    &amp;focus.weight=2.0'</code></pre>
+
+    <h3>Structured search</h3>
+    <p>
+      Field-by-field query. Cairn picks a layer hint based on the
+      finest non-empty field and concatenates the rest into a free-text
+      query.
+    </p>
+    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/structured \
+    ?road=Aeulestrasse&amp;city=Vaduz'</code></pre>
+
+    <h3>Reverse geocoding</h3>
+    <p>
+      Point-in-polygon against the admin layer; falls back to nearest
+      centroid when the point sits outside any polygon. Results are
+      sorted finest-containing-polygon first.
+    </p>
+    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/reverse \
+    ?lat=47.141&amp;lon=9.523&amp;limit=4'
+{
+  "source": "pip",
+  "results": [
+    { "name": "Vaduz",         "kind": "city",    "level": 1 },
+    { "name": "Oberland",      "kind": "county",  "level": 1 },
+    { "name": "Liechtenstein", "kind": "country", "level": 0 }
+  ]
+}</code></pre>
+
+    <h3>Address parsing</h3>
+    <p>
+      A heuristic parser ships in the default build. The
+      <code>libpostal</code> feature swaps in libpostal&rsquo;s
+      multilingual CRF tagger when its language model is available.
+    </p>
+    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/parse \
+    ?q=Hauptstrasse%2012%2C%2010115%20Berlin%2C%20Deutschland'
+{
+  "parsed": {
+    "postcode": "10115",
+    "city":     "Berlin",
+    "country":  "Deutschland"
+  }
+}</code></pre>
+  </section>
+
+  <section id="api" class="container section">
+    <h2>API reference</h2>
+    <table class="api">
+      <thead>
+        <tr><th>Endpoint</th><th>Purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>GET /v1/search</code></td><td>Forward + autocomplete + fuzzy + layer + focus.</td></tr>
+        <tr><td><code>GET /v1/structured</code></td><td>Field-by-field address search with auto layer hint.</td></tr>
+        <tr><td><code>GET /v1/reverse</code></td><td>Point-in-polygon with nearest-centroid fallback.</td></tr>
+        <tr><td><code>GET /v1/parse</code></td><td>Free-text address &rarr; ParsedAddress.</td></tr>
+        <tr><td><code>GET /v1/expand</code></td><td>Free-text address &rarr; normalized variants.</td></tr>
+        <tr><td><code>GET /healthz</code></td><td>Liveness.</td></tr>
+        <tr><td><code>GET /readyz</code></td><td>Readiness (returns 503 if no text index).</td></tr>
+        <tr><td><code>GET /metrics</code></td><td>Prometheus exposition format.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="bundle" class="container section">
+    <h2>What&rsquo;s in a bundle</h2>
+    <pre><code>bundle/
+├── manifest.toml              schema, source hashes, blake3
+├── tiles/&lt;level&gt;/&lt;row&gt;/&lt;col&gt;/&lt;id&gt;.bin   rkyv-archived Place blobs
+├── index/text/                tantivy segments (mmap'd at runtime)
+└── spatial/
+    ├── admin.bin              bincode AdminLayer (polygons + metadata)
+    └── points.bin             bincode PointLayer (centroids for fallback)</code></pre>
+    <p>
+      Bundle integrity is anchored by blake3 hashes in
+      <code>manifest.toml</code>. <code>cairn-build verify</code>
+      recomputes them and refuses any tile or spatial artifact whose
+      hash drifted.
+    </p>
+  </section>
+
+  <section id="data-sources" class="container section">
+    <h2>Build sources</h2>
+    <table class="api">
+      <thead>
+        <tr><th>Source</th><th>Format</th><th>Flag</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>OpenStreetMap</td><td><code>*.osm.pbf</code></td><td><code>--osm</code></td></tr>
+        <tr><td>WhosOnFirst</td><td>SQLite per-country bundles</td><td><code>--wof</code></td></tr>
+        <tr><td>OpenAddresses</td><td>CSV per-region authoritative addresses</td><td><code>--oa</code></td></tr>
+        <tr><td>Geonames</td><td>TSV populated places</td><td><code>--geonames</code></td></tr>
+      </tbody>
+    </table>
+    <p>
+      Mix and match. OSM alone is enough for a working bundle; WhosOnFirst
+      lifts admin polygon quality; OpenAddresses fills addresses where
+      OSM is sparse; Geonames adds populated places where OSM coverage
+      is thin.
+    </p>
+  </section>
+
+  <section class="container section three-cards">
+    <div class="card">
+      <h3>Demo</h3>
+      <p>9 preset queries plus a free-form composer, dispatched live to
+      <code>cairn.kaldera.dev</code>.</p>
+      <p><a href="demo/">Open the demo &rarr;</a></p>
+    </div>
+    <div class="card">
+      <h3>Source</h3>
+      <p>11-crate Rust workspace. Dual MIT / Apache-2.0. CI on every push.</p>
+      <p><a href="https://github.com/cairn-geocoder/cairn">Browse on GitHub &rarr;</a></p>
+    </div>
+    <div class="card">
+      <h3>Roadmap</h3>
+      <p>Phase status, deferred work, and concrete plans for libpostal,
+      per-tile spatial, and OSM admin relations.</p>
+      <p><a href="https://github.com/cairn-geocoder/cairn/blob/main/ROADMAP.md">Read ROADMAP.md &rarr;</a></p>
+    </div>
+  </section>
+
+  <footer class="foot container">
+    <p>Cairn is dual-licensed MIT OR Apache-2.0. Maintained at
+    <a href="https://github.com/cairn-geocoder/cairn">github.com/cairn-geocoder/cairn</a>.
+    Issues, PRs, and contributions welcome.</p>
+  </footer>
+</body>
+</html>
