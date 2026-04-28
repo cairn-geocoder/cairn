@@ -23,11 +23,29 @@ use thiserror::Error;
 use tracing::debug;
 
 const PREFIX_TOKENIZER: &str = "cairn_prefix";
+const CJK_TOKENIZER: &str = "cairn_cjk";
 const PREFIX_MIN: usize = 1;
 const PREFIX_MAX: usize = 25;
+const CJK_NGRAM_MIN: usize = 1;
+const CJK_NGRAM_MAX: usize = 2;
 const WRITER_HEAP: usize = 64 * 1024 * 1024;
 const RERANK_MULTIPLIER: usize = 5;
 const MAX_FUZZY_DISTANCE: u8 = 2;
+
+/// Returns true if the input contains at least one character in the
+/// CJK script ranges. Picks up CJK Unified Ideographs, Hiragana,
+/// Katakana, Hangul, and the common compatibility blocks. Used to
+/// decide whether to OR the `name_cjk` analyzer in at query time.
+pub fn has_cjk(s: &str) -> bool {
+    s.chars().any(|c| {
+        let cp = c as u32;
+        (0x3040..=0x30FF).contains(&cp)        // Hiragana + Katakana
+            || (0x3400..=0x4DBF).contains(&cp) // CJK Ext A
+            || (0x4E00..=0x9FFF).contains(&cp) // CJK Unified
+            || (0xAC00..=0xD7AF).contains(&cp) // Hangul Syllables
+            || (0xF900..=0xFAFF).contains(&cp) // CJK Compat
+    })
+}
 
 #[derive(Debug, Error)]
 pub enum TextError {
@@ -93,6 +111,7 @@ struct TextSchema {
     schema: Schema,
     name: Field,
     name_prefix: Field,
+    name_cjk: Field,
     place_id: Field,
     level: Field,
     kind: Field,
@@ -109,8 +128,14 @@ impl TextSchema {
             .set_index_option(IndexRecordOption::WithFreqsAndPositions);
         let prefix_options = TextOptions::default().set_indexing_options(prefix_indexing);
 
+        let cjk_indexing = TextFieldIndexing::default()
+            .set_tokenizer(CJK_TOKENIZER)
+            .set_index_option(IndexRecordOption::WithFreqsAndPositions);
+        let cjk_options = TextOptions::default().set_indexing_options(cjk_indexing);
+
         let name = sb.add_text_field("name", TEXT | STORED);
         let name_prefix = sb.add_text_field("name_prefix", prefix_options);
+        let name_cjk = sb.add_text_field("name_cjk", cjk_options);
         let place_id = sb.add_u64_field("place_id", FAST | STORED | INDEXED);
         let level = sb.add_u64_field("level", FAST | STORED | INDEXED);
         let kind = sb.add_text_field("kind", STRING | STORED);
@@ -122,6 +147,7 @@ impl TextSchema {
             schema,
             name,
             name_prefix,
+            name_cjk,
             place_id,
             level,
             kind,
@@ -141,6 +167,25 @@ fn register_prefix_tokenizer(index: &Index) -> Result<(), TextError> {
     .filter(RemoveLongFilter::limit(64))
     .build();
     index.tokenizers().register(PREFIX_TOKENIZER, tokenizer);
+    Ok(())
+}
+
+/// CJK languages aren't whitespace-segmented; the standard QueryParser
+/// + default tokenizer over `name` matches a 3-kanji query against a
+/// 5-kanji document only by luck. A character-bigram analyzer indexes
+/// every adjacent pair so any 2+ char sub-string of the document is
+/// findable. Bigrams over romanized text would over-recall, so we
+/// route only CJK-bearing names into this field at index time and only
+/// route CJK-bearing queries against it at search time.
+fn register_cjk_tokenizer(index: &Index) -> Result<(), TextError> {
+    let tokenizer = TextAnalyzer::builder(
+        NgramTokenizer::all_ngrams(CJK_NGRAM_MIN, CJK_NGRAM_MAX)
+            .map_err(|e| tantivy::TantivyError::SystemError(format!("{e:?}")))?,
+    )
+    .filter(LowerCaser)
+    .filter(RemoveLongFilter::limit(64))
+    .build();
+    index.tokenizers().register(CJK_TOKENIZER, tokenizer);
     Ok(())
 }
 
@@ -172,6 +217,7 @@ where
     let schema = TextSchema::build();
     let index = Index::create_in_dir(dir, schema.schema.clone())?;
     register_prefix_tokenizer(&index)?;
+    register_cjk_tokenizer(&index)?;
     let mut writer: IndexWriter = index.writer(WRITER_HEAP)?;
 
     let mut doc_count = 0usize;
@@ -183,6 +229,9 @@ where
         for n in &place.names {
             doc.add_text(schema.name, &n.value);
             doc.add_text(schema.name_prefix, &n.value);
+            if has_cjk(&n.value) {
+                doc.add_text(schema.name_cjk, &n.value);
+            }
         }
         doc.add_u64(schema.place_id, place.id.0);
         doc.add_u64(schema.level, place.id.level() as u64);
@@ -210,6 +259,7 @@ impl TextIndex {
     pub fn open(dir: &Path) -> Result<Self, TextError> {
         let index = Index::open_in_dir(dir)?;
         register_prefix_tokenizer(&index)?;
+        register_cjk_tokenizer(&index)?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -270,7 +320,15 @@ impl TextIndex {
             // Default to the QueryParser path so users keep tantivy's
             // boolean / phrase syntax. Autocomplete also stays exact-prefix
             // because mixing fuzzy + ngram explodes the term space.
-            let parser = QueryParser::for_index(&self.index, vec![field]);
+            //
+            // CJK queries also hit the bigram-tokenized `name_cjk` field so
+            // that whitespace-less scripts find sub-string matches the
+            // default analyzer would miss.
+            let mut fields = vec![field];
+            if matches!(opts.mode, SearchMode::Search) && has_cjk(query) {
+                fields.push(self.schema.name_cjk);
+            }
+            let parser = QueryParser::for_index(&self.index, fields);
             return Ok(parser.parse_query(query)?);
         }
 
@@ -625,5 +683,93 @@ mod tests {
             "expected Schaan first, got {:?}",
             hits
         );
+    }
+
+    fn tokyo() -> Place {
+        Place {
+            id: PlaceId::new(1, 12345, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![
+                LocalizedName {
+                    lang: "default".into(),
+                    value: "Tokyo".into(),
+                },
+                LocalizedName {
+                    lang: "ja".into(),
+                    value: "東京都".into(),
+                },
+            ],
+            centroid: Coord {
+                lon: 139.69,
+                lat: 35.68,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        }
+    }
+
+    fn beijing() -> Place {
+        Place {
+            id: PlaceId::new(1, 23456, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![
+                LocalizedName {
+                    lang: "default".into(),
+                    value: "Beijing".into(),
+                },
+                LocalizedName {
+                    lang: "zh".into(),
+                    value: "北京市".into(),
+                },
+            ],
+            centroid: Coord {
+                lon: 116.40,
+                lat: 39.90,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn cjk_substring_matches_full_name() {
+        let dir = tempdir_for_test();
+        build_index(&dir, vec![tokyo(), beijing()]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+
+        // Bigram tokenizer over CJK names: a 2-char sub-string of "東京都"
+        // must surface Tokyo.
+        let hits = idx.search("東京", &SearchOptions::default()).unwrap();
+        assert!(
+            hits.iter().any(|h| h.name == "Tokyo"),
+            "CJK bigram match failed: {hits:?}"
+        );
+
+        let hits = idx.search("北京", &SearchOptions::default()).unwrap();
+        assert!(
+            hits.iter().any(|h| h.name == "Beijing"),
+            "CJK bigram match failed: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn cjk_does_not_pollute_latin_search() {
+        let dir = tempdir_for_test();
+        build_index(&dir, vec![vaduz(), tokyo()]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        // A latin query must still hit only the latin name, not bigram-fold
+        // it across CJK.
+        let hits = idx.search("Vaduz", &SearchOptions::default()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "Vaduz");
+    }
+
+    #[test]
+    fn has_cjk_classifier() {
+        assert!(has_cjk("東京"));
+        assert!(has_cjk("ソウル"));
+        assert!(has_cjk("서울"));
+        assert!(!has_cjk("Vaduz"));
+        assert!(!has_cjk("München"));
     }
 }
