@@ -90,6 +90,32 @@ enum Command {
         #[arg(long)]
         source: PathBuf,
     },
+    /// Decode a single tile and pretty-print its contents. Debugging
+    /// aid for inspecting what a bundle actually shipped — kind
+    /// histogram, place samples, optional grep against name.
+    InspectTile {
+        #[arg(long)]
+        bundle: PathBuf,
+        /// Tile coordinate as `LEVEL:TILE_ID` (e.g. `1:49509`).
+        #[arg(long)]
+        tile: String,
+        /// Number of sample places to print. Default 10.
+        #[arg(long, default_value_t = 10)]
+        sample: usize,
+        /// Filter samples to places whose default name contains this
+        /// substring (case-insensitive).
+        #[arg(long)]
+        grep: Option<String>,
+    },
+    /// Decode a single admin spatial tile and pretty-print its
+    /// AdminFeature list (place_id, kind, name, vertex count).
+    InspectAdminTile {
+        #[arg(long)]
+        bundle: PathBuf,
+        /// Tile coordinate as `LEVEL:TILE_ID`.
+        #[arg(long)]
+        tile: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -137,7 +163,143 @@ fn main() -> Result<()> {
             diff,
             source,
         } => cmd_apply(&bundle, &diff, &source),
+        Command::InspectTile {
+            bundle,
+            tile,
+            sample,
+            grep,
+        } => cmd_inspect_tile(&bundle, &tile, sample, grep.as_deref()),
+        Command::InspectAdminTile { bundle, tile } => cmd_inspect_admin_tile(&bundle, &tile),
     }
+}
+
+fn parse_tile_arg(spec: &str) -> Result<(Level, u32)> {
+    let (level_s, id_s) = spec
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("--tile must be LEVEL:TILE_ID (got {spec:?})"))?;
+    let level_u8: u8 = level_s
+        .trim()
+        .parse()
+        .with_context(|| format!("parsing tile level from {level_s:?}"))?;
+    let level = Level::from_u8(level_u8)
+        .ok_or_else(|| anyhow::anyhow!("unknown level {level_u8}"))?;
+    let tile_id: u32 = id_s
+        .trim()
+        .parse()
+        .with_context(|| format!("parsing tile id from {id_s:?}"))?;
+    Ok((level, tile_id))
+}
+
+fn cmd_inspect_tile(bundle: &Path, spec: &str, sample: usize, grep: Option<&str>) -> Result<()> {
+    let (level, tile_id) = parse_tile_arg(spec)?;
+    let coord = TileCoord::from_id(level, tile_id);
+    let path = bundle.join(coord.relative_path());
+    if !path.exists() {
+        anyhow::bail!("tile not present at {}", path.display());
+    }
+    let places = cairn_tile::read_tile(&path)
+        .with_context(|| format!("decoding tile {}", path.display()))?;
+    let mut kind_hist: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    for p in &places {
+        *kind_hist
+            .entry(cairn_text::kind_str(p.kind))
+            .or_insert(0) += 1;
+    }
+    let (min_lon, min_lat, max_lon, max_lat) = coord.bbox();
+    println!("tile           = {}:{}", level.as_u8(), tile_id);
+    println!(
+        "bbox           = lon[{min_lon:.4}..{max_lon:.4}], lat[{min_lat:.4}..{max_lat:.4}]"
+    );
+    println!("place_count    = {}", places.len());
+    println!("kinds:");
+    for (k, n) in &kind_hist {
+        println!("  {k:<14} {n}");
+    }
+
+    let needle = grep.map(|g| g.to_lowercase());
+    let filtered: Vec<&cairn_place::Place> = places
+        .iter()
+        .filter(|p| {
+            let Some(needle) = needle.as_deref() else {
+                return true;
+            };
+            p.names.iter().any(|n| n.value.to_lowercase().contains(needle))
+        })
+        .collect();
+    let take = sample.min(filtered.len());
+    println!(
+        "samples ({} of {} matching):",
+        take,
+        filtered.len()
+    );
+    for p in filtered.iter().take(take) {
+        let name = p
+            .names
+            .iter()
+            .find(|n| n.lang == "default")
+            .or_else(|| p.names.first())
+            .map(|n| n.value.as_str())
+            .unwrap_or("(no name)");
+        println!(
+            "  id={} kind={} ({:.5},{:.5}) name={:?} ap_len={}",
+            p.id.0,
+            cairn_text::kind_str(p.kind),
+            p.centroid.lon,
+            p.centroid.lat,
+            name,
+            p.admin_path.len(),
+        );
+    }
+    Ok(())
+}
+
+fn cmd_inspect_admin_tile(bundle: &Path, spec: &str) -> Result<()> {
+    let (level, tile_id) = parse_tile_arg(spec)?;
+    let coord = TileCoord::from_id(level, tile_id);
+    let manifest = read_manifest(&bundle.join("manifest.toml"))?;
+    let entry = manifest
+        .admin_tiles
+        .iter()
+        .find(|e| e.level == level.as_u8() && e.tile_id == tile_id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no admin tile {}:{} in manifest.toml",
+                level.as_u8(),
+                tile_id
+            )
+        })?;
+    let abs = bundle.join(&entry.rel_path);
+    let tile = cairn_spatial::archived::AdminTileArchive::from_path(&abs)
+        .with_context(|| format!("opening admin tile {}", abs.display()))?;
+    let layer = tile.archived();
+    let (min_lon, min_lat, max_lon, max_lat) = coord.bbox();
+    println!("tile           = {}:{}", level.as_u8(), tile_id);
+    println!(
+        "bbox           = lon[{min_lon:.4}..{max_lon:.4}], lat[{min_lat:.4}..{max_lat:.4}]"
+    );
+    println!("rel_path       = {}", entry.rel_path);
+    println!("byte_size      = {}", entry.byte_size);
+    println!("feature_count  = {}", layer.features.len());
+    for feat in layer.features.iter() {
+        let total_vertices: usize = feat
+            .polygon_rings
+            .iter()
+            .flat_map(|p| p.iter())
+            .map(|r| r.len())
+            .sum();
+        let polygons = feat.polygon_rings.len();
+        println!(
+            "  id={} kind={} name={:?} polygons={} vertices={} ap_len={}",
+            feat.place_id,
+            feat.kind.as_str(),
+            feat.name.as_str(),
+            polygons,
+            total_vertices,
+            feat.admin_path.len(),
+        );
+    }
+    Ok(())
 }
 
 struct BuildArgs {
