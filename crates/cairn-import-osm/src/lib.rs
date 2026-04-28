@@ -683,33 +683,45 @@ fn relation_to_admin(
         }
     };
 
-    let outer_ways: Vec<i64> = relation
-        .members()
-        .filter(|m| matches!(m.member_type, osmpbf::RelMemberType::Way))
-        .filter(|m| {
-            m.role()
-                .ok()
-                .map(|r| r == "outer" || r.is_empty())
-                .unwrap_or(false)
-        })
-        .map(|m| m.member_id)
-        .collect();
+    let mut outer_ways: Vec<i64> = Vec::new();
+    let mut inner_ways: Vec<i64> = Vec::new();
+    for member in relation.members() {
+        if !matches!(member.member_type, osmpbf::RelMemberType::Way) {
+            continue;
+        }
+        let role = member.role().ok().unwrap_or("");
+        match role {
+            "outer" | "" => outer_ways.push(member.member_id),
+            "inner" => inner_ways.push(member.member_id),
+            _ => {}
+        }
+    }
     if outer_ways.is_empty() {
         counters.skipped_relation_no_outer += 1;
         return None;
     }
 
-    let rings = assemble_rings(&outer_ways, way_nodes);
-    if rings.is_empty() {
+    let outer_rings = assemble_rings(&outer_ways, way_nodes);
+    if outer_rings.is_empty() {
         counters.skipped_relation_open_ring += 1;
         debug!(rel_id = relation.id(), "no closed outer ring; dropping");
         return None;
     }
+    let inner_rings = assemble_rings(&inner_ways, way_nodes);
 
-    let polygons: Vec<Polygon<f64>> = rings
+    let outer_linestrings: Vec<LineString<f64>> = outer_rings
         .into_iter()
-        .filter_map(|ring| ring_to_polygon(&ring, node_coords))
+        .filter_map(|ring| ring_to_linestring(&ring, node_coords))
         .collect();
+    if outer_linestrings.is_empty() {
+        counters.skipped_relation_open_ring += 1;
+        return None;
+    }
+    let inner_linestrings: Vec<LineString<f64>> = inner_rings
+        .into_iter()
+        .filter_map(|ring| ring_to_linestring(&ring, node_coords))
+        .collect();
+    let polygons = assemble_polygons(outer_linestrings, inner_linestrings);
     if polygons.is_empty() {
         counters.skipped_relation_open_ring += 1;
         return None;
@@ -833,7 +845,7 @@ fn assemble_rings(outer_way_ids: &[i64], way_nodes: &WayNodes) -> Vec<Vec<i64>> 
     rings
 }
 
-fn ring_to_polygon(ring: &[i64], node_coords: &NodeCoords) -> Option<Polygon<f64>> {
+fn ring_to_linestring(ring: &[i64], node_coords: &NodeCoords) -> Option<LineString<f64>> {
     let coords: Vec<(f64, f64)> = ring
         .iter()
         .filter_map(|id| node_coords.get(id).map(|c| (c[0], c[1])))
@@ -841,7 +853,40 @@ fn ring_to_polygon(ring: &[i64], node_coords: &NodeCoords) -> Option<Polygon<f64
     if coords.len() < 4 {
         return None;
     }
-    Some(Polygon::new(LineString::from(coords), vec![]))
+    Some(LineString::from(coords))
+}
+
+/// Pair each inner ring with the outer ring that geometrically contains it
+/// (a representative point of the inner ring is tested against each outer
+/// linestring's polygon). Inner rings with no enclosing outer are dropped.
+fn assemble_polygons(
+    outers: Vec<LineString<f64>>,
+    inners: Vec<LineString<f64>>,
+) -> Vec<Polygon<f64>> {
+    use geo::Contains;
+    let mut bins: Vec<(LineString<f64>, Vec<LineString<f64>>)> =
+        outers.into_iter().map(|o| (o, Vec::new())).collect();
+    for inner in inners {
+        let probe = match inner.0.first() {
+            Some(c) => geo_types::Coord { x: c.x, y: c.y },
+            None => continue,
+        };
+        let mut placed = false;
+        for (outer, holes) in bins.iter_mut() {
+            let outer_poly = Polygon::new(outer.clone(), vec![]);
+            if outer_poly.contains(&probe) {
+                holes.push(inner);
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            debug!("inner ring without enclosing outer; dropping");
+        }
+    }
+    bins.into_iter()
+        .map(|(outer, holes)| Polygon::new(outer, holes))
+        .collect()
 }
 
 fn multipolygon_centroid(mp: &MultiPolygon<f64>) -> Option<Coord> {
@@ -1076,5 +1121,84 @@ mod tests {
         assert!(keys.contains(&"highway"));
         assert!(!keys.contains(&"source"));
         assert!(!keys.contains(&"name"));
+    }
+
+    #[test]
+    fn inner_ring_becomes_hole_in_enclosing_outer() {
+        // Outer: 10x10 square at origin. Inner: 2x2 square inside it.
+        let outer = LineString::from(vec![
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let inner = LineString::from(vec![
+            (4.0, 4.0),
+            (6.0, 4.0),
+            (6.0, 6.0),
+            (4.0, 6.0),
+            (4.0, 4.0),
+        ]);
+        let polys = assemble_polygons(vec![outer], vec![inner]);
+        assert_eq!(polys.len(), 1);
+        assert_eq!(polys[0].interiors().len(), 1);
+    }
+
+    #[test]
+    fn inner_ring_outside_outer_is_dropped() {
+        let outer = LineString::from(vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (0.0, 0.0),
+        ]);
+        let stray = LineString::from(vec![
+            (50.0, 50.0),
+            (51.0, 50.0),
+            (51.0, 51.0),
+            (50.0, 51.0),
+            (50.0, 50.0),
+        ]);
+        let polys = assemble_polygons(vec![outer], vec![stray]);
+        assert_eq!(polys.len(), 1);
+        assert!(polys[0].interiors().is_empty());
+    }
+
+    #[test]
+    fn multiple_outers_each_get_their_own_inner() {
+        let outer_a = LineString::from(vec![
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let outer_b = LineString::from(vec![
+            (100.0, 0.0),
+            (110.0, 0.0),
+            (110.0, 10.0),
+            (100.0, 10.0),
+            (100.0, 0.0),
+        ]);
+        let inner_a = LineString::from(vec![
+            (4.0, 4.0),
+            (6.0, 4.0),
+            (6.0, 6.0),
+            (4.0, 6.0),
+            (4.0, 4.0),
+        ]);
+        let inner_b = LineString::from(vec![
+            (104.0, 4.0),
+            (106.0, 4.0),
+            (106.0, 6.0),
+            (104.0, 6.0),
+            (104.0, 4.0),
+        ]);
+        let polys = assemble_polygons(vec![outer_a, outer_b], vec![inner_a, inner_b]);
+        assert_eq!(polys.len(), 2);
+        assert_eq!(polys[0].interiors().len(), 1);
+        assert_eq!(polys[1].interiors().len(), 1);
     }
 }
