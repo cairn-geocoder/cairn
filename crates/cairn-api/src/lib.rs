@@ -1279,6 +1279,7 @@ async fn pelias_reverse(
                 score: 1.0,
                 admin_path: f.admin_path.clone(),
                 distance_km: Some(haversine_km(lat, lon, f.centroid.lat, f.centroid.lon)),
+                population: 0,
             };
             hit_to_pelias_feature(hit)
         })

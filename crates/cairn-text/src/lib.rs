@@ -37,6 +37,13 @@ const MAX_FUZZY_DISTANCE: u8 = 2;
 /// without nuking BM25 entirely, so well-ranked partial matches still
 /// surface.
 const EXACT_MATCH_BOOST: f32 = 4.0;
+/// Per-hit popularity weighting. Score is multiplied by
+/// `1 + log10(1+population) * POPULATION_BOOST_RATE`. With rate 0.1,
+/// pop 100 → +0.2x; pop 10k → +0.4x; pop 1M → +0.6x; pop 10M → +0.7x.
+/// Modest enough not to overwhelm exact-match (4×) or BM25, large
+/// enough to break ties — Berlin beats a 200-population hamlet that
+/// happens to match the query.
+const POPULATION_BOOST_RATE: f32 = 0.1;
 
 /// ASCII-fold + script transliterate a string via `deunicode`.
 /// Returns `None` when the result equals the input (already ASCII)
@@ -90,6 +97,14 @@ pub struct Hit {
     pub admin_path: Vec<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_km: Option<f64>,
+    /// Place population when available (Geonames stamps it; WoF
+    /// occasionally; OSM rarely). 0 = unknown.
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub population: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -140,6 +155,8 @@ struct TextSchema {
     lon: Field,
     lat: Field,
     admin_path: Field,
+    /// Optional population (`tags["population"]`). 0 = unknown.
+    population: Field,
 }
 
 impl TextSchema {
@@ -169,6 +186,7 @@ impl TextSchema {
         let lon = sb.add_f64_field("lon", STORED);
         let lat = sb.add_f64_field("lat", STORED);
         let admin_path = sb.add_u64_field("admin_path", STORED);
+        let population = sb.add_u64_field("population", FAST | STORED);
         let schema = sb.build();
         Self {
             schema,
@@ -182,6 +200,7 @@ impl TextSchema {
             lon,
             lat,
             admin_path,
+            population,
         }
     }
 }
@@ -273,6 +292,21 @@ where
         for ancestor in &place.admin_path {
             doc.add_u64(schema.admin_path, ancestor.0);
         }
+        // Pull population out of tags. Geonames stamps it natively;
+        // 0 = unknown (no boost). Cap at u64::MAX / 2 so log scaling
+        // can't overflow.
+        let population = place
+            .tags
+            .iter()
+            .find_map(|(k, v)| {
+                if k == "population" {
+                    v.parse::<u64>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        doc.add_u64(schema.population, population);
         writer.add_document(doc)?;
         doc_count += 1;
     }
@@ -346,6 +380,7 @@ impl TextIndex {
         if matches!(opts.mode, SearchMode::Search) {
             apply_exact_name_boost(&mut hits, trimmed);
         }
+        apply_population_boost(&mut hits);
 
         if let Some(focus) = opts.focus {
             apply_geo_bias(&mut hits, focus, opts.focus_weight);
@@ -497,6 +532,10 @@ impl TextIndex {
             score,
             admin_path,
             distance_km: None,
+            population: doc
+                .get_first(self.schema.population)
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
         }
     }
 }
@@ -513,6 +552,20 @@ fn apply_exact_name_boost(hits: &mut [Hit], query: &str) {
         if fold_for_compare(&h.name) == q {
             h.score *= EXACT_MATCH_BOOST;
         }
+    }
+}
+
+/// Multiply each hit's score by `1 + log10(1+pop) * POPULATION_BOOST_RATE`.
+/// Hits with `population == 0` (unknown) are unchanged. Logarithmic
+/// scaling means a city of 10M doesn't crush a clean BM25 match for a
+/// 10k-population village.
+fn apply_population_boost(hits: &mut [Hit]) {
+    for h in hits.iter_mut() {
+        if h.population == 0 {
+            continue;
+        }
+        let factor = 1.0 + ((h.population as f32 + 1.0).log10()) * POPULATION_BOOST_RATE;
+        h.score *= factor;
     }
 }
 
@@ -853,6 +906,48 @@ mod tests {
             hits.first().map(|h| h.name == "München").unwrap_or(false),
             "ASCII 'munchen' must boost München over partial-name PoI: {hits:?}"
         );
+    }
+
+    #[test]
+    fn population_boost_breaks_ties_in_favor_of_bigger() {
+        let dir = tempdir_for_test();
+        let big = Place {
+            id: PlaceId::new(1, 1, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Springfield".into(),
+            }],
+            centroid: Coord {
+                lon: 0.0,
+                lat: 0.0,
+            },
+            admin_path: vec![],
+            tags: vec![("population".into(), "200000".into())],
+        };
+        let small = Place {
+            id: PlaceId::new(1, 2, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Springfield".into(),
+            }],
+            centroid: Coord {
+                lon: 50.0,
+                lat: 50.0,
+            },
+            admin_path: vec![],
+            tags: vec![("population".into(), "150".into())],
+        };
+        build_index(&dir, vec![small, big]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let hits = idx
+            .search("Springfield", &SearchOptions::default())
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        // Both exact-match boosted; population differentiates.
+        assert_eq!(hits[0].population, 200000);
+        assert_eq!(hits[1].population, 150);
     }
 
     fn tokyo() -> Place {
