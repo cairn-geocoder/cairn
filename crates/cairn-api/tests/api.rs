@@ -147,6 +147,7 @@ fn build_test_state() -> AppState {
         metrics: Arc::new(Metrics::new("test".into(), 1, 3)),
         api_key: None,
         rate_limit: None,
+        trust_forwarded_for: false,
     }
 }
 
@@ -500,6 +501,73 @@ async fn rate_limiter_throttles_after_burst_exhausted() {
         StatusCode::TOO_MANY_REQUESTS,
         "after burst, requests must 429"
     );
+}
+
+#[tokio::test]
+async fn rate_limit_uses_xff_when_trusted_so_separate_proxied_clients_dont_share_bucket() {
+    use std::net::SocketAddr;
+    let mut state = build_test_state();
+    state.rate_limit = Some(std::sync::Arc::new(RateLimiter::new(0.001, 1.0)));
+    state.trust_forwarded_for = true;
+    let app = router(state)
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))));
+
+    // Two different upstream clients via the same proxy: each gets
+    // its own bucket. Without XFF trust, both would share the
+    // proxy's IP and burst-1 would block the second.
+    let req_a = Request::get("/v1/search?q=Vaduz")
+        .header("X-Forwarded-For", "203.0.113.1")
+        .body(Body::empty())
+        .unwrap();
+    let resp_a = tower::ServiceExt::oneshot(app.clone(), req_a)
+        .await
+        .unwrap();
+    assert_eq!(resp_a.status(), StatusCode::OK);
+
+    let req_b = Request::get("/v1/search?q=Vaduz")
+        .header("X-Forwarded-For", "203.0.113.2")
+        .body(Body::empty())
+        .unwrap();
+    let resp_b = tower::ServiceExt::oneshot(app.clone(), req_b)
+        .await
+        .unwrap();
+    assert_eq!(resp_b.status(), StatusCode::OK);
+
+    // Same IP twice → second 429.
+    let req_a2 = Request::get("/v1/search?q=Vaduz")
+        .header("X-Forwarded-For", "203.0.113.1")
+        .body(Body::empty())
+        .unwrap();
+    let resp_a2 = tower::ServiceExt::oneshot(app, req_a2).await.unwrap();
+    assert_eq!(resp_a2.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn rate_limit_ignores_xff_when_proxy_not_trusted() {
+    use std::net::SocketAddr;
+    let mut state = build_test_state();
+    state.rate_limit = Some(std::sync::Arc::new(RateLimiter::new(0.001, 1.0)));
+    state.trust_forwarded_for = false;
+    let app = router(state)
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))));
+
+    // Forged XFF must not let an attacker rotate identities to dodge
+    // the per-IP bucket. Both calls share the ConnectInfo IP.
+    let req_a = Request::get("/v1/search?q=Vaduz")
+        .header("X-Forwarded-For", "203.0.113.1")
+        .body(Body::empty())
+        .unwrap();
+    let resp_a = tower::ServiceExt::oneshot(app.clone(), req_a)
+        .await
+        .unwrap();
+    assert_eq!(resp_a.status(), StatusCode::OK);
+
+    let req_b = Request::get("/v1/search?q=Vaduz")
+        .header("X-Forwarded-For", "203.0.113.999-spoof")
+        .body(Body::empty())
+        .unwrap();
+    let resp_b = tower::ServiceExt::oneshot(app, req_b).await.unwrap();
+    assert_eq!(resp_b.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]

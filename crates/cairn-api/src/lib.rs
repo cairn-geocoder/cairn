@@ -79,6 +79,13 @@ pub struct AppState {
     /// Optional per-IP token-bucket rate limiter. When `Some`, requests
     /// to `/v1/*` are throttled; absent = unlimited (default).
     pub rate_limit: Option<Arc<RateLimiter>>,
+    /// When `true`, the rate limiter trusts the first entry of the
+    /// `X-Forwarded-For` header as the originating client IP. Only safe
+    /// behind a reverse proxy / ingress that strips client-supplied
+    /// `X-Forwarded-For` and appends its own — otherwise an attacker
+    /// can forge their IP and trivially bypass the per-IP bucket.
+    /// Default `false`.
+    pub trust_forwarded_for: bool,
 }
 
 /// Token-bucket rate limiter, per remote IP. `rate_per_sec` tokens
@@ -280,14 +287,13 @@ async fn rate_limit(
     let Some(limiter) = state.rate_limit.as_deref() else {
         return Ok(next.run(request).await);
     };
-    // ConnectInfo is None when the request comes through `oneshot`
-    // (e.g. integration tests) instead of the actual TCP listener.
-    // Treat that as "skip rate-limiting" — production paths always
-    // have it.
-    let Some(ConnectInfo(sa)) = addr else {
+    let client_ip = client_ip_for_rate_limit(state.trust_forwarded_for, &request, addr);
+    let Some(ip) = client_ip else {
+        // No usable IP source (no ConnectInfo, no trusted XFF). Tests
+        // hit this path; production always has ConnectInfo.
         return Ok(next.run(request).await);
     };
-    if !limiter.check(sa.ip()) {
+    if !limiter.check(ip) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
@@ -295,6 +301,33 @@ async fn rate_limit(
         ));
     }
     Ok(next.run(request).await)
+}
+
+/// Resolve the client IP for rate-limiting purposes. When
+/// `trust_xff` is set, prefer the first IP from the `X-Forwarded-For`
+/// header (the originating client per RFC 7239 / common ingress
+/// convention). Otherwise fall back to the per-connection IP from
+/// `ConnectInfo`.
+///
+/// Without `trust_xff` an attacker can forge `X-Forwarded-For` and
+/// bypass the bucket; that's why this is opt-in.
+fn client_ip_for_rate_limit(
+    trust_xff: bool,
+    request: &Request<axum::body::Body>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+) -> Option<std::net::IpAddr> {
+    if trust_xff {
+        if let Some(value) = request.headers().get("x-forwarded-for") {
+            if let Ok(s) = value.to_str() {
+                if let Some(first) = s.split(',').next() {
+                    if let Ok(ip) = first.trim().parse::<std::net::IpAddr>() {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+    }
+    connect_info.map(|ConnectInfo(sa)| sa.ip())
 }
 
 /// Reject requests that don't carry the configured `X-API-Key` header

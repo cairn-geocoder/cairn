@@ -115,6 +115,17 @@ async fn main() -> Result<()> {
         tracing::info!("CAIRN_RATE_LIMIT not set — /v1/* unthrottled");
     }
 
+    // CAIRN_TRUST_PROXY=1 makes the rate limiter use the first IP in
+    // X-Forwarded-For. Only safe when an ingress / reverse proxy
+    // strips client-supplied XFF and re-appends its own. Default off
+    // so a public deploy without a trusted proxy can't be spoofed.
+    let trust_forwarded_for = std::env::var("CAIRN_TRUST_PROXY")
+        .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if trust_forwarded_for {
+        tracing::info!("CAIRN_TRUST_PROXY=on — X-Forwarded-For is the rate-limiter key");
+    }
+
     let state = AppState {
         bundle_path: Arc::new(cli.bundle.clone()),
         text,
@@ -123,6 +134,7 @@ async fn main() -> Result<()> {
         metrics,
         api_key,
         rate_limit,
+        trust_forwarded_for,
     };
     let app = router(state);
 
