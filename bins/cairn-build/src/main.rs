@@ -36,6 +36,13 @@ enum Command {
         oa: Option<PathBuf>,
         #[arg(long)]
         geonames: Option<PathBuf>,
+        /// Geonames postcode dump path (`<CC>.txt` /
+        /// `allCountries.txt` from
+        /// `download.geonames.org/export/zip/`). Each row becomes a
+        /// `Place(kind=Postcode)` so `?layer=postcode` /
+        /// `?categories=postal` can filter to postcodes.
+        #[arg(long)]
+        postcodes: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
         #[arg(long, default_value = "alpha-bundle")]
@@ -171,6 +178,7 @@ fn main() -> Result<()> {
             wof,
             oa,
             geonames,
+            postcodes,
             out,
             bundle_id,
             zstd,
@@ -181,6 +189,7 @@ fn main() -> Result<()> {
             wof,
             oa,
             geonames,
+            postcodes,
             out,
             bundle_id,
             source_priority: parse_source_priority(&source_priority)?,
@@ -424,6 +433,7 @@ struct BuildArgs {
     wof: Option<PathBuf>,
     oa: Option<PathBuf>,
     geonames: Option<PathBuf>,
+    postcodes: Option<PathBuf>,
     out: PathBuf,
     bundle_id: String,
     compression: TileCompression,
@@ -564,6 +574,28 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             name: "geonames".into(),
             version: geonames_path.display().to_string(),
             blake3: hash_file(geonames_path)?,
+        });
+    }
+
+    if let Some(postcodes_path) = args.postcodes.as_ref() {
+        tracing::info!(path = %postcodes_path.display(), "ingesting Geonames postcode TSV");
+        let imported =
+            cairn_import_geonames::import_postcodes(postcodes_path).with_context(|| {
+                format!(
+                    "Geonames postcode import failed: {}",
+                    postcodes_path.display()
+                )
+            })?;
+        tracing::info!(count = imported.len(), "postcode places imported");
+        places.extend(
+            imported
+                .into_iter()
+                .map(|p| (p, cairn_place::SourceKind::Geonames)),
+        );
+        sources.push(SourceVersion {
+            name: "geonames-postcodes".into(),
+            version: postcodes_path.display().to_string(),
+            blake3: hash_file(postcodes_path)?,
         });
     }
 
@@ -731,8 +763,8 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         }
     }
     let admin_names_path = text_dir.join("admin_names.json");
-    let admin_names_str = serde_json::to_string(&admin_names)
-        .context("encoding admin_names sidecar")?;
+    let admin_names_str =
+        serde_json::to_string(&admin_names).context("encoding admin_names sidecar")?;
     std::fs::write(&admin_names_path, &admin_names_str)
         .with_context(|| format!("writing {}", admin_names_path.display()))?;
     tracing::info!(
@@ -782,19 +814,34 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             let before_verts: usize = layer
                 .features
                 .iter()
-                .map(|f| f.polygon.0.iter().map(|p| p.exterior().0.len()).sum::<usize>())
+                .map(|f| {
+                    f.polygon
+                        .0
+                        .iter()
+                        .map(|p| p.exterior().0.len())
+                        .sum::<usize>()
+                })
                 .sum();
             cairn_spatial::simplify_admin_layer(&mut layer, args.simplify_tolerance_deg);
             let after_verts: usize = layer
                 .features
                 .iter()
-                .map(|f| f.polygon.0.iter().map(|p| p.exterior().0.len()).sum::<usize>())
+                .map(|f| {
+                    f.polygon
+                        .0
+                        .iter()
+                        .map(|p| p.exterior().0.len())
+                        .sum::<usize>()
+                })
                 .sum();
             tracing::info!(
                 tolerance_deg = args.simplify_tolerance_deg,
                 before_verts,
                 after_verts,
-                pct_kept = format!("{:.1}", after_verts as f64 / before_verts.max(1) as f64 * 100.0),
+                pct_kept = format!(
+                    "{:.1}",
+                    after_verts as f64 / before_verts.max(1) as f64 * 100.0
+                ),
                 "admin polygons simplified"
             );
         }

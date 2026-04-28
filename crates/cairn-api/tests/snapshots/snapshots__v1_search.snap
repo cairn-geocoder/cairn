@@ -10,6 +10,9 @@ expression: body
       "admin_path": [
         27217860589780993
       ],
+      "categories": [
+        "admin"
+      ],
       "kind": "city",
       "langs": [
         "default"

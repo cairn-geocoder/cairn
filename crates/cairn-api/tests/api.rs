@@ -182,6 +182,87 @@ async fn healthz_ok() {
     assert_eq!(body["status"], "ok");
 }
 
+async fn get_with_accept(
+    state: AppState,
+    uri: &str,
+    accept: &str,
+) -> (StatusCode, String, Option<String>) {
+    let req = Request::get(uri)
+        .header(axum::http::header::ACCEPT, accept)
+        .body(Body::empty())
+        .unwrap();
+    let resp = router(state).oneshot(req).await.unwrap();
+    let status = resp.status();
+    let ct = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).to_string(), ct)
+}
+
+#[tokio::test]
+async fn search_explain_returns_per_stage_breakdown() {
+    let (status, body) = get_json(build_test_state(), "/v1/search?q=Vaduz&explain=true").await;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(!results.is_empty());
+    let first = &results[0];
+    let explain = first
+        .get("explain")
+        .expect("explain block must be present when ?explain=true");
+    // BM25 baseline must be > 0; final_score must equal the hit's
+    // surfaced score.
+    assert!(explain["bm25"].as_f64().unwrap() > 0.0);
+    assert!(
+        (explain["final_score"].as_f64().unwrap() - first["score"].as_f64().unwrap()).abs() < 1e-3
+    );
+    // Vaduz exactly matches its own name → exact_match_boost = 4.0.
+    assert!((explain["exact_match_boost"].as_f64().unwrap() - 4.0).abs() < 1e-3);
+}
+
+#[tokio::test]
+async fn search_explain_off_by_default() {
+    let (status, body) = get_json(build_test_state(), "/v1/search?q=Vaduz").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body["results"][0].get("explain").is_none(),
+        "explain must be omitted by default"
+    );
+}
+
+#[tokio::test]
+async fn search_ndjson_emits_one_line_per_hit() {
+    let (status, body, ct) = get_with_accept(
+        build_test_state(),
+        "/v1/search?q=Vaduz",
+        "application/x-ndjson",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ct.as_deref(), Some("application/x-ndjson"));
+    let lines: Vec<&str> = body
+        .trim_end()
+        .split('\n')
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert!(!lines.is_empty(), "ndjson body empty");
+    for line in &lines {
+        let v: Value = serde_json::from_str(line).expect("each line must be valid JSON");
+        assert!(v.get("place_id").is_some(), "missing place_id: {line}");
+        assert!(v.get("name").is_some(), "missing name: {line}");
+    }
+}
+
+#[tokio::test]
+async fn search_default_accept_returns_envelope_json() {
+    // No Accept header (or */*) → wrapped JSON object, not NDJSON.
+    let (status, body) = get_json(build_test_state(), "/v1/search?q=Vaduz").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("results").is_some(), "expected envelope: {body}");
+}
+
 #[tokio::test]
 async fn search_finds_vaduz() {
     let (status, body) = get_json(build_test_state(), "/v1/search?q=Vaduz&limit=3").await;
@@ -477,6 +558,114 @@ async fn unknown_route_returns_404() {
     let req = Request::get("/v99/nope").body(Body::empty()).unwrap();
     let resp = router(build_test_state()).oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn search_boundary_rect_keeps_in_rect_results() {
+    // Bbox covers Vaduz (~9.5209, 47.141). Vaduz is in the fixture.
+    let state = build_test_state();
+    let url = "/v1/search?q=Vaduz\
+&boundary.rect.min_lon=9.515\
+&boundary.rect.min_lat=47.135\
+&boundary.rect.max_lon=9.525\
+&boundary.rect.max_lat=47.145";
+    let (status, body) = get_json(state, url).await;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(!results.is_empty(), "Vaduz must survive the rect");
+    for r in results {
+        let lon = r["lon"].as_f64().unwrap();
+        let lat = r["lat"].as_f64().unwrap();
+        assert!((9.515..=9.525).contains(&lon), "lon out of bbox: {r}");
+        assert!((47.135..=47.145).contains(&lat), "lat out of bbox: {r}");
+    }
+}
+
+#[tokio::test]
+async fn search_boundary_rect_clips_far_away() {
+    // Bbox over Australia — Vaduz is in Europe; result count must
+    // be zero.
+    let state = build_test_state();
+    let url = "/v1/search?q=Vaduz\
+&boundary.rect.min_lon=140.0\
+&boundary.rect.min_lat=-40.0\
+&boundary.rect.max_lon=150.0\
+&boundary.rect.max_lat=-30.0";
+    let (status, body) = get_json(state, url).await;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(results.is_empty(), "Vaduz must be clipped: {body}");
+}
+
+#[tokio::test]
+async fn search_partial_boundary_rect_is_ignored() {
+    // Pelias spec: all four required together. Missing one field =
+    // treat as no rect (no 400, no clip).
+    let state = build_test_state();
+    let (status, body) = get_json(state, "/v1/search?q=Vaduz&boundary.rect.min_lat=47.0").await;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(!results.is_empty(), "partial bbox must not drop anything");
+}
+
+#[tokio::test]
+async fn search_categories_filter_drops_non_matching_pois() {
+    // Build a tiny, isolated state with two POIs that share a name
+    // but differ on amenity. ?categories=hospital must keep only the
+    // hospital.
+    let bundle = tempdir();
+    let hospital = Place {
+        id: PlaceId::new(2, 49509, 10).unwrap(),
+        kind: PlaceKind::Poi,
+        names: vec![LocalizedName {
+            lang: "default".into(),
+            value: "Salus Center".into(),
+        }],
+        centroid: Coord {
+            lon: 9.50,
+            lat: 47.14,
+        },
+        admin_path: vec![],
+        tags: vec![("amenity".into(), "hospital".into())],
+    };
+    let bakery = Place {
+        id: PlaceId::new(2, 49509, 11).unwrap(),
+        kind: PlaceKind::Poi,
+        names: vec![LocalizedName {
+            lang: "default".into(),
+            value: "Salus Center".into(),
+        }],
+        centroid: Coord {
+            lon: 9.51,
+            lat: 47.14,
+        },
+        admin_path: vec![],
+        tags: vec![("shop".into(), "bakery".into())],
+    };
+    let text_dir = bundle.join("index/text");
+    build_index(&text_dir, vec![hospital, bakery]).unwrap();
+    let text = TextIndex::open(&text_dir).unwrap();
+    let state = AppState {
+        bundle_path: Arc::new(bundle),
+        text: Some(Arc::new(text)),
+        admin: None,
+        nearest: None,
+        metrics: Arc::new(Metrics::new("test".into(), 0, 2)),
+        api_key: None,
+        rate_limit: None,
+        trust_forwarded_for: false,
+        trusted_proxy_cidrs: Arc::new(Vec::new()),
+    };
+    let (status, body) = get_json(state.clone(), "/v1/search?q=Salus+Center").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["results"].as_array().unwrap().len(), 2);
+
+    let (status, body) = get_json(state, "/v1/search?q=Salus+Center&categories=hospital").await;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "categories=hospital must drop bakery");
+    let cats = results[0]["categories"].as_array().unwrap();
+    assert!(cats.iter().any(|v| v == "hospital"));
 }
 
 #[tokio::test]

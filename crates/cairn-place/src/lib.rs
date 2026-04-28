@@ -287,6 +287,152 @@ fn better(
     }
 }
 
+/// Derive a Pelias-style category taxonomy for a [`Place`] from its
+/// kind + OSM tags. Returns lowercase category tokens such as
+/// `["health", "hospital"]` or `["food", "restaurant"]`. Empty when
+/// nothing classifiable. Call sites (cairn-text indexing) emit one
+/// term per category into a multi-value tantivy field; queries match
+/// on any token.
+///
+/// Taxonomy is intentionally small + flat — top-level group + leaf —
+/// so callers can filter coarsely (`?categories=health`) or precisely
+/// (`?categories=hospital`) without negotiating a deep tree.
+pub fn categories_for(place: &Place) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    // Kind-derived categories. Admin layers all roll up to "admin"
+    // so `?categories=admin` filters to populated places + boundaries.
+    match place.kind {
+        PlaceKind::Country
+        | PlaceKind::Region
+        | PlaceKind::County
+        | PlaceKind::City
+        | PlaceKind::District
+        | PlaceKind::Neighborhood => out.push("admin".into()),
+        PlaceKind::Street => out.push("street".into()),
+        PlaceKind::Address => out.push("address".into()),
+        PlaceKind::Postcode => out.push("postal".into()),
+        PlaceKind::Poi => {} // taxonomy below
+    }
+
+    let tag = |key: &str| -> Option<&str> {
+        place
+            .tags
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+
+    if let Some(v) = tag("amenity") {
+        match v {
+            "hospital" | "clinic" | "doctors" | "pharmacy" | "dentist" | "veterinary" => {
+                out.push("health".into());
+                out.push(v.into());
+            }
+            "restaurant" | "cafe" | "bar" | "pub" | "fast_food" | "food_court" | "ice_cream"
+            | "biergarten" => {
+                out.push("food".into());
+                out.push(v.into());
+            }
+            "school" | "university" | "college" | "kindergarten" | "library" => {
+                out.push("education".into());
+                out.push(v.into());
+            }
+            "police" | "fire_station" | "post_office" | "townhall" | "courthouse" | "embassy"
+            | "prison" | "social_facility" => {
+                out.push("government".into());
+                out.push(v.into());
+            }
+            "bank" | "atm" | "bureau_de_change" => {
+                out.push("finance".into());
+                out.push(v.into());
+            }
+            "cinema" | "theatre" | "arts_centre" | "nightclub" | "casino" => {
+                out.push("entertainment".into());
+                out.push(v.into());
+            }
+            "place_of_worship" => {
+                out.push("religion".into());
+                out.push(v.into());
+            }
+            "parking" | "fuel" | "charging_station" | "bus_station" | "ferry_terminal" | "taxi" => {
+                out.push("transport".into());
+                out.push(v.into());
+            }
+            other => out.push(other.into()),
+        }
+    }
+    if let Some(v) = tag("shop") {
+        out.push("commercial".into());
+        if v == "supermarket" || v == "convenience" || v == "grocery" || v == "bakery" {
+            out.push("food".into());
+        }
+        out.push(v.into());
+    }
+    if let Some(v) = tag("tourism") {
+        match v {
+            "hotel" | "motel" | "hostel" | "guest_house" | "apartment" | "chalet"
+            | "alpine_hut" | "wilderness_hut" | "camp_site" | "caravan_site" => {
+                out.push("accommodation".into());
+                out.push(v.into());
+            }
+            "museum" | "gallery" | "attraction" | "viewpoint" | "theme_park" | "zoo"
+            | "aquarium" | "artwork" => {
+                out.push("attraction".into());
+                out.push(v.into());
+            }
+            other => {
+                out.push("tourism".into());
+                out.push(other.into());
+            }
+        }
+    }
+    if let Some(v) = tag("leisure") {
+        out.push("leisure".into());
+        out.push(v.into());
+    }
+    if let Some(v) = tag("historic") {
+        out.push("historic".into());
+        out.push(v.into());
+    }
+    if let Some(v) = tag("emergency") {
+        out.push("emergency".into());
+        out.push(v.into());
+    }
+    if let Some(v) = tag("healthcare") {
+        // Don't double-stamp "health" when amenity already added it;
+        // dedup at the end.
+        out.push("health".into());
+        out.push(v.into());
+    }
+    if let Some(v) = tag("office") {
+        out.push("office".into());
+        out.push(v.into());
+    }
+    if let Some(v) = tag("craft") {
+        out.push("commercial".into());
+        out.push(v.into());
+    }
+    if let Some(v) = tag("aeroway") {
+        if v == "aerodrome" || v == "terminal" || v == "gate" {
+            out.push("transport".into());
+            out.push("airport".into());
+        }
+    }
+    if let Some(v) = tag("railway") {
+        if v == "station" || v == "halt" || v == "tram_stop" || v == "subway_entrance" {
+            out.push("transport".into());
+            out.push("railway".into());
+        }
+    }
+
+    // Dedup while preserving first-seen order so callers get stable
+    // output across calls.
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    out.retain(|c| seen.insert(c.clone()));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +635,80 @@ mod tests {
         let kept = dedupe_places(vec![unknown(bare), unknown(richer)], &[SourceKind::Wof]);
         assert_eq!(kept.len(), 1);
         assert!(!kept[0].admin_path.is_empty());
+    }
+
+    fn poi_with_tags(tags: &[(&str, &str)]) -> Place {
+        Place {
+            id: PlaceId::new(2, 1, 1).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "x".into(),
+            }],
+            centroid: Coord { lon: 0.0, lat: 0.0 },
+            admin_path: vec![],
+            tags: tags
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn categories_admin_kind_emits_admin_token() {
+        let mut p = poi_with_tags(&[]);
+        p.kind = PlaceKind::City;
+        let cats = categories_for(&p);
+        assert_eq!(cats, vec!["admin".to_string()]);
+    }
+
+    #[test]
+    fn categories_amenity_hospital_emits_health_taxonomy() {
+        let p = poi_with_tags(&[("amenity", "hospital")]);
+        let cats = categories_for(&p);
+        assert!(cats.contains(&"health".to_string()));
+        assert!(cats.contains(&"hospital".to_string()));
+    }
+
+    #[test]
+    fn categories_shop_supermarket_rolls_up_to_food_and_commercial() {
+        let p = poi_with_tags(&[("shop", "supermarket")]);
+        let cats = categories_for(&p);
+        assert!(cats.contains(&"commercial".to_string()));
+        assert!(cats.contains(&"food".to_string()));
+        assert!(cats.contains(&"supermarket".to_string()));
+    }
+
+    #[test]
+    fn categories_tourism_hotel_emits_accommodation() {
+        let p = poi_with_tags(&[("tourism", "hotel")]);
+        let cats = categories_for(&p);
+        assert!(cats.contains(&"accommodation".to_string()));
+        assert!(cats.contains(&"hotel".to_string()));
+    }
+
+    #[test]
+    fn categories_dedupes_overlapping_tags() {
+        // amenity=hospital + healthcare=hospital should not double-stamp
+        // "health" or "hospital".
+        let p = poi_with_tags(&[("amenity", "hospital"), ("healthcare", "hospital")]);
+        let cats = categories_for(&p);
+        assert_eq!(cats.iter().filter(|c| c.as_str() == "health").count(), 1);
+        assert_eq!(cats.iter().filter(|c| c.as_str() == "hospital").count(), 1);
+    }
+
+    #[test]
+    fn categories_postcode_emits_postal() {
+        let mut p = poi_with_tags(&[]);
+        p.kind = PlaceKind::Postcode;
+        let cats = categories_for(&p);
+        assert_eq!(cats, vec!["postal".to_string()]);
+    }
+
+    #[test]
+    fn categories_unknown_amenity_passes_through() {
+        let p = poi_with_tags(&[("amenity", "weird_unknown_thing")]);
+        let cats = categories_for(&p);
+        assert_eq!(cats, vec!["weird_unknown_thing".to_string()]);
     }
 }

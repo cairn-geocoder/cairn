@@ -139,25 +139,19 @@ Useful when the bundle exceeds ~200 MB of polygons. Skip until then.
 
 ### Phase 6d — OSM `boundary=administrative` relations → polygons
 
-**Status:** scoped, not implemented.
+**Status:** **shipped.** `crates/cairn-import-osm/src/lib.rs` pass 2b2
+walks `Element::Relation`, tests `boundary=administrative` (or
+`type=multipolygon|boundary` with `boundary=administrative`),
+assembles outer + inner rings via endpoint matching
+(`assemble_rings`, `assemble_polygons`), maps `admin_level` →
+`PlaceKind` (1-2=country, 3-4=region, 5-6=county, 7-8=city,
+9=district, 10-12=neighborhood), mints deterministic PlaceId, and
+emits `AdminFeature` alongside Place stream. Open-ring relations are
+dropped with `skipped_relation_open_ring` counter; missing-outer
+relations counted via `skipped_relation_no_outer`.
 
-WhosOnFirst supplies admin polygons today, but OSM-only deployments
-(no internet to fetch WoF) lose admin reverse PIP entirely.
-
-**Plan:**
-1. Three-pass PBF (we already cache node coords in pass 1):
-   - Pass 2: cache `way_id → Vec<NodeId>`.
-   - Pass 3: iterate relations with `type=multipolygon` AND
-     `boundary=administrative`. Group members by role (`outer` /
-     `inner`).
-2. Ring assembly: connect `outer` member ways into closed rings via
-   endpoint matching. Open rings = drop with a warning.
-3. Build `MultiPolygon`. Map `admin_level` → PlaceKind (2=country,
-   4=region, 6=county, 8=city, 10=neighborhood).
-4. Emit `AdminFeature`s alongside the existing OSM Place stream.
-
-Tractable but multi-day work. Best after Phase 6c so the per-tile
-admin layer can absorb the volume jump.
+OSM-only airgap deploys now have full admin reverse PIP coverage
+without WoF dep.
 
 ### Phase 6e — libpostal FFI
 
@@ -235,9 +229,120 @@ bundle layout doesn't shift mid-effort.
 - Differential update protocol (replace tile X.bin in place).
 - Authentication (API key) middleware for `cairn-serve`.
 
+## Superiority Plan — 4 Tiers (2026-04-29)
+
+Goal: close incumbent parity gaps, then ship features no other geocoder
+has. Sequenced to maximise unblock value per day of work. Estimated
+total: ~3 weeks focused work for full superiority claim.
+
+### Tier 1 — Parity (3-5 days; unblocks "drop-in for Pelias")
+
+- **1a. OSM `boundary=administrative` relations → polygons**
+  *(Phase 6d)* — **SHIPPED.** Pass 2b2 in cairn-import-osm assembles
+  outer+inner rings, maps `admin_level` → `PlaceKind`, emits
+  `AdminFeature` alongside Place stream. OSM-only airgap deploys
+  covered.
+- **1b. `?categories=` filter** — **SHIPPED.** New `categories` STRING
+  multi-value tantivy field, `cairn_place::categories_for` derives
+  Pelias-style taxonomy from kind + tags, `/v1/search?categories=` AND
+  Pelias `?categories=` honor OR-list. 7 unit tests in cairn-place,
+  2 in cairn-text, 1 in cairn-api.
+- **1c. `boundary.rect.*` viewport bias** — **SHIPPED.**
+  `Bbox { min/max lon/lat }` post-filter clip, `boundary.rect.*` query
+  params on `/v1/search` + Pelias `/search`. Inverted rect treated
+  as no-op (antimeridian crossers). 2 unit tests cairn-text, 3
+  integration tests cairn-api.
+- **1d. Postcode layer** — **SHIPPED.**
+  `cairn_import_geonames::import_postcodes` parses 12-column Geonames
+  postcode TSV, emits `Place(kind=Postcode)` with composite "code +
+  city" alias for autocomplete. `cairn-build --postcodes` flag wired.
+  Pelias-style `postalcode` / `zip` / `localadmin` layer aliases
+  normalize to canonical kind tokens. 3 unit tests
+  cairn-import-geonames.
+- **1e. NDJSON output** — **SHIPPED.** `Accept: application/x-ndjson`
+  on `/v1/search` returns one Hit per line with
+  `Content-Type: application/x-ndjson`. Default Accept still returns
+  the wrapped envelope. 1 integration test.
+
+### Tier 2 — Quality lead (5-7 days; "superior" claim)
+
+- **2a. Phonetic match** — **SHIPPED.** `rphonetic` crate's
+  DoubleMetaphone via `phonetic_codes(name)`. Indexed `name_phonetic`
+  STRING multi-value field at build time (primary + alternate codes
+  per name, ASCII-folded first, CJK skipped). `?phonetic=true` ORs
+  encoded query codes against the field. Recovers `Smyth → Smith`,
+  `Mueller → Müller`, `Smythsonian → Smithsonian`. 3 unit tests in
+  cairn-text.
+- **2b. Address interpolation** *(~2 days)* — OSM `addr:interpolation`
+  ways, synthetic Address places at import. Closes OA-sparse regions
+  (most non-US territory). **HIGH**
+- **2c. libpostal FFI live wiring** *(Phase 6e, ~2 days)* — cargo
+  feature `libpostal`, `/v1/parse` endpoint, structured fallback when
+  free-text parse succeeds. Quality jump on non-English addresses
+  (`calle de alcalá 12, madrid`). **HIGH**
+- **2d. Diff apply** *(multi-day)* — apply minutely diffs to tile-scoped
+  reindex (fetcher already shipped). **MEDIUM**
+- **2e. Bundle federation** *(~2 days)* — `cairn-serve --bundles
+  a/,b/,c/` queries all, merges by score. Lets planet split into
+  continental shards. **MEDIUM**
+
+### Tier 3 — Ops polish (1-2 days)
+
+- **3a. Auth middleware** — API-key bearer + scoped read/write.
+- **3b. ZSTD default for tile blobs** — wire-size win, `--zstd`
+  default.
+- **3c. Tile differential update protocol** — tighten `cairn-build
+  apply`.
+- **3d. CHANGELOG.md** + semantic-release hooks.
+- **3e. crates.io publish** — release `cairn`, `cairn-place`,
+  `cairn-text`, `cairn-spatial` (squat-release email pending).
+
+### Tier 4 — Differentiators (5-7 days; "nobody else has this")
+
+- **4a. Vector / semantic search** *(2-3 days)* — small embedded model
+  (gte-small or similar via `fastembed-rs`), `?semantic=true` flag,
+  hybrid BM25+ANN. "near coffee shops" queries. Novel for geocoders.
+- **4b. WASM build** *(2-3 days)* — `cairn-text` + `cairn-spatial` to
+  wasm32, browser-side autocomplete on bundle subset. Nobody offers
+  this today.
+- **4c. Reproducible bundle attestation** *(~1 day)* — sigstore/cosign
+  signed bundles + manifest verification at runtime. Enterprise sell.
+- **4d. SBOM in bundle** *(~half day)* — CycloneDX bundled with
+  manifest, served from `/v1/info`.
+- **4e. Query explain endpoint** — **SHIPPED.**
+  `/v1/search?explain=true` populates `Hit.explain` with `bm25`,
+  `exact_match_boost`, `population_boost`, `language_boost`,
+  `geo_bias`, `final_score`. Each rerank stage records its multiplier
+  in place. Off by default;
+  `skip_serializing_if = Option::is_none` keeps payloads lean for
+  normal callers. 2 integration tests in cairn-api. No incumbent
+  ships this.
+
+### Recommended sequence
+
+1. **1a** — admin relations (biggest deployment gap)
+2. **2a** — phonetic match (quick differentiator)
+3. **1b + 1c + 1d** — categories + viewport + postcode (Pelias parity
+   batch)
+4. **2c** — libpostal (quality jump on non-English)
+5. **4e** — explain (debugging + marketing win)
+6. **4a** — semantic (only-one-doing-this claim)
+7. **4b** — WASM (only-one-doing-this claim)
+
+### Risks
+
+- **HIGH** — libpostal C dep complicates static-musl build. Mitigation:
+  feature-flagged + alt static linkage path.
+- **HIGH** — semantic embeddings inflate bundle ~30-50 %. Mitigation:
+  optional bundle artifact, lazy-loaded.
+- **MEDIUM** — OSM relation ring assembly bugs on broken multipolygons.
+  Mitigation: drop-with-warn + counter in `/metrics`.
+- **MEDIUM** — WASM tantivy port — tantivy isn't wasm-clean. Fallback:
+  lightweight FST + ngram only (no full BM25).
+- **LOW** — crates.io squat-release email blocks public crate publish.
+
 ## Out of scope
 
 - Multi-tenant SaaS isolation.
 - Cluster orchestration.
-- Vector / semantic search ("near coffee shops" queries).
 - Routing or isochrones (Valhalla territory).

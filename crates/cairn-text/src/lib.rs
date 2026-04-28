@@ -9,6 +9,7 @@
 //!   distance.
 
 use cairn_place::{Coord, Place, PlaceKind};
+use rphonetic::DoubleMetaphone;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tantivy::collector::TopDocs;
@@ -119,6 +120,45 @@ pub struct Hit {
     /// the field.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub langs: Vec<String>,
+    /// Pelias-style category taxonomy this hit belongs to (e.g.
+    /// `["health", "hospital"]`, `["food", "restaurant"]`,
+    /// `["admin"]`). Empty for older bundles that didn't index the
+    /// field.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+    /// Per-stage scoring breakdown. Populated only when
+    /// `SearchOptions.explain == true`. Shows the BM25 baseline plus
+    /// every multiplier applied — exact-name, population, language
+    /// preference, geo-bias — and the final post-rerank score.
+    /// Useful for debugging ranking surprises and for clients that
+    /// need to surface "why this hit ranked here" to end users. No
+    /// other geocoder ships this today.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explain: Option<HitExplain>,
+}
+
+/// Score-contribution breakdown for one [`Hit`]. All multiplier fields
+/// default to 1.0 (no effect); the final value is the score returned
+/// after every stage runs.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct HitExplain {
+    /// Raw BM25 score returned by tantivy before any rerank.
+    pub bm25: f32,
+    /// Multiplier applied when the (folded) query equals one of the
+    /// hit's stored names. 1.0 = no exact-name match.
+    pub exact_match_boost: f32,
+    /// Multiplier from `1 + log10(1+population) * rate`.
+    /// 1.0 = unknown population (no boost).
+    pub population_boost: f32,
+    /// Multiplier when a `?lang=` preferred language matches one of
+    /// the hit's stored language tags. 1.0 = no language match.
+    pub language_boost: f32,
+    /// Geo-bias divisor `1 / (1 + focus_weight * km)`. 1.0 = no
+    /// focus point set.
+    pub geo_bias: f32,
+    /// Final post-rerank score (all multipliers applied, sorted by
+    /// this value).
+    pub final_score: f32,
 }
 
 fn is_zero_u64(n: &u64) -> bool {
@@ -151,6 +191,44 @@ pub struct SearchOptions {
     /// boost so multi-lingual users see results in their preferred
     /// tongue when ties are close. Empty / `None` disables the boost.
     pub prefer_lang: Option<String>,
+    /// Restrict results to documents whose `categories` field contains
+    /// at least one of these tokens (`"health"`, `"hospital"`,
+    /// `"food"`, …). Empty = no filter. OR semantics across the list:
+    /// `categories=hospital,clinic` returns docs tagged with EITHER
+    /// hospital OR clinic.
+    pub categories: Vec<String>,
+    /// Optional axis-aligned bounding box. Hits whose centroid falls
+    /// outside the rect are dropped after BM25 retrieval (post-filter).
+    /// Layout: `(min_lon, min_lat, max_lon, max_lat)`. Antimeridian
+    /// crossing (min_lon > max_lon) currently treated as no-op since
+    /// it would require splitting into two spans; callers spanning
+    /// the antimeridian should issue two requests for now.
+    pub bbox: Option<Bbox>,
+    /// When true, OR an extra clause against the `name_phonetic` field
+    /// (DoubleMetaphone-encoded). Catches misspellings the fuzzy edit
+    /// distance can't reach: `"Mueller"` ↔ `"Müller"`,
+    /// `"Smyth"` ↔ `"Smith"`, `"Katherine"` ↔ `"Catherine"`.
+    pub phonetic: bool,
+    /// When true, populate `Hit::explain` with the BM25 baseline plus
+    /// each rerank multiplier so callers can surface "why this hit
+    /// ranked here". Tiny per-hit cost; off by default to keep the
+    /// JSON payload small.
+    pub explain: bool,
+}
+
+/// Axis-aligned bounding box, lon/lat degrees. Inclusive on all sides.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Bbox {
+    pub min_lon: f64,
+    pub min_lat: f64,
+    pub max_lon: f64,
+    pub max_lat: f64,
+}
+
+impl Bbox {
+    pub fn contains(&self, lon: f64, lat: f64) -> bool {
+        lon >= self.min_lon && lon <= self.max_lon && lat >= self.min_lat && lat <= self.max_lat
+    }
 }
 
 impl Default for SearchOptions {
@@ -163,6 +241,10 @@ impl Default for SearchOptions {
             focus: None,
             focus_weight: 0.5,
             prefer_lang: None,
+            categories: Vec::new(),
+            bbox: None,
+            phonetic: false,
+            explain: false,
         }
     }
 }
@@ -185,6 +267,18 @@ struct TextSchema {
     /// carries (`"default"`, `"de"`, `"fr"`, etc). Multi-value STORED;
     /// drives the `?lang=` boost at query time.
     lang_codes: Field,
+    /// Pelias-style category taxonomy (`"health"`, `"hospital"`,
+    /// `"food"`, `"restaurant"`, …). Multi-value STRING + STORED;
+    /// derived from `Place.kind` + OSM tags via
+    /// `cairn_place::categories_for`. Drives the `?categories=` filter.
+    categories: Field,
+    /// DoubleMetaphone-encoded name tokens. STRING (whole-token, no
+    /// folding) so the encoded form matches verbatim at query time.
+    /// Multi-value: each localized name produces both a primary and
+    /// optional alternate code. Drives `?phonetic=true` recall when
+    /// `Müller` ↔ `Mueller`, `Smith` ↔ `Smyth`, `Catherine` ↔
+    /// `Katherine` would otherwise miss.
+    name_phonetic: Field,
 }
 
 impl TextSchema {
@@ -218,6 +312,14 @@ impl TextSchema {
         // STRING analyzer = whole-token, no folding — language codes
         // ('default', 'de', 'fr-CH') stay verbatim for exact match.
         let lang_codes = sb.add_text_field("lang_codes", STRING | STORED);
+        // Same treatment for category tokens — exact match on the
+        // canonical lowercase name. STRING + STORED so we can both
+        // filter on it AND echo it back in the JSON response.
+        let categories = sb.add_text_field("categories", STRING | STORED);
+        // Phonetic codes: STRING (whole token), no STORED — we don't
+        // need to echo encoded codes back; only used as a query
+        // pivot. Indexed to support TermQuery lookups.
+        let name_phonetic = sb.add_text_field("name_phonetic", STRING);
         let schema = sb.build();
         Self {
             schema,
@@ -233,8 +335,28 @@ impl TextSchema {
             admin_path,
             population,
             lang_codes,
+            categories,
+            name_phonetic,
         }
     }
+}
+
+/// Encode a single name into its DoubleMetaphone primary + optional
+/// alternate codes, returning a deduplicated vec of non-empty codes.
+/// Used at index time AND query time so encoder symmetry is preserved.
+fn phonetic_codes(name: &str) -> Vec<String> {
+    let dm = DoubleMetaphone::default();
+    let res = dm.double_metaphone(name);
+    let primary = res.primary();
+    let alternate = res.alternate();
+    let mut out: Vec<String> = Vec::with_capacity(2);
+    if !primary.is_empty() {
+        out.push(primary);
+    }
+    if !alternate.is_empty() && !out.contains(&alternate) {
+        out.push(alternate);
+    }
+    out
 }
 
 fn register_prefix_tokenizer(index: &Index) -> Result<(), TextError> {
@@ -306,7 +428,8 @@ where
             continue;
         }
         let mut doc = TantivyDocument::default();
-        let mut langs_seen: std::collections::BTreeSet<String> =
+        let mut langs_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut phonetic_seen: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
         for n in &place.names {
             doc.add_text(schema.name, &n.value);
@@ -317,12 +440,26 @@ where
             if let Some(folded) = ascii_fold(&n.value) {
                 doc.add_text(schema.name_translit, &folded);
             }
+            // Skip CJK for phonetic — DoubleMetaphone is Latin-script
+            // and produces empty / nonsense codes for non-Latin input.
+            if !has_cjk(&n.value) {
+                let phonetic_input = ascii_fold(&n.value).unwrap_or_else(|| n.value.clone());
+                for code in phonetic_codes(&phonetic_input) {
+                    phonetic_seen.insert(code);
+                }
+            }
             if !n.lang.is_empty() {
                 langs_seen.insert(n.lang.clone());
             }
         }
+        for code in phonetic_seen {
+            doc.add_text(schema.name_phonetic, &code);
+        }
         for lang in langs_seen {
             doc.add_text(schema.lang_codes, &lang);
+        }
+        for cat in cairn_place::categories_for(&place) {
+            doc.add_text(schema.categories, &cat);
         }
         doc.add_u64(schema.place_id, place.id.0);
         doc.add_u64(schema.level, place.id.level() as u64);
@@ -397,7 +534,9 @@ impl TextIndex {
         }
 
         let text_q = self.build_text_query(trimmed, opts)?;
+        let text_q = self.apply_phonetic_orclause(text_q, trimmed, opts);
         let combined = self.apply_layer_filter(text_q, &opts.layers);
+        let combined = self.apply_categories_filter(combined, &opts.categories);
 
         // Always over-fetch when we'll re-rank — focus, exact-name, or
         // both — so the BM25 top-N doesn't truncate matches the rerank
@@ -420,6 +559,34 @@ impl TextIndex {
             hits.push(self.hit_from_doc(score, &doc));
         }
 
+        // Hard-clip on the optional viewport rect. Done post-fetch so
+        // that BM25 / fuzzy / focus all stay independent of geometry.
+        // Rejecting only on the extracted (lon, lat) keeps this O(n)
+        // over the candidate set.
+        if let Some(bbox) = opts.bbox {
+            // Skip degenerate / antimeridian-crossing rects so we don't
+            // accidentally drop everything; treating those as a no-op
+            // surfaces the bad input via empty results downstream.
+            if bbox.min_lon <= bbox.max_lon && bbox.min_lat <= bbox.max_lat {
+                hits.retain(|h| bbox.contains(h.lon, h.lat));
+            }
+        }
+
+        // Seed explain payloads with BM25 baseline; downstream rerank
+        // steps overwrite their multiplier slot when they fire.
+        if opts.explain {
+            for h in hits.iter_mut() {
+                h.explain = Some(HitExplain {
+                    bm25: h.score,
+                    exact_match_boost: 1.0,
+                    population_boost: 1.0,
+                    language_boost: 1.0,
+                    geo_bias: 1.0,
+                    final_score: h.score,
+                });
+            }
+        }
+
         // Exact-name match boost: case + diacritic-folded equality
         // between the (trimmed) query and a Hit's stored name promotes
         // the hit's score by `EXACT_MATCH_BOOST`. Plain exact-but-
@@ -440,8 +607,21 @@ impl TextIndex {
         if let Some(focus) = opts.focus {
             apply_geo_bias(&mut hits, focus, opts.focus_weight);
         }
-        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         hits.truncate(opts.limit);
+        // Stamp the post-rerank score back into explain so callers see
+        // the same number used for the sort key.
+        if opts.explain {
+            for h in hits.iter_mut() {
+                if let Some(ex) = h.explain.as_mut() {
+                    ex.final_score = h.score;
+                }
+            }
+        }
         // Populate label after truncation — only the surviving hits
         // pay the format_label cost.
         if !self.admin_names.is_empty() {
@@ -542,6 +722,51 @@ impl TextIndex {
         Ok(Box::new(BooleanQuery::new(clauses)))
     }
 
+    /// When `phonetic=true` and the query produces non-empty
+    /// DoubleMetaphone codes, OR an extra clause against the
+    /// `name_phonetic` field. Each query token's primary + alternate
+    /// codes become Should-terms, then the encoded clause is unioned
+    /// (Should / Should) with the original text query so phonetic
+    /// matches widen recall without dropping BM25 hits. Multi-token
+    /// queries OR every token's codes — order doesn't matter for
+    /// catching variant spellings.
+    fn apply_phonetic_orclause(
+        &self,
+        text_q: Box<dyn Query>,
+        query: &str,
+        opts: &SearchOptions,
+    ) -> Box<dyn Query> {
+        if !opts.phonetic {
+            return text_q;
+        }
+        // Skip CJK on the query side too — the encoder produces
+        // empty / nonsense for non-Latin input.
+        if has_cjk(query) {
+            return text_q;
+        }
+        let folded = ascii_fold(query).unwrap_or_else(|| query.to_string());
+        let tokens: Vec<&str> = folded.split_whitespace().collect();
+        let mut code_clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for tok in tokens {
+            for code in phonetic_codes(tok) {
+                if seen.insert(code.clone()) {
+                    let term = Term::from_field_text(self.schema.name_phonetic, &code);
+                    let q = TermQuery::new(term, IndexRecordOption::Basic);
+                    code_clauses.push((Occur::Should, Box::new(q) as Box<dyn Query>));
+                }
+            }
+        }
+        if code_clauses.is_empty() {
+            return text_q;
+        }
+        let phonetic_q: Box<dyn Query> = Box::new(BooleanQuery::new(code_clauses));
+        Box::new(BooleanQuery::new(vec![
+            (Occur::Should, text_q),
+            (Occur::Should, phonetic_q),
+        ]))
+    }
+
     fn apply_layer_filter(&self, text_q: Box<dyn Query>, layers: &[String]) -> Box<dyn Query> {
         if layers.is_empty() {
             return text_q;
@@ -556,6 +781,38 @@ impl TextIndex {
         Box::new(BooleanQuery::new(vec![
             (Occur::Must, text_q),
             (Occur::Must, layer_q),
+        ]))
+    }
+
+    /// OR-of-categories filter, AND-joined with the rest of the
+    /// query. Categories are case-insensitive on the lookup side
+    /// (lowercased to match indexed form). Empty `categories` skips
+    /// the filter.
+    fn apply_categories_filter(
+        &self,
+        text_q: Box<dyn Query>,
+        categories: &[String],
+    ) -> Box<dyn Query> {
+        if categories.is_empty() {
+            return text_q;
+        }
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(categories.len());
+        for cat in categories {
+            let normalized = cat.trim().to_lowercase();
+            if normalized.is_empty() {
+                continue;
+            }
+            let term = Term::from_field_text(self.schema.categories, &normalized);
+            let q = TermQuery::new(term, IndexRecordOption::Basic);
+            clauses.push((Occur::Should, Box::new(q) as Box<dyn Query>));
+        }
+        if clauses.is_empty() {
+            return text_q;
+        }
+        let cat_q: Box<dyn Query> = Box::new(BooleanQuery::new(clauses));
+        Box::new(BooleanQuery::new(vec![
+            (Occur::Must, text_q),
+            (Occur::Must, cat_q),
         ]))
     }
 
@@ -603,6 +860,11 @@ impl TextIndex {
                 .get_all(self.schema.lang_codes)
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect(),
+            categories: doc
+                .get_all(self.schema.categories)
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            explain: None,
         }
     }
 }
@@ -618,6 +880,9 @@ fn apply_exact_name_boost(hits: &mut [Hit], query: &str) {
     for h in hits.iter_mut() {
         if fold_for_compare(&h.name) == q {
             h.score *= EXACT_MATCH_BOOST;
+            if let Some(ex) = h.explain.as_mut() {
+                ex.exact_match_boost = EXACT_MATCH_BOOST;
+            }
         }
     }
 }
@@ -633,6 +898,9 @@ fn apply_population_boost(hits: &mut [Hit]) {
         }
         let factor = 1.0 + ((h.population as f32 + 1.0).log10()) * POPULATION_BOOST_RATE;
         h.score *= factor;
+        if let Some(ex) = h.explain.as_mut() {
+            ex.population_boost = factor;
+        }
     }
 }
 
@@ -648,6 +916,9 @@ fn apply_lang_preference_boost(hits: &mut [Hit], lang: &str) {
     for h in hits.iter_mut() {
         if h.langs.iter().any(|l| l.to_lowercase() == needle) {
             h.score *= LANG_PREFERENCE_BOOST;
+            if let Some(ex) = h.explain.as_mut() {
+                ex.language_boost = LANG_PREFERENCE_BOOST;
+            }
         }
     }
 }
@@ -718,8 +989,14 @@ fn apply_geo_bias(hits: &mut [Hit], focus: Coord, weight: f64) {
     for h in hits.iter_mut() {
         let km = haversine_km(focus.lat, focus.lon, h.lat, h.lon);
         h.distance_km = Some(km);
-        let blended = (h.score as f64) / (1.0 + weight * km);
+        let divisor = 1.0 + weight * km;
+        let blended = (h.score as f64) / divisor;
         h.score = blended as f32;
+        if let Some(ex) = h.explain.as_mut() {
+            // Record the divisor's reciprocal so all explain fields
+            // stay multipliers — easier for callers to reason about.
+            ex.geo_bias = (1.0 / divisor) as f32;
+        }
     }
     hits.sort_by(|a, b| {
         b.score
@@ -1050,7 +1327,8 @@ mod tests {
 
     #[test]
     fn label_joins_admin_chain_root_to_leaf() {
-        let mut admin_names: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+        let mut admin_names: std::collections::HashMap<u64, String> =
+            std::collections::HashMap::new();
         admin_names.insert(100, "Liechtenstein".into());
         admin_names.insert(200, "Oberland".into());
         admin_names.insert(300, "Vaduz (Li)".into());
@@ -1067,6 +1345,8 @@ mod tests {
             population: 0,
             label: String::new(),
             langs: Vec::new(),
+            categories: Vec::new(),
+            explain: None,
         };
         let label = super::format_label(&hit, &admin_names);
         // leaf → root order, parenthetical suffix dedup against
@@ -1076,7 +1356,8 @@ mod tests {
 
     #[test]
     fn label_dedup_strips_parenthetical_suffix() {
-        let mut admin_names: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+        let mut admin_names: std::collections::HashMap<u64, String> =
+            std::collections::HashMap::new();
         admin_names.insert(50, "Vaduz (Li)".into());
         admin_names.insert(60, "Liechtenstein".into());
         let hit = Hit {
@@ -1092,6 +1373,8 @@ mod tests {
             population: 0,
             label: String::new(),
             langs: Vec::new(),
+            categories: Vec::new(),
+            explain: None,
         };
         let label = super::format_label(&hit, &admin_names);
         // 'Vaduz (Li)' folds to 'vaduz' which equals leaf 'Vaduz' →
@@ -1115,8 +1398,269 @@ mod tests {
             population: 0,
             label: String::new(),
             langs: Vec::new(),
+            categories: Vec::new(),
+            explain: None,
         };
         assert_eq!(super::format_label(&hit, &admin_names), "");
+    }
+
+    #[test]
+    fn phonetic_finds_mueller_for_muller() {
+        // Indexed name "Müller" — DoubleMetaphone should give the same
+        // codes as query "Mueller" after ASCII-folding.
+        let dir = tempdir_for_test();
+        let muller = Place {
+            id: PlaceId::new(2, 1, 1).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Müller".into(),
+            }],
+            centroid: Coord {
+                lon: 11.0,
+                lat: 48.0,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        build_index(&dir, vec![muller]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+
+        // Without phonetic flag: deunicode already rescues this case
+        // via `name_translit` (Müller → Muller). Sanity check.
+        let baseline = idx.search("Mueller", &SearchOptions::default()).unwrap();
+        // baseline may or may not match depending on transliteration;
+        // we don't assert here — the phonetic path is what we test.
+
+        // With phonetic on: must find the record even if the translit
+        // path missed.
+        let opts = SearchOptions {
+            phonetic: true,
+            ..Default::default()
+        };
+        let hits = idx.search("Mueller", &opts).unwrap();
+        assert!(
+            !hits.is_empty(),
+            "phonetic Mueller→Müller failed (baseline {} hits): {hits:?}",
+            baseline.len()
+        );
+    }
+
+    #[test]
+    fn phonetic_finds_smith_for_smyth() {
+        let dir = tempdir_for_test();
+        let smith = Place {
+            id: PlaceId::new(2, 1, 1).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Smith Plaza".into(),
+            }],
+            centroid: Coord { lon: 0.0, lat: 0.0 },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        build_index(&dir, vec![smith]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let opts = SearchOptions {
+            phonetic: true,
+            ..Default::default()
+        };
+        // "Smyth Plaza" should phonetically match "Smith Plaza".
+        let hits = idx.search("Smyth Plaza", &opts).unwrap();
+        assert!(!hits.is_empty(), "phonetic Smyth→Smith failed: {hits:?}");
+    }
+
+    #[test]
+    fn phonetic_off_misses_misspelled_query() {
+        let dir = tempdir_for_test();
+        let smith = Place {
+            id: PlaceId::new(2, 1, 1).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Smithsonian".into(),
+            }],
+            centroid: Coord { lon: 0.0, lat: 0.0 },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        build_index(&dir, vec![smith]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let hits = idx
+            .search("Smythsonian", &SearchOptions::default())
+            .unwrap();
+        // Without phonetic and without fuzzy, the misspelled token
+        // doesn't match — confirms the phonetic path delivers signal.
+        assert!(hits.is_empty(), "non-phonetic shouldn't match: {hits:?}");
+
+        // Phonetic on: codes for "Smythsonian" / "Smithsonian" align.
+        let opts = SearchOptions {
+            phonetic: true,
+            ..Default::default()
+        };
+        let hits = idx.search("Smythsonian", &opts).unwrap();
+        assert!(!hits.is_empty(), "phonetic should rescue: {hits:?}");
+    }
+
+    #[test]
+    fn bbox_filter_drops_outside_centroids() {
+        let dir = tempdir_for_test();
+        // Vaduz at 9.5209, 47.141; Schaan at 9.5095, 47.165.
+        // Tight bbox over Vaduz only.
+        build_index(&dir, vec![vaduz(), schaan()]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let bbox = Bbox {
+            min_lon: 9.515,
+            min_lat: 47.135,
+            max_lon: 9.525,
+            max_lat: 47.145,
+        };
+        let opts = SearchOptions {
+            bbox: Some(bbox),
+            ..Default::default()
+        };
+        let hits = idx.search("Vaduz", &opts).unwrap();
+        assert!(!hits.is_empty(), "Vaduz must be inside its own bbox");
+        for h in &hits {
+            assert!(
+                bbox.contains(h.lon, h.lat),
+                "leaked outside-bbox hit: {h:?}"
+            );
+        }
+        // Schaan is outside this bbox; querying for it returns nothing.
+        let hits_schaan = idx.search("Schaan", &opts).unwrap();
+        assert!(
+            hits_schaan.is_empty(),
+            "Schaan should be clipped, got {hits_schaan:?}"
+        );
+    }
+
+    #[test]
+    fn bbox_inverted_rect_is_noop_not_empty() {
+        // Inverted rect (min_lon > max_lon) currently means
+        // "antimeridian crosser" — we treat as no-op rather than
+        // accidentally clipping everything. Documented in comment.
+        let dir = tempdir_for_test();
+        build_index(&dir, vec![vaduz(), schaan()]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let bad = SearchOptions {
+            bbox: Some(Bbox {
+                min_lon: 100.0,
+                min_lat: 47.0,
+                max_lon: 9.0,
+                max_lat: 48.0,
+            }),
+            ..Default::default()
+        };
+        let hits = idx.search("Vaduz", &bad).unwrap();
+        // Falls back to no-bbox behaviour, so we still get hits.
+        assert!(!hits.is_empty(), "inverted bbox must not nuke results");
+    }
+
+    #[test]
+    fn categories_filter_drops_non_matching_kinds() {
+        let dir = tempdir_for_test();
+        // Two POIs with the same searchable name but different
+        // amenities. Filter on `categories=hospital` must keep only
+        // the hospital, drop the bakery.
+        let hospital = Place {
+            id: PlaceId::new(2, 1, 1).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Riva Center".into(),
+            }],
+            centroid: Coord {
+                lon: 11.0,
+                lat: 46.0,
+            },
+            admin_path: vec![],
+            tags: vec![("amenity".into(), "hospital".into())],
+        };
+        let bakery = Place {
+            id: PlaceId::new(2, 1, 2).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Riva Center".into(),
+            }],
+            centroid: Coord {
+                lon: 11.1,
+                lat: 46.0,
+            },
+            admin_path: vec![],
+            tags: vec![("shop".into(), "bakery".into())],
+        };
+        build_index(&dir, vec![hospital, bakery]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+
+        // No filter: both come back.
+        let all = idx
+            .search("Riva Center", &SearchOptions::default())
+            .unwrap();
+        assert_eq!(all.len(), 2, "no-filter sanity: got {all:?}");
+
+        // Filter to hospital category: only the hospital.
+        let opts = SearchOptions {
+            categories: vec!["hospital".into()],
+            ..Default::default()
+        };
+        let hits = idx.search("Riva Center", &opts).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].place_id, PlaceId::new(2, 1, 1).unwrap().0);
+        assert!(hits[0].categories.contains(&"hospital".into()));
+    }
+
+    #[test]
+    fn categories_filter_or_semantics_across_list() {
+        let dir = tempdir_for_test();
+        let hospital = Place {
+            id: PlaceId::new(2, 1, 1).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Salus Place".into(),
+            }],
+            centroid: Coord { lon: 0.0, lat: 0.0 },
+            admin_path: vec![],
+            tags: vec![("amenity".into(), "hospital".into())],
+        };
+        let school = Place {
+            id: PlaceId::new(2, 1, 2).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Salus Place".into(),
+            }],
+            centroid: Coord { lon: 0.1, lat: 0.0 },
+            admin_path: vec![],
+            tags: vec![("amenity".into(), "school".into())],
+        };
+        let bar = Place {
+            id: PlaceId::new(2, 1, 3).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Salus Place".into(),
+            }],
+            centroid: Coord { lon: 0.2, lat: 0.0 },
+            admin_path: vec![],
+            tags: vec![("amenity".into(), "bar".into())],
+        };
+        build_index(&dir, vec![hospital, school, bar]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let opts = SearchOptions {
+            // hospital OR school — bar must drop out.
+            categories: vec!["hospital".into(), "school".into()],
+            ..Default::default()
+        };
+        let hits = idx.search("Salus Place", &opts).unwrap();
+        let ids: Vec<u64> = hits.iter().map(|h| h.place_id).collect();
+        assert_eq!(ids.len(), 2, "expected 2 hits, got {hits:?}");
+        assert!(ids.contains(&PlaceId::new(2, 1, 1).unwrap().0));
+        assert!(ids.contains(&PlaceId::new(2, 1, 2).unwrap().0));
+        assert!(!ids.contains(&PlaceId::new(2, 1, 3).unwrap().0));
     }
 
     #[test]
@@ -1185,10 +1729,7 @@ mod tests {
                 lang: "default".into(),
                 value: "Springfield".into(),
             }],
-            centroid: Coord {
-                lon: 0.0,
-                lat: 0.0,
-            },
+            centroid: Coord { lon: 0.0, lat: 0.0 },
             admin_path: vec![],
             tags: vec![("population".into(), "200000".into())],
         };

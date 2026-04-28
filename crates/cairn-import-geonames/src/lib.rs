@@ -170,6 +170,144 @@ pub fn import(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
     Ok(places)
 }
 
+/// Geonames postcode dump (`<CC>.txt` from
+/// `download.geonames.org/export/zip/`) → `Place(kind=Postcode)`
+/// stream.
+///
+/// Format: 12 tab-separated columns —
+///   `country | postal_code | place_name | admin1_name | admin1_code |
+///    admin2_name | admin2_code | admin3_name | admin3_code |
+///    latitude | longitude | accuracy`
+///
+/// Each row becomes one Place: name = postal code, ASCII-folded
+/// duplicate added if place_name carries diacritics. Country and
+/// optional accuracy are stored in tags so reverse lookups can
+/// surface them. Centroid uses (lon, lat); rows with non-numeric
+/// coords are skipped.
+pub fn import_postcodes(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
+    info!(path = %tsv_path.display(), "opening Geonames postcode TSV");
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .delimiter(b'\t')
+        .flexible(true)
+        .quoting(false)
+        .from_path(tsv_path)?;
+
+    const COL_COUNTRY: usize = 0;
+    const COL_POSTAL: usize = 1;
+    const COL_PLACE: usize = 2;
+    const COL_ADMIN1_NAME: usize = 3;
+    const COL_LAT: usize = 9;
+    const COL_LON: usize = 10;
+    const COL_ACCURACY: usize = 11;
+    const POSTCODE_TOTAL_COLS: usize = 12;
+
+    let mut places = Vec::new();
+    let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
+    let mut rows_seen = 0u64;
+    let mut emitted = 0u64;
+    let mut skipped_no_centroid = 0u64;
+    let mut skipped_no_postal = 0u64;
+
+    for record in reader.records() {
+        let row = record?;
+        rows_seen += 1;
+        if row.len() < POSTCODE_TOTAL_COLS {
+            continue;
+        }
+
+        let postal = row.get(COL_POSTAL).unwrap_or("").trim();
+        if postal.is_empty() {
+            skipped_no_postal += 1;
+            continue;
+        }
+        let lat: f64 = row
+            .get(COL_LAT)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f64::NAN);
+        let lon: f64 = row
+            .get(COL_LON)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f64::NAN);
+        if !lat.is_finite() || !lon.is_finite() {
+            skipped_no_centroid += 1;
+            continue;
+        }
+        let centroid = Coord { lon, lat };
+        let level = level_for_kind(PlaceKind::Postcode);
+        let tile = TileCoord::from_coord(level, centroid);
+        let key = (level.as_u8(), tile.id());
+        let local = local_counters.entry(key).or_insert(0);
+        let local_id = *local;
+        *local += 1;
+        let id = match PlaceId::new(level.as_u8(), tile.id(), local_id) {
+            Ok(id) => id,
+            Err(err) => {
+                debug!(?err, "PlaceId overflow on postcode row; skipping");
+                continue;
+            }
+        };
+
+        let mut names = vec![LocalizedName {
+            lang: "default".into(),
+            value: postal.to_string(),
+        }];
+        let place_name = row.get(COL_PLACE).unwrap_or("").trim();
+        if !place_name.is_empty() {
+            // Composite "<postal> <place>" gives autocomplete a
+            // searchable variant — typing the postal code OR the
+            // bound town finds the row. tantivy multi-value field
+            // means both terms tokenize independently.
+            names.push(LocalizedName {
+                lang: "default".into(),
+                value: format!("{postal} {place_name}"),
+            });
+        }
+
+        let mut tags: Vec<(String, String)> = vec![("source".into(), "geonames".into())];
+        if let Some(country) = row
+            .get(COL_COUNTRY)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            tags.push(("ISO3166-1".into(), country.to_string()));
+        }
+        if !place_name.is_empty() {
+            tags.push(("addr:city".into(), place_name.to_string()));
+        }
+        if let Some(admin1) = row
+            .get(COL_ADMIN1_NAME)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            tags.push(("addr:state".into(), admin1.to_string()));
+        }
+        if let Some(accuracy) = row
+            .get(COL_ACCURACY)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            tags.push(("accuracy".into(), accuracy.to_string()));
+        }
+
+        places.push(Place {
+            id,
+            kind: PlaceKind::Postcode,
+            names,
+            centroid,
+            admin_path: vec![],
+            tags,
+        });
+        emitted += 1;
+    }
+
+    info!(
+        rows_seen,
+        emitted, skipped_no_centroid, skipped_no_postal, "Geonames postcode import done"
+    );
+    Ok(places)
+}
+
 fn map_feature_code(code: &str) -> Option<PlaceKind> {
     Some(match code {
         // Capital, administrative seats, generic populated places.
@@ -242,6 +380,40 @@ mod tests {
         let places = import(&path).unwrap();
         assert_eq!(places.len(), 1);
         assert_eq!(places[0].names[0].value, "Foo City");
+    }
+
+    #[test]
+    fn imports_postcode_row() {
+        // Real Geonames postcode dump format. Vaduz, LI, 9490.
+        let tsv = "LI\t9490\tVaduz\tVaduz\t\t\t\t\t\t47.1410\t9.5215\t1\n";
+        let path = tmp_tsv(tsv);
+        let places = import_postcodes(&path).unwrap();
+        assert_eq!(places.len(), 1);
+        let p = &places[0];
+        assert_eq!(p.kind, PlaceKind::Postcode);
+        assert_eq!(p.names[0].value, "9490");
+        // Composite alias with bound place name.
+        assert!(p.names.iter().any(|n| n.value == "9490 Vaduz"));
+        assert!(p.tags.iter().any(|(k, v)| k == "ISO3166-1" && v == "LI"));
+        assert!(p.tags.iter().any(|(k, v)| k == "addr:city" && v == "Vaduz"));
+        assert_eq!(p.centroid.lon, 9.5215);
+        assert_eq!(p.centroid.lat, 47.141);
+    }
+
+    #[test]
+    fn skips_postcode_with_no_postal_code() {
+        let tsv = "LI\t\tVaduz\tVaduz\t\t\t\t\t\t47.14\t9.52\t1\n";
+        let path = tmp_tsv(tsv);
+        let places = import_postcodes(&path).unwrap();
+        assert!(places.is_empty());
+    }
+
+    #[test]
+    fn skips_postcode_with_bad_coords() {
+        let tsv = "LI\t9490\tVaduz\tVaduz\t\t\t\t\t\tNaN\tNaN\t1\n";
+        let path = tmp_tsv(tsv);
+        let places = import_postcodes(&path).unwrap();
+        assert!(places.is_empty());
     }
 
     #[test]

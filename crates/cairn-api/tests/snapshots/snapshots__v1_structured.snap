@@ -8,6 +8,9 @@ expression: body
   "results": [
     {
       "admin_path": [],
+      "categories": [
+        "admin"
+      ],
       "kind": "country",
       "langs": [
         "default"

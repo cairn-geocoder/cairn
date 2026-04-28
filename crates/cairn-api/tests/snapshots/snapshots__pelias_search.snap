@@ -29,10 +29,16 @@ expression: body
       "name": "cairn"
     },
     "query": {
+      "boundary.rect.max_lat": null,
+      "boundary.rect.max_lon": null,
+      "boundary.rect.min_lat": null,
+      "boundary.rect.min_lon": null,
+      "categories": null,
       "focus.point.lat": null,
       "focus.point.lon": null,
       "lang": null,
       "layers": null,
+      "phonetic": null,
       "size": 2,
       "text": "Vaduz"
     },

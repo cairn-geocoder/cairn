@@ -17,7 +17,7 @@ use axum::{
 };
 use cairn_place::Coord;
 use cairn_spatial::{AdminIndex, NearestIndex};
-use cairn_text::{Hit, SearchMode, SearchOptions, TextError, TextIndex};
+use cairn_text::{Bbox, Hit, SearchMode, SearchOptions, TextError, TextIndex};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -611,6 +611,31 @@ pub struct SearchQuery {
     /// localized name in this language get a small score boost.
     #[serde(default)]
     pub lang: Option<String>,
+    /// Comma-separated category filter (e.g. `health,hospital`).
+    /// OR semantics across the list.
+    #[serde(default)]
+    pub categories: Option<String>,
+    /// Pelias-spec viewport rect — hard-clip results outside the rect.
+    /// All four required together; missing any = ignored.
+    #[serde(default, rename = "boundary.rect.min_lat")]
+    pub bbox_min_lat: Option<f64>,
+    #[serde(default, rename = "boundary.rect.min_lon")]
+    pub bbox_min_lon: Option<f64>,
+    #[serde(default, rename = "boundary.rect.max_lat")]
+    pub bbox_max_lat: Option<f64>,
+    #[serde(default, rename = "boundary.rect.max_lon")]
+    pub bbox_max_lon: Option<f64>,
+    /// Opt-in DoubleMetaphone phonetic OR-clause. Recovers misspelled
+    /// queries (`Smyth → Smith`, `Mueller → Müller`).
+    #[serde(default)]
+    pub phonetic: Option<bool>,
+    /// When `true`, every result includes an `explain` block listing
+    /// the BM25 baseline plus each rerank multiplier. Off by default
+    /// to keep payloads small. Useful for debugging ranking
+    /// surprises and for clients that want to surface "why this hit
+    /// ranked here".
+    #[serde(default)]
+    pub explain: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -622,6 +647,7 @@ struct SearchResponse<'a> {
 
 async fn search(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Query(params): Query<SearchQuery>,
 ) -> impl IntoResponse {
     let q = params.q.trim();
@@ -646,11 +672,36 @@ async fn search(
             s.split(',')
                 .map(|p| p.trim().to_lowercase())
                 .filter(|p| !p.is_empty())
+                .map(normalize_layer)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let categories = params
+        .categories
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim().to_lowercase())
+                .filter(|p| !p.is_empty())
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     let focus = match (params.focus_lat, params.focus_lon) {
         (Some(lat), Some(lon)) => Some(Coord { lon, lat }),
+        _ => None,
+    };
+    let bbox = match (
+        params.bbox_min_lon,
+        params.bbox_min_lat,
+        params.bbox_max_lon,
+        params.bbox_max_lat,
+    ) {
+        (Some(min_lon), Some(min_lat), Some(max_lon), Some(max_lat)) => Some(Bbox {
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
+        }),
         _ => None,
     };
 
@@ -667,6 +718,10 @@ async fn search(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        categories,
+        bbox,
+        phonetic: params.phonetic.unwrap_or(false),
+        explain: params.explain.unwrap_or(false),
     };
 
     let text = match state.text.as_ref() {
@@ -689,12 +744,28 @@ async fn search(
                     .autocomplete_ok
                     .fetch_add(1, Ordering::Relaxed),
             };
-            Json(SearchResponse {
-                query: q,
-                mode: &mode_label,
-                results,
-            })
-            .into_response()
+            if wants_ndjson(&headers) {
+                let mut body = String::with_capacity(results.len() * 256);
+                for hit in &results {
+                    if let Ok(line) = serde_json::to_string(hit) {
+                        body.push_str(&line);
+                        body.push('\n');
+                    }
+                }
+                axum::response::Response::builder()
+                    .header(axum::http::header::CONTENT_TYPE, "application/x-ndjson")
+                    .body(axum::body::Body::from(body))
+                    .unwrap_or_else(|_| {
+                        Json(serde_json::json!({"error": "ndjson_build_failed"})).into_response()
+                    })
+            } else {
+                Json(SearchResponse {
+                    query: q,
+                    mode: &mode_label,
+                    results,
+                })
+                .into_response()
+            }
         }
         Err(err) => {
             state.metrics.search_err.fetch_add(1, Ordering::Relaxed);
@@ -1039,6 +1110,10 @@ async fn structured(
         focus,
         focus_weight: params.focus_weight.unwrap_or(0.5),
         prefer_lang: None,
+        categories: Vec::new(),
+        bbox: None,
+        phonetic: false,
+        explain: false,
     };
 
     let text = match state.text.as_ref() {
@@ -1126,6 +1201,39 @@ fn map_err(err: TextError) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({ "error": msg })))
 }
 
+/// True when the request's `Accept` header asks for newline-delimited
+/// JSON. Looks for an exact `application/x-ndjson` token; comma-
+/// separated accept lists with that token anywhere also match. Quality
+/// values are ignored — clients that want NDJSON will set it
+/// explicitly. Falls back to JSON for anything else (including missing
+/// header).
+fn wants_ndjson(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            s.split(',').any(|tok| {
+                tok.trim().split(';').next().unwrap_or("").trim() == "application/x-ndjson"
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Map common Pelias / WhosOnFirst layer name aliases onto Cairn's
+/// canonical kind tokens used inside the tantivy `kind` field. Anything
+/// without an alias passes through unchanged so the call site stays
+/// strict-by-default.
+fn normalize_layer(s: String) -> String {
+    match s.as_str() {
+        "postalcode" | "postal_code" | "zip" | "zipcode" => "postcode".into(),
+        "venue" | "venues" => "poi".into(),
+        "locality" => "city".into(),
+        "macroregion" => "region".into(),
+        "localadmin" => "city".into(),
+        _ => s,
+    }
+}
+
 // ========================================================================
 // Pelias-compatible shim
 //
@@ -1154,6 +1262,20 @@ struct PeliasSearchQuery {
     /// Preferred language code (Pelias spec also supports `lang=`).
     #[serde(default)]
     lang: Option<String>,
+    /// Comma-separated category filter (Pelias-compatible). OR
+    /// semantics across the list.
+    #[serde(default)]
+    categories: Option<String>,
+    #[serde(default, rename = "boundary.rect.min_lat")]
+    bbox_min_lat: Option<f64>,
+    #[serde(default, rename = "boundary.rect.min_lon")]
+    bbox_min_lon: Option<f64>,
+    #[serde(default, rename = "boundary.rect.max_lat")]
+    bbox_max_lat: Option<f64>,
+    #[serde(default, rename = "boundary.rect.max_lon")]
+    bbox_max_lon: Option<f64>,
+    #[serde(default)]
+    phonetic: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Default, Debug)]
@@ -1277,11 +1399,36 @@ async fn pelias_search_impl(
             s.split(',')
                 .map(|p| p.trim().to_lowercase())
                 .filter(|p| !p.is_empty())
+                .map(normalize_layer)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let categories = params
+        .categories
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim().to_lowercase())
+                .filter(|p| !p.is_empty())
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     let focus = match (params.focus_lat, params.focus_lon) {
         (Some(lat), Some(lon)) => Some(Coord { lon, lat }),
+        _ => None,
+    };
+    let bbox = match (
+        params.bbox_min_lon,
+        params.bbox_min_lat,
+        params.bbox_max_lon,
+        params.bbox_max_lat,
+    ) {
+        (Some(min_lon), Some(min_lat), Some(max_lon), Some(max_lat)) => Some(Bbox {
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
+        }),
         _ => None,
     };
     let opts = SearchOptions {
@@ -1297,6 +1444,10 @@ async fn pelias_search_impl(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        categories,
+        bbox,
+        phonetic: params.phonetic.unwrap_or(false),
+        explain: false,
     };
     let text_idx = state
         .text
@@ -1368,6 +1519,8 @@ async fn pelias_reverse(
                 population: 0,
                 label: String::new(),
                 langs: Vec::new(),
+                categories: Vec::new(),
+                explain: None,
             };
             hit_to_pelias_feature(hit)
         })
