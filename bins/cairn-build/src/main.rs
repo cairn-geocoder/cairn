@@ -266,19 +266,32 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     // admin relation polygons all enter with admin_path=[] and come out
     // with country / region / county ancestors filled in. Same-kind and
     // self matches are skipped.
+    //
+    // Parallelism: both passes run PIP queries that are independent
+    // per-input (the AdminIndex is read-only after construction; its
+    // Mutex<LruCache> is Sync). We compute chains in parallel and write
+    // them back sequentially so the input order is preserved (key for
+    // reproducible builds).
     if let Some(layer) = &deduped_admin {
+        use rayon::prelude::*;
         let admin_idx = cairn_spatial::AdminIndex::build(layer.clone());
 
         // Pass 1: enrich Place::admin_path (forward search, point fallback).
         let place_kind_strs: Vec<&'static str> =
             places.iter().map(|p| cairn_text::kind_str(p.kind)).collect();
+        let chains: Vec<Vec<cairn_place::PlaceId>> = places
+            .par_iter()
+            .zip(place_kind_strs.par_iter())
+            .map(|(place, kind_str)| {
+                if !place.admin_path.is_empty() {
+                    return Vec::new();
+                }
+                pip_admin_chain(&admin_idx, place.centroid, kind_str, place.id.0)
+            })
+            .collect();
         let mut place_enriched = 0u64;
-        for (place, kind_str) in places.iter_mut().zip(place_kind_strs.iter()) {
-            if !place.admin_path.is_empty() {
-                continue;
-            }
-            let chain = pip_admin_chain(&admin_idx, place.centroid, kind_str, place.id.0);
-            if !chain.is_empty() {
+        for (place, chain) in places.iter_mut().zip(chains.into_iter()) {
+            if place.admin_path.is_empty() && !chain.is_empty() {
                 place.admin_path = chain;
                 place_enriched += 1;
             }
@@ -287,19 +300,25 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     }
 
     // Pass 2: enrich AdminFeature::admin_path (reverse PIP hits) using
-    // the SAME index we just built. We need a fresh local index because
-    // mutating layer.features in place would invalidate the borrow; we
-    // collect chains first, then write them back.
+    // the SAME index we just built. We collect chains in parallel, then
+    // write them back sequentially.
     if let Some(layer) = deduped_admin.as_mut() {
+        use rayon::prelude::*;
         let admin_idx = cairn_spatial::AdminIndex::build(layer.clone());
-        let mut chains: Vec<Vec<cairn_place::PlaceId>> = Vec::with_capacity(layer.features.len());
-        for feat in &layer.features {
-            if !feat.admin_path.is_empty() {
-                chains.push(feat.admin_path.iter().map(|id| cairn_place::PlaceId(*id)).collect());
-                continue;
-            }
-            chains.push(pip_admin_chain_for_feature(&admin_idx, feat));
-        }
+        let chains: Vec<Vec<cairn_place::PlaceId>> = layer
+            .features
+            .par_iter()
+            .map(|feat| {
+                if !feat.admin_path.is_empty() {
+                    return feat
+                        .admin_path
+                        .iter()
+                        .map(|id| cairn_place::PlaceId(*id))
+                        .collect();
+                }
+                pip_admin_chain_for_feature(&admin_idx, feat)
+            })
+            .collect();
         let mut admin_enriched = 0u64;
         for (feat, chain) in layer.features.iter_mut().zip(chains.into_iter()) {
             if feat.admin_path.is_empty() && !chain.is_empty() {
