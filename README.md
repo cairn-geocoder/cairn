@@ -11,10 +11,12 @@ Alpha. Forward search, autocomplete, fuzzy, layer filter, focus bias,
 structured search, and reverse geocoding all working end-to-end on a
 Liechtenstein dataset (OSM PBF + WhosOnFirst SQLite).
 
-> **[Try the static demo](https://cairn-geocoder.github.io/cairn/demo/)** —
-> 9 representative queries pre-rendered against a real Liechtenstein
-> bundle. No backend; click a query, see exactly what `cairn-serve`
-> returned.
+> **[Try the live demo](https://cairn-geocoder.github.io/cairn/demo/)** —
+> 9 preset queries dispatched against a real
+> [`cairn.kaldera.dev`](https://cairn.kaldera.dev/healthz) backend on
+> Hetzner k3s with a Liechtenstein bundle. Free-form composer below
+> the presets lets you craft any `/v1/search`, `/v1/structured`, or
+> `/v1/reverse` call.
 
 ## Goals
 
