@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use cairn_api::{router, AppState, Metrics};
-use cairn_spatial::{AdminIndex, AdminLayer, NearestIndex, PointLayer};
+use cairn_spatial::{AdminIndex, NearestIndex};
 use cairn_text::TextIndex;
 use cairn_tile::read_manifest;
 use clap::Parser;
@@ -30,6 +30,8 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let manifest = read_manifest(&cli.bundle.join("manifest.toml")).ok();
+
     let text_dir = cli.bundle.join("index/text");
     let text = if text_dir.exists() {
         tracing::info!(path = %text_dir.display(), "opening text index");
@@ -41,33 +43,36 @@ async fn main() -> Result<()> {
         None
     };
 
-    let admin_path = cli.bundle.join("spatial/admin.bin");
-    let admin = if admin_path.exists() {
-        tracing::info!(path = %admin_path.display(), "loading admin layer");
-        let layer = AdminLayer::read_from(&admin_path)
-            .with_context(|| format!("loading admin layer at {}", admin_path.display()))?;
-        let index = AdminIndex::build(layer);
+    let admin = if !manifest
+        .as_ref()
+        .map(|m| m.admin_tiles.is_empty())
+        .unwrap_or(true)
+    {
+        let entries = manifest.as_ref().unwrap().admin_tiles.clone();
+        tracing::info!(tiles = entries.len(), "opening admin layer (partitioned)");
+        let index = AdminIndex::open(&cli.bundle, entries);
         tracing::info!(features = index.len(), "admin index ready");
         Some(Arc::new(index))
     } else {
-        tracing::warn!(path = %admin_path.display(), "no admin layer; /v1/reverse will 503");
+        tracing::warn!("no admin tiles in manifest; /v1/reverse will 503");
         None
     };
 
-    let points_path = cli.bundle.join("spatial/points.bin");
-    let nearest = if points_path.exists() {
-        tracing::info!(path = %points_path.display(), "loading point layer");
-        let layer = PointLayer::read_from(&points_path)
-            .with_context(|| format!("loading point layer at {}", points_path.display()))?;
-        let index = NearestIndex::build(layer);
+    let nearest = if !manifest
+        .as_ref()
+        .map(|m| m.point_tiles.is_empty())
+        .unwrap_or(true)
+    {
+        let entries = manifest.as_ref().unwrap().point_tiles.clone();
+        tracing::info!(tiles = entries.len(), "opening point layer (partitioned)");
+        let index = NearestIndex::open(&cli.bundle, entries);
         tracing::info!(points = index.len(), "nearest index ready");
         Some(Arc::new(index))
     } else {
-        tracing::warn!(path = %points_path.display(), "no point layer; nearest fallback off");
+        tracing::warn!("no point tiles in manifest; nearest fallback off");
         None
     };
 
-    let manifest = read_manifest(&cli.bundle.join("manifest.toml")).ok();
     let bundle_id = manifest
         .as_ref()
         .map(|m| m.bundle_id.clone())

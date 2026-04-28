@@ -121,8 +121,6 @@ fn build_test_state() -> AppState {
     let admin_layer = AdminLayer {
         features: vec![liechtenstein_admin()],
     };
-    let admin_path = bundle.join("spatial/admin.bin");
-    admin_layer.write_to(&admin_path).unwrap();
     let admin = AdminIndex::build(admin_layer);
 
     let point_layer = PointLayer {
@@ -138,8 +136,6 @@ fn build_test_state() -> AppState {
             })
             .collect(),
     };
-    let points_path = bundle.join("spatial/points.bin");
-    point_layer.write_to(&points_path).unwrap();
     let nearest = NearestIndex::build(point_layer);
 
     AppState {

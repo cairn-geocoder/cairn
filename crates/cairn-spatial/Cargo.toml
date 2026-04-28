@@ -18,4 +18,5 @@ rstar = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 bincode = { workspace = true }
+blake3 = { workspace = true }
 tracing = { workspace = true }

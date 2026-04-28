@@ -163,10 +163,32 @@ pub struct Manifest {
     pub sources: Vec<SourceVersion>,
     #[serde(default)]
     pub tiles: Vec<TileEntry>,
+    /// Per-tile admin polygon files (partitioned for lazy load). Empty
+    /// when the bundle was built without a polygon source.
     #[serde(default)]
-    pub admin: Option<ArtifactEntry>,
+    pub admin_tiles: Vec<SpatialTileEntry>,
+    /// Per-tile point files used by the nearest-fallback layer. Empty
+    /// only on degenerate bundles with zero places.
     #[serde(default)]
-    pub points: Option<ArtifactEntry>,
+    pub point_tiles: Vec<SpatialTileEntry>,
+}
+
+/// Manifest entry for a single per-tile spatial file (admin polygons
+/// or nearest-fallback point centroids).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpatialTileEntry {
+    pub level: u8,
+    pub tile_id: u32,
+    pub min_lon: f64,
+    pub min_lat: f64,
+    pub max_lon: f64,
+    pub max_lat: f64,
+    pub item_count: u64,
+    pub byte_size: u64,
+    pub blake3: String,
+    /// Path relative to the bundle root, e.g.
+    /// `spatial/admin/0/000/049/49509.bin`.
+    pub rel_path: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -532,8 +554,8 @@ mod tests {
                 place_count: places.len() as u32,
                 compression: TileCompression::None,
             }],
-            admin: None,
-            points: None,
+            admin_tiles: vec![],
+            point_tiles: vec![],
         };
         write_manifest(&dir.join("manifest.toml"), &manifest).unwrap();
 

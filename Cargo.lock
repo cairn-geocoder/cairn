@@ -481,6 +481,7 @@ name = "cairn-spatial"
 version = "0.0.2-alpha"
 dependencies = [
  "bincode",
+ "blake3",
  "cairn-place",
  "cairn-tile",
  "geo",
