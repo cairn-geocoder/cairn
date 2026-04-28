@@ -1,0 +1,13 @@
+{
+  "scanned_at": "1970-01-01T00:00:00Z",
+  "image": "ghcr.io/cairn-geocoder/cairn:latest",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "unknown": 0
+  },
+  "vulnerabilities": [],
+  "_note": "Placeholder. The Security scan (CVE) workflow refreshes this file on every push, every PR, and daily at 06:17 UTC."
+}

@@ -268,3 +268,75 @@ ul.bullet li { margin-bottom: 4px; }
   color: var(--muted);
 }
 .foot p { margin: 0; }
+
+/* CVE table on the Security section */
+.cve-meta {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 8px 0 4px;
+}
+.cve-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+.sev {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.sev-critical { background: #fde2e2; color: #8a1f1f; border-color: #f3b0b0; }
+.sev-high     { background: #fde9d4; color: #8a4a16; border-color: #f3cea0; }
+.sev-medium   { background: #fff6cf; color: #6f5a06; border-color: #ecd989; }
+.sev-low      { background: #e3f2dc; color: #2f5a1d; border-color: #b7d4a4; }
+.sev-unknown  { background: var(--surface); color: var(--muted); border-color: var(--border); }
+
+.cve-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 4px 0 12px;
+  background: #fff;
+}
+.cve-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.cve-table thead th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--surface);
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.cve-table tbody td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.cve-table tbody tr:last-child td { border-bottom: none; }
+.cve-table code { font-size: 12px; }
+.cve-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 18px 12px;
+  font-style: italic;
+}
+.cve-foot {
+  font-size: 13px;
+  color: var(--muted);
+  border-left: 3px solid var(--border);
+  padding: 6px 0 6px 12px;
+  max-width: 64ch;
+}

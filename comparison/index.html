@@ -324,6 +324,44 @@
     </div>
   </section>
 
+  <section class="section">
+    <div class="container">
+      <h2>Security posture</h2>
+      <p>
+        Trivy scans the production container image on every push, every
+        PR, and once a day at 06:17 UTC. The latest CRITICAL/HIGH/MEDIUM
+        findings (mirrored from the
+        <a href="https://github.com/cairn-geocoder/cairn/security/code-scanning">GitHub Code Scanning tab</a>):
+      </p>
+
+      <div id="cve-meta" class="cve-meta">Loading current CVE list&hellip;</div>
+      <div id="cve-summary" class="cve-summary"></div>
+
+      <div class="cve-scroll">
+        <table id="cve-table" class="cve-table">
+          <thead>
+            <tr>
+              <th>CVE</th>
+              <th>Severity</th>
+              <th>Package</th>
+              <th>Installed</th>
+              <th>Fixed in</th>
+              <th>Title</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="6" class="cve-empty">Loading&hellip;</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="cve-foot">
+        Triage policy and reporting:
+        <a href="https://github.com/cairn-geocoder/cairn/blob/main/SECURITY.md">SECURITY.md</a>.
+      </p>
+    </div>
+  </section>
+
   <footer class="foot">
     <div class="container">
       <p>
@@ -333,5 +371,60 @@
       </p>
     </div>
   </footer>
+
+  <script>
+    (function () {
+      const tbody = document.querySelector('#cve-table tbody');
+      const meta = document.getElementById('cve-meta');
+      const summary = document.getElementById('cve-summary');
+      function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+      }
+      function severityClass(sev) {
+        switch ((sev || '').toUpperCase()) {
+          case 'CRITICAL': return 'sev sev-critical';
+          case 'HIGH':     return 'sev sev-high';
+          case 'MEDIUM':   return 'sev sev-medium';
+          case 'LOW':      return 'sev sev-low';
+          default:         return 'sev sev-unknown';
+        }
+      }
+      function renderSummary(s) {
+        if (!s) return '';
+        const parts = [];
+        if (s.critical) parts.push(`<span class="sev sev-critical">${s.critical} critical</span>`);
+        if (s.high)     parts.push(`<span class="sev sev-high">${s.high} high</span>`);
+        if (s.medium)   parts.push(`<span class="sev sev-medium">${s.medium} medium</span>`);
+        if (s.low)      parts.push(`<span class="sev sev-low">${s.low} low</span>`);
+        return parts.length ? parts.join(' ') : '<span class="sev sev-low">No findings at the tracked severities.</span>';
+      }
+      fetch('../security/cves.json', { cache: 'no-store' })
+        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(data => {
+          const ts = data.scanned_at || '';
+          const tsHuman = ts.startsWith('1970') ? '(no scan recorded yet)' : ts;
+          meta.innerHTML = `Image: <code>${escapeHtml(data.image || '')}</code> &middot; scanned <code>${escapeHtml(tsHuman)}</code>`;
+          summary.innerHTML = renderSummary(data.summary);
+          const rows = (data.vulnerabilities || []).map(v => `
+            <tr>
+              <td><a href="${escapeHtml(v.url || '#')}">${escapeHtml(v.id)}</a></td>
+              <td><span class="${severityClass(v.severity)}">${escapeHtml(v.severity || 'UNKNOWN')}</span></td>
+              <td><code>${escapeHtml(v.package)}</code></td>
+              <td><code>${escapeHtml(v.installed_version)}</code></td>
+              <td><code>${escapeHtml(v.fixed_version || '—')}</code></td>
+              <td>${escapeHtml(v.title || '')}</td>
+            </tr>
+          `).join('');
+          tbody.innerHTML = rows ||
+            '<tr><td colspan="6" class="cve-empty">No CRITICAL / HIGH / MEDIUM findings on the latest scan.</td></tr>';
+        })
+        .catch(err => {
+          meta.textContent = 'Unable to load security/cves.json — ' + err.message;
+          tbody.innerHTML = '<tr><td colspan="6" class="cve-empty">No data available.</td></tr>';
+        });
+    })();
+  </script>
 </body>
 </html>
