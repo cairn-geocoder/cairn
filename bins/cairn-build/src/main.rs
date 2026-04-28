@@ -431,15 +431,33 @@ fn cmd_extract(bundle: &Path, bbox_arg: &[f64], out: &Path, write_tar: bool) -> 
     }
     tracing::info!(tiles = kept_point_tiles.len(), "point tiles copied");
 
-    // Text index: copy wholesale. Filtering tantivy segments by bbox would
-    // require rebuilding the index from kept Places — out of scope for this
-    // extract pass. The unfiltered text index over a regional bundle is
-    // still functional; oversized but correct.
+    // Text index: rebuild from the Places living in the kept tiles, filtered
+    // by bbox. Tantivy segments aren't bbox-addressable on disk, so the
+    // honest answer is to redo `build_index` over the in-bbox slice.
     let text_src = bundle.join("index/text");
     if text_src.exists() {
+        let mut kept_places: Vec<Place> = Vec::new();
+        for entry in &new_tiles {
+            let level = Level::from_u8(entry.level)
+                .ok_or_else(|| anyhow::anyhow!("unknown level {}", entry.level))?;
+            let coord = TileCoord::from_id(level, entry.tile_id);
+            let path = out.join(coord.relative_path());
+            let places = cairn_tile::read_tile(&path)
+                .with_context(|| format!("decoding tile {}", path.display()))?;
+            for p in places {
+                if p.centroid.lon >= q.0
+                    && p.centroid.lon <= q.2
+                    && p.centroid.lat >= q.1
+                    && p.centroid.lat <= q.3
+                {
+                    kept_places.push(p);
+                }
+            }
+        }
         let text_dst = out.join("index/text");
-        copy_dir_all(&text_src, &text_dst)?;
-        tracing::info!(path = %text_dst.display(), "text index copied");
+        let docs = cairn_text::build_index(&text_dst, kept_places.into_iter())
+            .with_context(|| format!("rebuilding text index at {}", text_dst.display()))?;
+        tracing::info!(path = %text_dst.display(), docs, "text index rebuilt for bbox");
     }
 
     let new_manifest = Manifest {
@@ -720,22 +738,6 @@ fn copy_relative_file(src_root: &Path, dst_root: &Path, rel_path: &str) -> Resul
     }
     std::fs::copy(&src, &dst)
         .with_context(|| format!("copy {} → {}", src.display(), dst.display()))?;
-    Ok(())
-}
-
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let path = entry.path();
-        let target = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_all(&path, &target)?;
-        } else {
-            std::fs::copy(&path, &target)?;
-        }
-    }
     Ok(())
 }
 
