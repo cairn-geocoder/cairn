@@ -83,14 +83,19 @@ Tracks shipped phases and deferred work.
 - libpostal FFI bindings (feature-gated unsafe calls): **shipped**
   (commit pending). Build prerequisites: `libpostal` C library +
   `libpostal_data download all` for the ~2 GB language model.
-- rkyv-archived AdminLayer: **scaffolded** (`cairn_spatial::archived`):
-  flat `ArchivedAdminFeature` with `polygon_rings: Vec<Vec<Vec<[f64;2]>>>`,
-  round-trip helpers, and a 16-byte aligned write/read pair sharing
-  cairn-tile's header layout. **Not wired into the build yet.** Format
-  flip waits on point-in-polygon directly against archived ring data —
-  switching bincode → rkyv without that nets zero because we'd hydrate
-  back into `MultiPolygon<f64>` for `geo::Contains` anyway. Both flip
-  together.
+- rkyv-archived AdminLayer: **scaffolded with archived PIP**
+  (`cairn_spatial::archived`): flat `ArchivedAdminFeature` with
+  `polygon_rings: Vec<Vec<Vec<[f64;2]>>>`, precomputed
+  `polygon_bboxes` for an O(1) prefilter, round-trip helpers, and a
+  16-byte aligned write/read pair sharing cairn-tile's header layout.
+  Custom `pip_archived` ray-casts directly on the flat ring vertices —
+  diff-tested against `geo::Contains` over a 17×17 probe grid;
+  benchmarks (256-vertex polygon): **128 ns inside (vs 172 ns geo,
+  25 % faster), 2.1 ns outside-bbox (vs 194 ns, 92× faster)**. Still
+  **not wired into the build** — flipping bincode → rkyv as the default
+  spatial tile format means swapping `AdminIndex` to read archived
+  blobs (mmap + zero-copy) and routing PIP through `pip_archived`.
+  That's the next concrete step.
 
 Today `spatial/admin.bin` and `spatial/points.bin` are bundle-wide
 single bincode blobs read whole at startup. At country scale this

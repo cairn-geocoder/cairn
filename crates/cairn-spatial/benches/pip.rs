@@ -9,9 +9,11 @@
 //!    nearest-k linear scan + sort cost.
 
 use cairn_place::Coord;
+use cairn_spatial::archived::{pip_archived, to_archived};
 use cairn_spatial::{AdminFeature, AdminIndex, AdminLayer, NearestIndex, PlacePoint, PointLayer};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use geo_types::{LineString, MultiPolygon, Polygon};
+use geo::Contains;
+use geo_types::{Coord as GeoCoord, LineString, MultiPolygon, Polygon};
 
 fn unit_square_at(cx: f64, cy: f64, half: f64) -> MultiPolygon<f64> {
     let ext = LineString::from(vec![
@@ -103,5 +105,60 @@ fn bench_nearest(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_pip, bench_nearest);
+fn many_vertex_feature(vertex_count: usize) -> AdminFeature {
+    // Build a many-vertex outer ring approximating a circle so the PIP
+    // path actually touches every edge for a typical probe.
+    let n = vertex_count.max(8);
+    let mut ring: Vec<(f64, f64)> = Vec::with_capacity(n + 1);
+    let r = 1.0;
+    let cx = 0.0;
+    let cy = 0.0;
+    for i in 0..n {
+        let theta = 2.0 * std::f64::consts::PI * (i as f64) / (n as f64);
+        ring.push((cx + r * theta.cos(), cy + r * theta.sin()));
+    }
+    ring.push(ring[0]);
+    AdminFeature {
+        place_id: 1,
+        level: 0,
+        kind: "country".into(),
+        name: "C".into(),
+        centroid: Coord { lon: cx, lat: cy },
+        admin_path: vec![],
+        polygon: MultiPolygon(vec![Polygon::new(LineString::from(ring), vec![])]),
+    }
+}
+
+fn bench_pip_engines(c: &mut Criterion) {
+    // Compare ray-casting on flat ring vertices vs geo::Contains on
+    // hydrated MultiPolygon for the same shape. This is the call that
+    // gates the bincode → rkyv format flip.
+    let f = many_vertex_feature(256);
+    let a = to_archived(&f);
+    let probe_in = GeoCoord { x: 0.1, y: 0.1 };
+    let probe_out = GeoCoord { x: 5.0, y: 5.0 };
+
+    c.bench_function("pip_archived_in", |b| {
+        b.iter(|| {
+            let _ = pip_archived(&a, black_box([0.1, 0.1]));
+        })
+    });
+    c.bench_function("geo_contains_in", |b| {
+        b.iter(|| {
+            let _ = f.polygon.contains(black_box(&probe_in));
+        })
+    });
+    c.bench_function("pip_archived_out", |b| {
+        b.iter(|| {
+            let _ = pip_archived(&a, black_box([5.0, 5.0]));
+        })
+    });
+    c.bench_function("geo_contains_out", |b| {
+        b.iter(|| {
+            let _ = f.polygon.contains(black_box(&probe_out));
+        })
+    });
+}
+
+criterion_group!(benches, bench_pip, bench_nearest, bench_pip_engines);
 criterion_main!(benches);
