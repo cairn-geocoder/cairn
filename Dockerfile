@@ -56,13 +56,17 @@ RUN /usr/local/bin/cairn-build build \
         --bundle-id "$BUNDLE_ID"
 
 ############################################################
-# Final image: minimal runtime with binary + bundle.
+# Final image: minimal runtime with binaries + baked bundle.
+# Includes cairn-build, curl, bzip2 so the same image can run a
+# bundle-build Job in Kubernetes (downloads sources + emits a fresh
+# bundle to a mounted PVC).
 ############################################################
 FROM alpine:${ALPINE_VERSION}
-RUN apk add --no-cache ca-certificates && \
+RUN apk add --no-cache ca-certificates curl bzip2 && \
     addgroup -S cairn && adduser -S -G cairn -h /home/cairn cairn
 
 COPY --from=builder /src/target/release/cairn-serve /usr/local/bin/cairn-serve
+COPY --from=builder /src/target/release/cairn-build /usr/local/bin/cairn-build
 COPY --from=bundler /bundle /bundle
 RUN chown -R cairn:cairn /bundle
 
