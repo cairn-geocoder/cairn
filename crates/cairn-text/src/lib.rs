@@ -31,6 +31,12 @@ const CJK_NGRAM_MAX: usize = 2;
 const WRITER_HEAP: usize = 64 * 1024 * 1024;
 const RERANK_MULTIPLIER: usize = 5;
 const MAX_FUZZY_DISTANCE: u8 = 2;
+/// Multiplier applied to a Hit's BM25 score when the lowercased,
+/// deunicoded query string equals one of its stored names. 4.0 lifts a
+/// "Vaduz" search past a noisy POI containing "Vaduz" in its name —
+/// without nuking BM25 entirely, so well-ranked partial matches still
+/// surface.
+const EXACT_MATCH_BOOST: f32 = 4.0;
 
 /// ASCII-fold + script transliterate a string via `deunicode`.
 /// Returns `None` when the result equals the input (already ASCII)
@@ -307,7 +313,11 @@ impl TextIndex {
         let text_q = self.build_text_query(trimmed, opts)?;
         let combined = self.apply_layer_filter(text_q, &opts.layers);
 
-        let candidate_limit = if opts.focus.is_some() {
+        // Always over-fetch when we'll re-rank — focus, exact-name, or
+        // both — so the BM25 top-N doesn't truncate matches the rerank
+        // would have promoted.
+        let needs_rerank = opts.focus.is_some() || matches!(opts.mode, SearchMode::Search);
+        let candidate_limit = if needs_rerank {
             opts.limit
                 .saturating_mul(RERANK_MULTIPLIER)
                 .clamp(opts.limit, 200)
@@ -324,9 +334,23 @@ impl TextIndex {
             hits.push(self.hit_from_doc(score, &doc));
         }
 
+        // Exact-name match boost: case + diacritic-folded equality
+        // between the (trimmed) query and a Hit's stored name promotes
+        // the hit's score by `EXACT_MATCH_BOOST`. Plain exact-but-
+        // diacritic-mismatch ("munchen" vs "München") still counts
+        // because we fold both sides via deunicode.
+        //
+        // Applies in Search mode only; Autocomplete is prefix-driven
+        // and a literal full-name match isn't a meaningful signal at
+        // typing time.
+        if matches!(opts.mode, SearchMode::Search) {
+            apply_exact_name_boost(&mut hits, trimmed);
+        }
+
         if let Some(focus) = opts.focus {
             apply_geo_bias(&mut hits, focus, opts.focus_weight);
         }
+        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         hits.truncate(opts.limit);
         Ok(hits)
     }
@@ -475,6 +499,25 @@ impl TextIndex {
             distance_km: None,
         }
     }
+}
+
+/// Multiply each hit's score by [`EXACT_MATCH_BOOST`] when the query
+/// (lowercased, ASCII-folded via deunicode) equals the hit's name
+/// after the same fold. Sort happens later in the pipeline.
+fn apply_exact_name_boost(hits: &mut [Hit], query: &str) {
+    let q = fold_for_compare(query);
+    if q.is_empty() {
+        return;
+    }
+    for h in hits.iter_mut() {
+        if fold_for_compare(&h.name) == q {
+            h.score *= EXACT_MATCH_BOOST;
+        }
+    }
+}
+
+fn fold_for_compare(s: &str) -> String {
+    deunicode::deunicode(s).trim().to_lowercase()
 }
 
 fn apply_geo_bias(hits: &mut [Hit], focus: Coord, weight: f64) {
@@ -735,6 +778,80 @@ mod tests {
             hits.first().map(|h| h.name == "Schaan").unwrap_or(false),
             "expected Schaan first, got {:?}",
             hits
+        );
+    }
+
+    #[test]
+    fn exact_name_match_outranks_partial() {
+        let dir = tempdir_for_test();
+        // Two records: a city literally called "Vaduz" and a POI whose
+        // name contains "Vaduz" as a substring. BM25 alone might tie or
+        // even rank the longer-name POI higher because of term-frequency
+        // quirks. Exact-match boost must lift the literal city.
+        let city = vaduz();
+        let mut poi = Place {
+            id: PlaceId::new(2, 49509, 1).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Vaduz Castle Tea Room".into(),
+            }],
+            centroid: Coord {
+                lon: 9.5208,
+                lat: 47.141,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        let _ = &mut poi;
+        build_index(&dir, vec![city, poi]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        let hits = idx.search("Vaduz", &SearchOptions::default()).unwrap();
+        assert!(
+            hits.first().map(|h| h.name == "Vaduz").unwrap_or(false),
+            "exact 'Vaduz' must outrank a partial match, got {hits:?}"
+        );
+    }
+
+    #[test]
+    fn exact_name_boost_is_diacritic_insensitive() {
+        let dir = tempdir_for_test();
+        let munich = Place {
+            id: PlaceId::new(1, 23456, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "München".into(),
+            }],
+            centroid: Coord {
+                lon: 11.58,
+                lat: 48.14,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        let other = Place {
+            id: PlaceId::new(2, 23456, 1).unwrap(),
+            kind: PlaceKind::Poi,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Münchener Freiheit S-Bahn".into(),
+            }],
+            centroid: Coord {
+                lon: 11.58,
+                lat: 48.14,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        build_index(&dir, vec![munich, other]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        // Type "munchen" (no umlaut) — exact-match boost should still
+        // promote München via the deunicode-folded compare.
+        let hits = idx.search("munchen", &SearchOptions::default()).unwrap();
+        assert!(
+            hits.first().map(|h| h.name == "München").unwrap_or(false),
+            "ASCII 'munchen' must boost München over partial-name PoI: {hits:?}"
         );
     }
 
