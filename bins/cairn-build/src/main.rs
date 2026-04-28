@@ -271,7 +271,18 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     }
 
     let mut admin_tile_entries: Vec<cairn_tile::SpatialTileEntry> = Vec::new();
-    if let Some(layer) = admin_layer {
+    if let Some(mut layer) = admin_layer {
+        let before = layer.features.len();
+        layer.features = cairn_spatial::dedupe_features(layer.features);
+        let after = layer.features.len();
+        if before != after {
+            tracing::info!(
+                before,
+                after,
+                dropped = before - after,
+                "admin layer deduplicated across sources"
+            );
+        }
         admin_tile_entries = cairn_spatial::write_admin_partitioned(&args.out, &layer)
             .with_context(|| {
                 format!("writing partitioned admin layer to {}", args.out.display())

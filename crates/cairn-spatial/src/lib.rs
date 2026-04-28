@@ -112,6 +112,64 @@ fn tile_bbox(level: Level, tile_id: u32) -> (f64, f64, f64, f64) {
 }
 
 // ============================================================
+// Cross-source dedup
+// ============================================================
+
+/// Quantize a coordinate to a ~100m grid cell (≈ 0.001° at the equator)
+/// for grouping near-identical centroids regardless of float noise.
+fn quantize_centroid(c: Coord) -> (i32, i32) {
+    let lon = (c.lon * 1000.0).round() as i32;
+    let lat = (c.lat * 1000.0).round() as i32;
+    (lon, lat)
+}
+
+/// Score a feature's "admin richness". A WoF feature with a parent chain
+/// (`admin_path`) is preferred over a bare OSM relation that landed with
+/// an empty path; ties break on name length so non-empty names beat empty.
+fn dedup_score(f: &AdminFeature) -> (usize, usize) {
+    (f.admin_path.len(), f.name.len())
+}
+
+/// Collapse near-duplicate AdminFeatures emitted by overlapping sources
+/// (typically WoF + OSM both shipping the same country / region polygon).
+/// Two features collide when they share `kind` and their centroids quantize
+/// to the same ~100m grid cell. The richer feature (longer admin_path,
+/// then longer name) wins.
+///
+/// Polygon geometry is left untouched on the winner; we don't try to
+/// reconcile slightly different OSM and WoF rings here, only avoid the
+/// duplicate user-visible result.
+pub fn dedupe_features(features: Vec<AdminFeature>) -> Vec<AdminFeature> {
+    let mut best: BTreeMap<(String, i32, i32), AdminFeature> = BTreeMap::new();
+    let mut dropped = 0usize;
+    for feat in features {
+        let key = (
+            feat.kind.clone(),
+            quantize_centroid(feat.centroid).0,
+            quantize_centroid(feat.centroid).1,
+        );
+        match best.get(&key) {
+            Some(existing) if dedup_score(existing) >= dedup_score(&feat) => {
+                dropped += 1;
+            }
+            _ => {
+                if best.insert(key, feat).is_some() {
+                    dropped += 1;
+                }
+            }
+        }
+    }
+    if dropped > 0 {
+        debug!(
+            dropped,
+            kept = best.len(),
+            "dedupe_features collapsed near-duplicates"
+        );
+    }
+    best.into_values().collect()
+}
+
+// ============================================================
 // Partitioned write
 // ============================================================
 
@@ -839,6 +897,53 @@ mod tests {
             lat: 12.0,
         });
         assert_eq!(idx.cache_len(), 1);
+    }
+
+    #[test]
+    fn dedupe_collapses_same_kind_same_centroid() {
+        let osm = AdminFeature {
+            place_id: 1,
+            level: 0,
+            kind: "country".into(),
+            name: "Liechtenstein".into(),
+            centroid: Coord {
+                lon: 9.5554,
+                lat: 47.166,
+            },
+            admin_path: vec![],
+            polygon: unit_square_at(9.5554, 47.166),
+        };
+        let wof = AdminFeature {
+            place_id: 2,
+            level: 0,
+            kind: "country".into(),
+            name: "Liechtenstein".into(),
+            centroid: Coord {
+                lon: 9.5554,
+                lat: 47.166,
+            },
+            admin_path: vec![85633723, 102191581],
+            polygon: unit_square_at(9.5554, 47.166),
+        };
+        let kept = dedupe_features(vec![osm, wof]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].place_id, 2, "WoF (richer admin_path) should win");
+    }
+
+    #[test]
+    fn dedupe_keeps_distinct_kinds() {
+        let country = feature(1, "Liechtenstein", "country", 9.5554, 47.166);
+        let region = feature(2, "Liechtenstein", "region", 9.5554, 47.166);
+        let kept = dedupe_features(vec![country, region]);
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn dedupe_keeps_distant_centroids() {
+        let a = feature(1, "Townville", "city", 0.0, 0.0);
+        let b = feature(2, "Townville", "city", 0.5, 0.5);
+        let kept = dedupe_features(vec![a, b]);
+        assert_eq!(kept.len(), 2);
     }
 
     #[test]
