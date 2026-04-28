@@ -57,6 +57,23 @@ struct Counters {
     interpolated_addresses: u64,
 }
 
+impl Counters {
+    fn merge(&mut self, other: Counters) {
+        self.nodes_seen += other.nodes_seen;
+        self.nodes_emitted += other.nodes_emitted;
+        self.ways_seen += other.ways_seen;
+        self.ways_emitted += other.ways_emitted;
+        self.relations_seen += other.relations_seen;
+        self.relations_emitted += other.relations_emitted;
+        self.skipped_no_name += other.skipped_no_name;
+        self.skipped_unknown_kind += other.skipped_unknown_kind;
+        self.skipped_way_no_coords += other.skipped_way_no_coords;
+        self.skipped_relation_open_ring += other.skipped_relation_open_ring;
+        self.skipped_relation_no_outer += other.skipped_relation_no_outer;
+        self.interpolated_addresses += other.interpolated_addresses;
+    }
+}
+
 type NodeCoords = HashMap<i64, [f64; 2]>;
 type WayNodes = HashMap<i64, Vec<i64>>;
 
@@ -85,28 +102,21 @@ pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
         "node caches built"
     );
 
-    info!("OSM PBF pass 2: places + ways + interpolation + admin relations");
-    let reader = ElementReader::from_path(pbf_path)?;
-    let mut places = Vec::new();
+    info!("OSM PBF pass 2a: parallel node-place emit");
+    let (mut places, mut counters) = parallel_node_places(pbf_path)?;
+    info!(
+        nodes_seen = counters.nodes_seen,
+        nodes_emitted = counters.nodes_emitted,
+        "pass 2a done"
+    );
+
+    info!("OSM PBF pass 2b: ways + interpolation + admin relations");
     let mut admin_features: Vec<AdminFeature> = Vec::new();
-    let mut counters = Counters::default();
-    let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
     let mut admin_local_counters: HashMap<(u8, u32), u64> = HashMap::new();
     let mut way_nodes: WayNodes = HashMap::new();
-
+    let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
+    let reader = ElementReader::from_path(pbf_path)?;
     reader.for_each(|element| match element {
-        Element::Node(n) => {
-            counters.nodes_seen += 1;
-            if let Some(p) = node_to_place(&n, &mut local_counters, &mut counters) {
-                places.push(p);
-            }
-        }
-        Element::DenseNode(n) => {
-            counters.nodes_seen += 1;
-            if let Some(p) = dense_node_to_place(&n, &mut local_counters, &mut counters) {
-                places.push(p);
-            }
-        }
         Element::Way(w) => {
             counters.ways_seen += 1;
             way_nodes.insert(w.id(), w.refs().collect());
@@ -134,7 +144,23 @@ pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
                 admin_features.push(feat);
             }
         }
+        // Nodes already handled in parallel pass 2a; ignore here.
+        _ => {}
     })?;
+
+    // Renumber to deterministic, collision-free PlaceIds. Pass 2a's
+    // per-block local counters mint colliding IDs within the same
+    // (level, tile) — we sort the merged list by (level, tile,
+    // content-hash) and reassign sequentially. Same for admin.
+    let pre_places = places.len();
+    places = renumber_places(places);
+    let pre_admin = admin_features.len();
+    admin_features = renumber_admin_features(admin_features);
+    debug!(
+        places = pre_places,
+        admin = pre_admin,
+        "renumbered with deterministic PlaceIds"
+    );
 
     info!(
         nodes_seen = counters.nodes_seen,
@@ -157,6 +183,136 @@ pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
             features: admin_features,
         },
     })
+}
+
+/// Block-level parallel emit of Places from `Element::Node` and
+/// `Element::DenseNode`. Each block has its own `local_counters` and
+/// `Counters`; PlaceIds minted here may collide across blocks within
+/// the same `(level, tile)` and are renumbered after the merge.
+fn parallel_node_places(pbf_path: &Path) -> Result<(Vec<Place>, Counters), ImportError> {
+    let blob_reader = BlobReader::from_path(pbf_path)?;
+    blob_reader
+        .par_bridge()
+        .map(|blob| -> Result<(Vec<Place>, Counters), ImportError> {
+            let blob = blob?;
+            match blob.decode()? {
+                BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
+                    Ok((Vec::new(), Counters::default()))
+                }
+                BlobDecode::OsmData(block) => {
+                    let mut places = Vec::new();
+                    let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
+                    let mut counters = Counters::default();
+                    for elem in block.elements() {
+                        match elem {
+                            Element::Node(n) => {
+                                counters.nodes_seen += 1;
+                                if let Some(p) =
+                                    node_to_place(&n, &mut local_counters, &mut counters)
+                                {
+                                    places.push(p);
+                                }
+                            }
+                            Element::DenseNode(n) => {
+                                counters.nodes_seen += 1;
+                                if let Some(p) =
+                                    dense_node_to_place(&n, &mut local_counters, &mut counters)
+                                {
+                                    places.push(p);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok((places, counters))
+                }
+            }
+        })
+        .reduce(
+            || Ok((Vec::new(), Counters::default())),
+            |a, b| match (a, b) {
+                (Ok((mut av, mut ac)), Ok((bv, bc))) => {
+                    av.extend(bv);
+                    ac.merge(bc);
+                    Ok((av, ac))
+                }
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            },
+        )
+}
+
+/// Sort places by a content-derived key, then re-assign per-tile local
+/// IDs sequentially. Output is deterministic across runs given the
+/// same input set: same content → same final PlaceIds.
+fn renumber_places(mut places: Vec<Place>) -> Vec<Place> {
+    places.sort_by(|a, b| {
+        a.id.level()
+            .cmp(&b.id.level())
+            .then(a.id.tile().cmp(&b.id.tile()))
+            .then((a.kind as u8).cmp(&(b.kind as u8)))
+            .then_with(|| {
+                let an = a.names.first().map(|n| n.value.as_str()).unwrap_or("");
+                let bn = b.names.first().map(|n| n.value.as_str()).unwrap_or("");
+                an.cmp(bn)
+            })
+            .then_with(|| {
+                ((a.centroid.lon * 1e6) as i64).cmp(&((b.centroid.lon * 1e6) as i64))
+            })
+            .then_with(|| {
+                ((a.centroid.lat * 1e6) as i64).cmp(&((b.centroid.lat * 1e6) as i64))
+            })
+    });
+    let mut counters: HashMap<(u8, u32), u64> = HashMap::new();
+    for p in &mut places {
+        let key = (p.id.level(), p.id.tile());
+        let local = counters.entry(key).or_insert(0);
+        let new_id = match cairn_place::PlaceId::new(key.0, key.1, *local) {
+            Ok(id) => id,
+            Err(err) => {
+                debug!(?err, "renumber overflow — keeping original id");
+                continue;
+            }
+        };
+        p.id = new_id;
+        *local += 1;
+    }
+    places
+}
+
+/// Renumber for AdminFeature: same idea but operates on the
+/// `(level, tile, place_id)` namespace and rebuilds `place_id`
+/// after sorting.
+fn renumber_admin_features(mut feats: Vec<AdminFeature>) -> Vec<AdminFeature> {
+    feats.sort_by(|a, b| {
+        a.level
+            .cmp(&b.level)
+            .then(a.kind.as_str().cmp(b.kind.as_str()))
+            .then(a.name.as_str().cmp(b.name.as_str()))
+            .then_with(|| {
+                ((a.centroid.lon * 1e6) as i64).cmp(&((b.centroid.lon * 1e6) as i64))
+            })
+            .then_with(|| {
+                ((a.centroid.lat * 1e6) as i64).cmp(&((b.centroid.lat * 1e6) as i64))
+            })
+    });
+    // AdminFeature::place_id encodes a tile from the centroid. Pull
+    // (level, tile) from the original place_id by decoding it.
+    let mut counters: HashMap<(u8, u32), u64> = HashMap::new();
+    for f in &mut feats {
+        let id = cairn_place::PlaceId(f.place_id);
+        let key = (id.level(), id.tile());
+        let local = counters.entry(key).or_insert(0);
+        let new_id = match cairn_place::PlaceId::new(key.0, key.1, *local) {
+            Ok(id) => id,
+            Err(err) => {
+                debug!(?err, "admin renumber overflow — keeping original id");
+                continue;
+            }
+        };
+        f.place_id = new_id.0;
+        *local += 1;
+    }
+    feats
 }
 
 /// Block-level parallel decode of the node coord cache + address-tagged
