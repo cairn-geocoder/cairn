@@ -74,9 +74,12 @@ pub fn to_archived(f: &AdminFeature) -> ArchivedAdminFeature {
     let polygon_bboxes: Vec<[f64; 4]> = polygon_rings
         .iter()
         .map(|poly| {
-            poly.first()
-                .and_then(|outer| ring_bbox(outer))
-                .unwrap_or([f64::NAN, f64::NAN, f64::NAN, f64::NAN])
+            poly.first().and_then(|outer| ring_bbox(outer)).unwrap_or([
+                f64::NAN,
+                f64::NAN,
+                f64::NAN,
+                f64::NAN,
+            ])
         })
         .collect();
 
@@ -103,9 +106,9 @@ pub fn from_archived(a: &ArchivedAdminFeature) -> AdminFeature {
             let mut iter = poly.iter();
             let outer = iter
                 .next()
-                .map(vec_to_linestring)
+                .map(|v| vec_to_linestring(v))
                 .unwrap_or_else(|| LineString::new(Vec::new()));
-            let holes: Vec<LineString<f64>> = iter.map(vec_to_linestring).collect();
+            let holes: Vec<LineString<f64>> = iter.map(|v| vec_to_linestring(v)).collect();
             Polygon::new(outer, holes)
         })
         .collect();
@@ -127,7 +130,7 @@ fn linestring_to_vec(ls: &LineString<f64>) -> Vec<[f64; 2]> {
     ls.0.iter().map(|c| [c.x, c.y]).collect()
 }
 
-fn vec_to_linestring(v: &Vec<[f64; 2]>) -> LineString<f64> {
+fn vec_to_linestring(v: &[[f64; 2]]) -> LineString<f64> {
     LineString(v.iter().map(|p| GeoCoord { x: p[0], y: p[1] }).collect())
 }
 

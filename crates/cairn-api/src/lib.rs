@@ -210,7 +210,7 @@ impl RateLimiter {
         let mut map = self.buckets.lock().expect("rate limiter poisoned");
         // Stale eviction: drop entries idle for > 5 min on every 1024th
         // check to amortize the cost. Cheap O(n) walk.
-        if map.len() > 0 && map.len().is_multiple_of(1024) {
+        if !map.is_empty() && map.len() % 1024 == 0 {
             let cutoff = std::time::Duration::from_secs(300);
             map.retain(|_, b| now.duration_since(b.last) < cutoff);
         }
@@ -450,9 +450,7 @@ fn client_ip_for_rate_limit(
     let peer_ip = connect_info.map(|ConnectInfo(sa)| sa.ip());
     if trust_xff {
         let peer_trusted = match peer_ip {
-            Some(ip) if !trusted_cidrs.is_empty() => {
-                trusted_cidrs.iter().any(|c| c.contains(ip))
-            }
+            Some(ip) if !trusted_cidrs.is_empty() => trusted_cidrs.iter().any(|c| c.contains(ip)),
             // No CIDR allowlist configured — trust XFF unconditionally
             // (the trust_forwarded_for=true contract). Tests with no
             // ConnectInfo also hit this branch.

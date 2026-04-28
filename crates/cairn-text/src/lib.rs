@@ -193,12 +193,13 @@ fn register_prefix_tokenizer(index: &Index) -> Result<(), TextError> {
 }
 
 /// CJK languages aren't whitespace-segmented; the standard QueryParser
-/// + default tokenizer over `name` matches a 3-kanji query against a
-/// 5-kanji document only by luck. A character-bigram analyzer indexes
-/// every adjacent pair so any 2+ char sub-string of the document is
-/// findable. Bigrams over romanized text would over-recall, so we
-/// route only CJK-bearing names into this field at index time and only
-/// route CJK-bearing queries against it at search time.
+/// with the default tokenizer over `name` matches a 3-kanji query
+/// against a 5-kanji document only by luck. A character-bigram
+/// analyzer indexes every adjacent pair so any 2-char sub-string of
+/// the document is findable. Bigrams over romanized text would
+/// over-recall, so we route only CJK-bearing names into this field at
+/// index time and only route CJK-bearing queries against it at search
+/// time.
 fn register_cjk_tokenizer(index: &Index) -> Result<(), TextError> {
     let tokenizer = TextAnalyzer::builder(
         NgramTokenizer::all_ngrams(CJK_NGRAM_MIN, CJK_NGRAM_MAX)
@@ -835,7 +836,10 @@ mod tests {
     #[test]
     fn ascii_fold_romanizes_non_latin() {
         assert_eq!(ascii_fold("München").as_deref(), Some("Munchen"));
-        assert!(ascii_fold("Москва").as_deref().unwrap_or("").contains("Mosk"));
+        assert!(ascii_fold("Москва")
+            .as_deref()
+            .unwrap_or("")
+            .contains("Mosk"));
         assert!(!ascii_fold("Αθήνα").as_deref().unwrap_or("").is_empty());
     }
 

@@ -537,8 +537,7 @@ async fn rate_limiter_throttles_after_burst_exhausted() {
     use std::net::SocketAddr;
     let mut state = build_test_state();
     state.rate_limit = Some(std::sync::Arc::new(RateLimiter::new(0.001, 2.0)));
-    let app = router(state)
-        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))));
+    let app = router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))));
 
     let mut last_status = StatusCode::OK;
     for _ in 0..5 {
@@ -563,8 +562,7 @@ async fn rate_limit_uses_xff_when_trusted_so_separate_proxied_clients_dont_share
     let mut state = build_test_state();
     state.rate_limit = Some(std::sync::Arc::new(RateLimiter::new(0.001, 1.0)));
     state.trust_forwarded_for = true;
-    let app = router(state)
-        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))));
+    let app = router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))));
 
     // Two different upstream clients via the same proxy: each gets
     // its own bucket. Without XFF trust, both would share the
@@ -605,9 +603,9 @@ async fn rate_limit_xff_ignored_when_peer_outside_cidr_allowlist() {
     // Allowlist accepts only 10.0.0.0/8. Our MockConnectInfo will use
     // 203.0.113.1 (TEST-NET-3, outside the allowlist), so XFF must be
     // ignored even though trust_forwarded_for=true.
-    state.trusted_proxy_cidrs = std::sync::Arc::new(vec![TrustedCidr::parse("10.0.0.0/8").unwrap()]);
-    let app = router(state)
-        .layer(MockConnectInfo(SocketAddr::from(([203, 0, 113, 1], 9999))));
+    state.trusted_proxy_cidrs =
+        std::sync::Arc::new(vec![TrustedCidr::parse("10.0.0.0/8").unwrap()]);
+    let app = router(state).layer(MockConnectInfo(SocketAddr::from(([203, 0, 113, 1], 9999))));
 
     let req_a = Request::get("/v1/search?q=Vaduz")
         .header("X-Forwarded-For", "198.51.100.1")
@@ -633,10 +631,10 @@ async fn rate_limit_xff_honored_when_peer_inside_cidr_allowlist() {
     let mut state = build_test_state();
     state.rate_limit = Some(std::sync::Arc::new(RateLimiter::new(0.001, 1.0)));
     state.trust_forwarded_for = true;
-    state.trusted_proxy_cidrs = std::sync::Arc::new(vec![TrustedCidr::parse("10.0.0.0/8").unwrap()]);
+    state.trusted_proxy_cidrs =
+        std::sync::Arc::new(vec![TrustedCidr::parse("10.0.0.0/8").unwrap()]);
     // Peer is inside 10.0.0.0/8 → XFF is the rate-limit key.
-    let app = router(state)
-        .layer(MockConnectInfo(SocketAddr::from(([10, 1, 2, 3], 9999))));
+    let app = router(state).layer(MockConnectInfo(SocketAddr::from(([10, 1, 2, 3], 9999))));
     let req_a = Request::get("/v1/search?q=Vaduz")
         .header("X-Forwarded-For", "198.51.100.1")
         .body(Body::empty())
@@ -660,8 +658,7 @@ async fn rate_limit_ignores_xff_when_proxy_not_trusted() {
     let mut state = build_test_state();
     state.rate_limit = Some(std::sync::Arc::new(RateLimiter::new(0.001, 1.0)));
     state.trust_forwarded_for = false;
-    let app = router(state)
-        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))));
+    let app = router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9999))));
 
     // Forged XFF must not let an attacker rotate identities to dodge
     // the per-IP bucket. Both calls share the ConnectInfo IP.

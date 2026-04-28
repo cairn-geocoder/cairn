@@ -218,12 +218,11 @@ fn haversine_m(a: Coord, b: Coord) -> f64 {
 /// the same bundle twice produces byte-identical tile blobs. Within a
 /// (kind, name) bucket the algorithm is O(n²) but bucket sizes are
 /// tiny in practice — a city has only so many things called "Post".
-pub fn dedupe_places(
-    items: Vec<(Place, SourceKind)>,
-    priority: &[SourceKind],
-) -> Vec<Place> {
+pub fn dedupe_places(items: Vec<(Place, SourceKind)>, priority: &[SourceKind]) -> Vec<Place> {
     use std::collections::BTreeMap;
-    let mut buckets: BTreeMap<(u8, String), Vec<(usize, Place, SourceKind)>> = BTreeMap::new();
+    type BucketKey = (u8, String);
+    type BucketEntry = (usize, Place, SourceKind);
+    let mut buckets: BTreeMap<BucketKey, Vec<BucketEntry>> = BTreeMap::new();
     for (idx, (p, src)) in items.into_iter().enumerate() {
         buckets
             .entry((p.kind as u8, primary_name_lc(&p)))
@@ -447,7 +446,10 @@ mod tests {
             9.5209,
             47.141,
         );
-        osm.admin_path = vec![PlaceId::new(0, 0, 1).unwrap(), PlaceId::new(0, 0, 2).unwrap()];
+        osm.admin_path = vec![
+            PlaceId::new(0, 0, 1).unwrap(),
+            PlaceId::new(0, 0, 2).unwrap(),
+        ];
         let wof = place_at(
             PlaceId::new(1, 49509, 2).unwrap(),
             "Vaduz",

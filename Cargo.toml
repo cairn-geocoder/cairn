@@ -71,7 +71,7 @@ geojson = "0.24"
 bincode = "1"
 tar = "0.4"
 flate2 = "1"
-lru = "0.12"
+lru = "0.16"
 criterion = "0.5"
 rayon = "1"
 ureq = { version = "2", default-features = false, features = ["tls"] }

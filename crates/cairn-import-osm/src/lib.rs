@@ -323,12 +323,8 @@ fn renumber_places(mut places: Vec<Place>) -> Vec<Place> {
                 let bn = b.names.first().map(|n| n.value.as_str()).unwrap_or("");
                 an.cmp(bn)
             })
-            .then_with(|| {
-                ((a.centroid.lon * 1e6) as i64).cmp(&((b.centroid.lon * 1e6) as i64))
-            })
-            .then_with(|| {
-                ((a.centroid.lat * 1e6) as i64).cmp(&((b.centroid.lat * 1e6) as i64))
-            })
+            .then_with(|| ((a.centroid.lon * 1e6) as i64).cmp(&((b.centroid.lon * 1e6) as i64)))
+            .then_with(|| ((a.centroid.lat * 1e6) as i64).cmp(&((b.centroid.lat * 1e6) as i64)))
     });
     let mut counters: HashMap<(u8, u32), u64> = HashMap::new();
     for p in &mut places {
@@ -356,12 +352,8 @@ fn renumber_admin_features(mut feats: Vec<AdminFeature>) -> Vec<AdminFeature> {
             .cmp(&b.level)
             .then(a.kind.as_str().cmp(b.kind.as_str()))
             .then(a.name.as_str().cmp(b.name.as_str()))
-            .then_with(|| {
-                ((a.centroid.lon * 1e6) as i64).cmp(&((b.centroid.lon * 1e6) as i64))
-            })
-            .then_with(|| {
-                ((a.centroid.lat * 1e6) as i64).cmp(&((b.centroid.lat * 1e6) as i64))
-            })
+            .then_with(|| ((a.centroid.lon * 1e6) as i64).cmp(&((b.centroid.lon * 1e6) as i64)))
+            .then_with(|| ((a.centroid.lat * 1e6) as i64).cmp(&((b.centroid.lat * 1e6) as i64)))
     });
     // AdminFeature::place_id encodes a tile from the centroid. Pull
     // (level, tile) from the original place_id by decoding it.

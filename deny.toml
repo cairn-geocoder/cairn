@@ -35,6 +35,11 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "OpenSSL",
+    # CDLA-Permissive-2.0 used by webpki-roots (transitive via ureq).
+    # Permissive in spirit — explicitly allows distribution + use; the
+    # restrictions only apply to redistributing the *data* if modified.
+    # OK for our binary linking against it.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 

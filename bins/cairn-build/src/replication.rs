@@ -63,18 +63,17 @@ pub fn read_state(bundle: &Path) -> Result<Option<ReplicationState>> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let state: ReplicationState = toml::from_str(&raw)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let state: ReplicationState =
+        toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
     Ok(Some(state))
 }
 
 pub fn write_state(bundle: &Path, state: &ReplicationState) -> Result<()> {
     let path = bundle.join(STATE_FILE);
     let raw = toml::to_string_pretty(state).context("encoding replication state")?;
-    std::fs::write(&path, raw)
-        .with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
@@ -90,8 +89,7 @@ fn seq_path_components(seq: u64) -> (String, String, String) {
 pub fn fetch_current_seq(upstream: &str) -> Result<u64> {
     let url = format!("{}/state.txt", upstream.trim_end_matches('/'));
     let body = http_get_text(&url)?;
-    parse_sequence_number(&body)
-        .ok_or_else(|| anyhow::anyhow!("no sequenceNumber in {url}"))
+    parse_sequence_number(&body).ok_or_else(|| anyhow::anyhow!("no sequenceNumber in {url}"))
 }
 
 fn parse_sequence_number(body: &str) -> Option<u64> {
@@ -118,10 +116,8 @@ pub fn fetch_diff(bundle: &Path, upstream: &str, seq: u64) -> Result<PathBuf> {
     let dir = bundle.join(REPLICATION_DIR);
     std::fs::create_dir_all(&dir)?;
     let dst = dir.join(format!("{seq:09}.osc.gz"));
-    let bytes = http_get_bytes(&url)
-        .with_context(|| format!("fetching {url}"))?;
-    std::fs::write(&dst, &bytes)
-        .with_context(|| format!("writing {}", dst.display()))?;
+    let bytes = http_get_bytes(&url).with_context(|| format!("fetching {url}"))?;
+    std::fs::write(&dst, &bytes).with_context(|| format!("writing {}", dst.display()))?;
     tracing::info!(
         seq,
         size = bytes.len(),
@@ -134,11 +130,7 @@ pub fn fetch_diff(bundle: &Path, upstream: &str, seq: u64) -> Result<PathBuf> {
 /// Fetch every diff from `start_seq` to the current upstream seq,
 /// inclusive on both ends. Caps at `max` files per call so a stale
 /// bundle doesn't trigger a multi-GB download in one go.
-pub fn fetch_pending(
-    bundle: &Path,
-    state: &mut ReplicationState,
-    max: usize,
-) -> Result<Vec<u64>> {
+pub fn fetch_pending(bundle: &Path, state: &mut ReplicationState, max: usize) -> Result<Vec<u64>> {
     let current = fetch_current_seq(&state.upstream)
         .with_context(|| format!("reading state.txt from {}", state.upstream))?;
     let start = match state.last_fetched_seq {
@@ -146,11 +138,7 @@ pub fn fetch_pending(
         None => current, // first run — anchor to the present
     };
     if start > current {
-        tracing::info!(
-            current,
-            last = state.last_fetched_seq,
-            "no new diffs"
-        );
+        tracing::info!(current, last = state.last_fetched_seq, "no new diffs");
         return Ok(Vec::new());
     }
 

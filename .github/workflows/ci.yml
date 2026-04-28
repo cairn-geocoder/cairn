@@ -10,6 +10,15 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
+# rustsec/audit-check needs `checks: write` to push the SARIF check run
+# back to the PR. Defaulting `permissions` here applies to every job;
+# audit is the only one that needs it but a single block keeps the
+# workflow simple.
+permissions:
+  contents: read
+  checks: write
+  pull-requests: read
+
 jobs:
   fmt:
     runs-on: ubuntu-latest

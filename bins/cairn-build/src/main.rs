@@ -297,8 +297,8 @@ fn parse_tile_arg(spec: &str) -> Result<(Level, u32)> {
         .trim()
         .parse()
         .with_context(|| format!("parsing tile level from {level_s:?}"))?;
-    let level = Level::from_u8(level_u8)
-        .ok_or_else(|| anyhow::anyhow!("unknown level {level_u8}"))?;
+    let level =
+        Level::from_u8(level_u8).ok_or_else(|| anyhow::anyhow!("unknown level {level_u8}"))?;
     let tile_id: u32 = id_s
         .trim()
         .parse()
@@ -318,15 +318,11 @@ fn cmd_inspect_tile(bundle: &Path, spec: &str, sample: usize, grep: Option<&str>
     let mut kind_hist: std::collections::BTreeMap<&'static str, usize> =
         std::collections::BTreeMap::new();
     for p in &places {
-        *kind_hist
-            .entry(cairn_text::kind_str(p.kind))
-            .or_insert(0) += 1;
+        *kind_hist.entry(cairn_text::kind_str(p.kind)).or_insert(0) += 1;
     }
     let (min_lon, min_lat, max_lon, max_lat) = coord.bbox();
     println!("tile           = {}:{}", level.as_u8(), tile_id);
-    println!(
-        "bbox           = lon[{min_lon:.4}..{max_lon:.4}], lat[{min_lat:.4}..{max_lat:.4}]"
-    );
+    println!("bbox           = lon[{min_lon:.4}..{max_lon:.4}], lat[{min_lat:.4}..{max_lat:.4}]");
     println!("place_count    = {}", places.len());
     println!("kinds:");
     for (k, n) in &kind_hist {
@@ -340,15 +336,13 @@ fn cmd_inspect_tile(bundle: &Path, spec: &str, sample: usize, grep: Option<&str>
             let Some(needle) = needle.as_deref() else {
                 return true;
             };
-            p.names.iter().any(|n| n.value.to_lowercase().contains(needle))
+            p.names
+                .iter()
+                .any(|n| n.value.to_lowercase().contains(needle))
         })
         .collect();
     let take = sample.min(filtered.len());
-    println!(
-        "samples ({} of {} matching):",
-        take,
-        filtered.len()
-    );
+    println!("samples ({} of {} matching):", take, filtered.len());
     for p in filtered.iter().take(take) {
         let name = p
             .names
@@ -391,9 +385,7 @@ fn cmd_inspect_admin_tile(bundle: &Path, spec: &str) -> Result<()> {
     let layer = tile.archived();
     let (min_lon, min_lat, max_lon, max_lat) = coord.bbox();
     println!("tile           = {}:{}", level.as_u8(), tile_id);
-    println!(
-        "bbox           = lon[{min_lon:.4}..{max_lon:.4}], lat[{min_lat:.4}..{max_lat:.4}]"
-    );
+    println!("bbox           = lon[{min_lon:.4}..{max_lon:.4}], lat[{min_lat:.4}..{max_lat:.4}]");
     println!("rel_path       = {}", entry.rel_path);
     println!("byte_size      = {}", entry.byte_size);
     println!("feature_count  = {}", layer.features.len());
@@ -613,8 +605,10 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         let admin_idx = cairn_spatial::AdminIndex::build(layer.clone());
 
         // Pass 1: enrich Place::admin_path (forward search, point fallback).
-        let place_kind_strs: Vec<&'static str> =
-            places.iter().map(|p| cairn_text::kind_str(p.kind)).collect();
+        let place_kind_strs: Vec<&'static str> = places
+            .iter()
+            .map(|p| cairn_text::kind_str(p.kind))
+            .collect();
         let chains: Vec<Vec<cairn_place::PlaceId>> = places
             .par_iter()
             .zip(place_kind_strs.par_iter())
@@ -626,7 +620,7 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             })
             .collect();
         let mut place_enriched = 0u64;
-        for (place, chain) in places.iter_mut().zip(chains.into_iter()) {
+        for (place, chain) in places.iter_mut().zip(chains) {
             if place.admin_path.is_empty() && !chain.is_empty() {
                 place.admin_path = chain;
                 place_enriched += 1;
@@ -656,7 +650,7 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             })
             .collect();
         let mut admin_enriched = 0u64;
-        for (feat, chain) in layer.features.iter_mut().zip(chains.into_iter()) {
+        for (feat, chain) in layer.features.iter_mut().zip(chains) {
             if feat.admin_path.is_empty() && !chain.is_empty() {
                 feat.admin_path = chain.into_iter().map(|p| p.0).collect();
                 admin_enriched += 1;
@@ -788,15 +782,12 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
 /// Tantivy keeps a small flat-ish set of segment files (`meta.json`,
 /// per-segment `.term`, `.idx`, `.pos`, `.fast`, `.fieldnorm`,
 /// `.store`, etc), so a recursive walk hashes the full index footprint.
-fn walk_text_files(
-    text_dir: &Path,
-    bundle_root: &Path,
-) -> Result<Vec<cairn_tile::TextFileEntry>> {
+fn walk_text_files(text_dir: &Path, bundle_root: &Path) -> Result<Vec<cairn_tile::TextFileEntry>> {
     let mut entries = Vec::new();
     let mut stack: Vec<PathBuf> = vec![text_dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)
-            .with_context(|| format!("reading {}", dir.display()))?
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?
         {
             let entry = entry?;
             let path = entry.path();
@@ -927,7 +918,7 @@ fn cmd_extract(bundle: &Path, bbox_arg: &[f64], out: &Path, write_tar: bool) -> 
             }
         }
         let text_dst = out.join("index/text");
-        let docs = cairn_text::build_index(&text_dst, kept_places.into_iter())
+        let docs = cairn_text::build_index(&text_dst, kept_places)
             .with_context(|| format!("rebuilding text index at {}", text_dst.display()))?;
         tracing::info!(path = %text_dst.display(), docs, "text index rebuilt for bbox");
     }
@@ -1270,10 +1261,7 @@ fn cmd_verify(bundle: &Path) -> Result<()> {
                         actual = %actual,
                         "blake3 mismatch on text segment"
                     );
-                    anyhow::bail!(
-                        "text segment blake3 mismatch at {}",
-                        abs.display()
-                    );
+                    anyhow::bail!("text segment blake3 mismatch at {}", abs.display());
                 }
             }
         }
