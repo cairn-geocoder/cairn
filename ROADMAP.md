@@ -44,15 +44,106 @@ Tracks shipped phases and deferred work.
 - `cairn-build verify` covers tiles + text + admin + points.
 - README + ROADMAP.
 
+### Phase 5 — bbox extract + manifest integrity
+- `cairn-build extract --bundle … --bbox …` real implementation: copies
+  intersecting tiles, filters AdminLayer + PointLayer by bbox, writes a
+  fresh manifest with recomputed hashes.
+- `Manifest.admin` / `Manifest.points` carry blake3 + size + count.
+- `cairn-build verify` recomputes hashes and refuses mismatches.
+
+### Phase 6a — Geonames + /metrics
+- `cairn-import-geonames` parses the standard Geonames cities*.txt /
+  allCountries.txt TSV, emits City / Neighborhood Places with population
+  + ISO3166-1 tags. 3 unit tests.
+- `cairn-api` `/metrics` endpoint emits Prometheus 0.0.4 text. Counters
+  for search / autocomplete / structured / reverse outcomes; gauges for
+  uptime, admin feature count, point count; bundle_id label so a
+  scrape job can distinguish bundles. Hand-rolled (no `prometheus`
+  crate dep).
+
+### Phase 6b — PVC bundle pipeline
+- Runtime image now ships cairn-build + curl + bzip2 alongside
+  cairn-serve, so the same image can run a bundle-build Kubernetes Job.
+- `geo_cloud/infra/kubernetes/cairn/bundle-pipeline.yaml`: PVC + Job +
+  ConfigMap script. Configurable env vars (BUNDLE_ID, OSM_URL, WOF_URL,
+  OA_URL, GEONAMES_URL).
+- `deployment-pvc.yaml` overlay mounts the PVC RO at /bundle, shadowing
+  the bundle baked into the image. Lets cairn.kaldera.dev switch to
+  Switzerland / Germany / planet without an image rebuild.
+
 ## Deferred
 
-### libpostal FFI
-- ~50 MB C source vendoring + ~2 GB compiled language model.
-- Cross-compile complexity (musl, aarch64, etc.).
-- Without it, address parsing is naive concatenation. Acceptable for
-  structured queries; not for free-text address parsing.
-- Plan: `libpostal` cargo feature, vendored sources via `libpostal-sys`,
-  model files distributed as a separate `data/libpostal/` artifact.
+### Phase 6c — Per-tile spatial partitioning + mmap rkyv
+
+**Status:** scoped, not implemented.
+
+Today `spatial/admin.bin` and `spatial/points.bin` are bundle-wide
+single bincode blobs read whole at startup. At country scale this
+costs <250 MB RAM; at planet scale it's a non-starter.
+
+**Plan:**
+1. Build-time: bucket AdminFeatures into `(level, tile_id)` keys,
+   emit `spatial/admin/<level>/<bucket>/<id>.bin` per non-empty tile.
+2. Replace bincode with `rkyv` (same trick the tile blobs use): 16-byte
+   aligned header + archived `Vec<AdminFeature>`. AdminLayer
+   becomes mmap-friendly + zero-copy at read time.
+3. Runtime: AdminIndex turns into a coarse R*-tree over per-tile
+   bboxes; the tile is mmap'd lazily on first PIP that touches it.
+   LRU eviction on a configurable byte budget.
+4. Same treatment for PointLayer.
+5. Manifest gains a `[[admin_tiles]]` and `[[point_tiles]]` array
+   alongside `[[tiles]]`.
+
+Useful when the bundle exceeds ~200 MB of polygons. Skip until then.
+
+### Phase 6d — OSM `boundary=administrative` relations → polygons
+
+**Status:** scoped, not implemented.
+
+WhosOnFirst supplies admin polygons today, but OSM-only deployments
+(no internet to fetch WoF) lose admin reverse PIP entirely.
+
+**Plan:**
+1. Three-pass PBF (we already cache node coords in pass 1):
+   - Pass 2: cache `way_id → Vec<NodeId>`.
+   - Pass 3: iterate relations with `type=multipolygon` AND
+     `boundary=administrative`. Group members by role (`outer` /
+     `inner`).
+2. Ring assembly: connect `outer` member ways into closed rings via
+   endpoint matching. Open rings = drop with a warning.
+3. Build `MultiPolygon`. Map `admin_level` → PlaceKind (2=country,
+   4=region, 6=county, 8=city, 10=neighborhood).
+4. Emit `AdminFeature`s alongside the existing OSM Place stream.
+
+Tractable but multi-day work. Best after Phase 6c so the per-tile
+admin layer can absorb the volume jump.
+
+### Phase 6e — libpostal FFI
+
+**Status:** feature flag scaffolding only.
+
+`cairn-parse` exposes `parse(input) -> ParsedAddress` and
+`expand(input) -> Vec<String>`. Today both are no-op stubs returning
+`NotInitialized`. Free-text queries land in `/v1/search` as bag-of-words
+which works for English `"Vaduz"` but degrades on
+`"calle de alcalá 12, madrid"` etc.
+
+**Plan:**
+1. `cairn-parse` cargo feature `libpostal` (already declared in
+   Cargo.toml).
+2. Vendor `libpostal-sys` + the compiled C source via `cc`.
+3. Ship the ~2 GB language model as a separate OCI image
+   `ghcr.io/cairn-geocoder/libpostal-data` mounted as an init-container
+   that copies into a PVC for the cairn-serve pod.
+4. Wire `cairn-api/v1/structured` (today the structured endpoint
+   already takes pre-parsed fields) and add a `/v1/parse` endpoint
+   that exposes the parser to clients.
+
+~2 days of focused work. Sequenced after 6c (per-tile spatial) so the
+bundle layout doesn't shift mid-effort.
+
+### libpostal FFI (legacy entry — superseded by Phase 6e above)
+*(kept for reference; see Phase 6e for the current plan)*
 
 ### Address interpolation
 - OSM `addr:interpolation` ways need endpoint nodes + step.
