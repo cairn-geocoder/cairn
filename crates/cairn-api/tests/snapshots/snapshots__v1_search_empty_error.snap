@@ -1,0 +1,7 @@
+---
+source: crates/cairn-api/tests/snapshots.rs
+expression: body
+---
+{
+  "error": "query parameter 'q' is required"
+}

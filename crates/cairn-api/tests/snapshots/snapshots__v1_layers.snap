@@ -1,0 +1,19 @@
+---
+source: crates/cairn-api/tests/snapshots.rs
+expression: body
+---
+{
+  "description": "Allowed values for the 'layer' query parameter on /v1/search and /v1/reverse",
+  "layers": [
+    "country",
+    "region",
+    "county",
+    "city",
+    "district",
+    "neighborhood",
+    "street",
+    "address",
+    "poi",
+    "postcode"
+  ]
+}

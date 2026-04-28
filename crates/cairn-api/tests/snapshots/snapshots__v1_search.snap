@@ -1,0 +1,22 @@
+---
+source: crates/cairn-api/tests/snapshots.rs
+expression: body
+---
+{
+  "mode": "search",
+  "query": "Vaduz",
+  "results": [
+    {
+      "admin_path": [
+        27217860589780993
+      ],
+      "kind": "city",
+      "lat": 47.141,
+      "level": 1,
+      "lon": 9.5209,
+      "name": "Vaduz",
+      "place_id": 2333060869803474945,
+      "score": 0.6931472
+    }
+  ]
+}

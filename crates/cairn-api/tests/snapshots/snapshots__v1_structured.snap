@@ -1,0 +1,20 @@
+---
+source: crates/cairn-api/tests/snapshots.rs
+expression: body
+---
+{
+  "layer_hint": "country",
+  "query": "Liechtenstein",
+  "results": [
+    {
+      "admin_path": [],
+      "kind": "country",
+      "lat": 47.13,
+      "level": 0,
+      "lon": 9.555,
+      "name": "Liechtenstein",
+      "place_id": 27217860589780993,
+      "score": 1.3862944
+    }
+  ]
+}

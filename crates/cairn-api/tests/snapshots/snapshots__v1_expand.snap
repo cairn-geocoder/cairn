@@ -1,0 +1,10 @@
+---
+source: crates/cairn-api/tests/snapshots.rs
+expression: body
+---
+{
+  "expansions": [
+    "123 main street"
+  ],
+  "query": "123 Main St"
+}

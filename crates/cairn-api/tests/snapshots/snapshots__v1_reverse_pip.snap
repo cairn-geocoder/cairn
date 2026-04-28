@@ -1,0 +1,21 @@
+---
+source: crates/cairn-api/tests/snapshots.rs
+expression: body
+---
+{
+  "lat": 47.14,
+  "lon": 9.55,
+  "results": [
+    {
+      "admin_path": [],
+      "distance_km": 1.1745132269779712,
+      "kind": "country",
+      "lat": 47.13,
+      "level": 0,
+      "lon": 9.555,
+      "name": "Liechtenstein",
+      "place_id": 27217860589780993
+    }
+  ],
+  "source": "pip"
+}

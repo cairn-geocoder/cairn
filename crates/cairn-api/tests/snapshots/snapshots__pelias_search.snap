@@ -1,0 +1,41 @@
+---
+source: crates/cairn-api/tests/snapshots.rs
+expression: body
+---
+{
+  "features": [
+    {
+      "geometry": {
+        "coordinates": [
+          9.5209,
+          47.141
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "confidence": 0.4093839,
+        "id": "2333060869803474945",
+        "label": "Vaduz (city)",
+        "layer": "city",
+        "name": "Vaduz"
+      },
+      "type": "Feature"
+    }
+  ],
+  "geocoding": {
+    "attribution": "© OpenStreetMap contributors, WhosOnFirst, OpenAddresses",
+    "engine": {
+      "bundle_id": "[bundle_id]",
+      "name": "cairn"
+    },
+    "query": {
+      "focus.point.lat": null,
+      "focus.point.lon": null,
+      "layers": null,
+      "size": 2,
+      "text": "Vaduz"
+    },
+    "version": "0.2"
+  },
+  "type": "FeatureCollection"
+}
