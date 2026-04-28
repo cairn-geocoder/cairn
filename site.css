@@ -83,12 +83,16 @@ p code, li code, td code {
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   font-family: var(--mono);
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--text);
 }
+.brand-mark { display: block; flex-shrink: 0; }
 .brand:hover { text-decoration: none; color: var(--accent); }
 
 .topbar nav { display: flex; gap: 22px; flex-wrap: wrap; }
