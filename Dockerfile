@@ -7,13 +7,14 @@
 # Override BUNDLE_ID, OSM_URL, WOF_URL at build time to bake a different
 # region into the image.
 
-ARG RUST_VERSION=1.95
+ARG RUST_TAG=alpine
 ARG ALPINE_VERSION=3.20
 
 ############################################################
 # Builder: compile cairn-build + cairn-serve against musl libc.
+# Default `rust:alpine` tracks the latest stable Rust on Alpine.
 ############################################################
-FROM rust:${RUST_VERSION}-alpine${ALPINE_VERSION} AS builder
+FROM rust:${RUST_TAG} AS builder
 RUN apk add --no-cache \
         musl-dev \
         pkgconfig \
