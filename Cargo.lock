@@ -346,10 +346,13 @@ dependencies = [
  "cairn-spatial",
  "cairn-text",
  "cairn-tile",
+ "geo-types",
+ "http-body-util",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
 ]

@@ -79,6 +79,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/search", get(search))
         .route("/v1/reverse", get(reverse))
         .route("/v1/structured", get(structured))
+        .route("/v1/parse", get(parse_addr))
+        .route("/v1/expand", get(expand_addr))
         .with_state(state)
 }
 
@@ -398,6 +400,63 @@ struct StructuredResponse<'a> {
     query: &'a str,
     layer_hint: &'a str,
     results: Vec<Hit>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct ParseQuery {
+    #[serde(default)]
+    pub q: String,
+}
+
+#[derive(Serialize)]
+struct ParseResponse {
+    query: String,
+    parsed: cairn_parse::ParsedAddress,
+}
+
+async fn parse_addr(Query(params): Query<ParseQuery>) -> impl IntoResponse {
+    let q = params.q.trim();
+    if q.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "q required" })),
+        )
+            .into_response();
+    }
+    match cairn_parse::parse(q) {
+        Ok(parsed) => Json(ParseResponse {
+            query: q.to_string(),
+            parsed,
+        })
+        .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Serialize)]
+struct ExpandResponse {
+    query: String,
+    expansions: Vec<String>,
+}
+
+async fn expand_addr(Query(params): Query<ParseQuery>) -> impl IntoResponse {
+    let q = params.q.trim();
+    if q.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "q required" })),
+        )
+            .into_response();
+    }
+    Json(ExpandResponse {
+        query: q.to_string(),
+        expansions: cairn_parse::expand(q),
+    })
+    .into_response()
 }
 
 async fn structured(

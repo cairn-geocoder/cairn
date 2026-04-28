@@ -53,10 +53,21 @@ struct Counters {
     skipped_way_no_coords: u64,
     skipped_relation_open_ring: u64,
     skipped_relation_no_outer: u64,
+    interpolated_addresses: u64,
 }
 
 type NodeCoords = HashMap<i64, [f64; 2]>;
 type WayNodes = HashMap<i64, Vec<i64>>;
+
+/// `addr:housenumber` value at a given node, plus the optional
+/// `addr:street` co-tagged with it. Captured in pass 1 so that pass 2 can
+/// resolve `addr:interpolation` way endpoints without a third pass.
+#[derive(Clone, Debug)]
+struct NodeAddr {
+    housenumber: String,
+    street: Option<String>,
+}
+type NodeAddrs = HashMap<i64, NodeAddr>;
 
 /// Aggregate output of an OSM PBF import.
 pub struct OsmImport {
@@ -65,11 +76,15 @@ pub struct OsmImport {
 }
 
 pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
-    info!(path = %pbf_path.display(), "OSM PBF pass 1: node coords");
-    let node_coords = load_node_coords(pbf_path)?;
-    info!(nodes_cached = node_coords.len(), "node coord cache built");
+    info!(path = %pbf_path.display(), "OSM PBF pass 1: node coords + addr nodes");
+    let (node_coords, node_addrs) = load_node_caches(pbf_path)?;
+    info!(
+        nodes_cached = node_coords.len(),
+        addr_nodes = node_addrs.len(),
+        "node caches built"
+    );
 
-    info!("OSM PBF pass 2: places + ways + admin relations");
+    info!("OSM PBF pass 2: places + ways + interpolation + admin relations");
     let reader = ElementReader::from_path(pbf_path)?;
     let mut places = Vec::new();
     let mut admin_features: Vec<AdminFeature> = Vec::new();
@@ -97,6 +112,14 @@ pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
             if let Some(p) = way_to_place(&w, &node_coords, &mut local_counters, &mut counters) {
                 places.push(p);
             }
+            interpolate_way_addresses(
+                &w,
+                &node_coords,
+                &node_addrs,
+                &mut local_counters,
+                &mut counters,
+                &mut places,
+            );
         }
         Element::Relation(r) => {
             counters.relations_seen += 1;
@@ -124,6 +147,7 @@ pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
         skipped_way_no_coords = counters.skipped_way_no_coords,
         skipped_relation_open_ring = counters.skipped_relation_open_ring,
         skipped_relation_no_outer = counters.skipped_relation_no_outer,
+        interpolated_addresses = counters.interpolated_addresses,
         "OSM import done"
     );
     Ok(OsmImport {
@@ -134,19 +158,42 @@ pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
     })
 }
 
-fn load_node_coords(pbf_path: &Path) -> Result<NodeCoords, ImportError> {
+fn load_node_caches(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs), ImportError> {
     let reader = ElementReader::from_path(pbf_path)?;
-    let mut out: NodeCoords = HashMap::new();
+    let mut coords: NodeCoords = HashMap::new();
+    let mut addrs: NodeAddrs = HashMap::new();
     reader.for_each(|element| match element {
         Element::Node(n) => {
-            out.insert(n.id(), [n.lon(), n.lat()]);
+            coords.insert(n.id(), [n.lon(), n.lat()]);
+            if let Some(addr) = node_addr_from_tags(n.tags()) {
+                addrs.insert(n.id(), addr);
+            }
         }
         Element::DenseNode(n) => {
-            out.insert(n.id(), [n.lon(), n.lat()]);
+            coords.insert(n.id(), [n.lon(), n.lat()]);
+            if let Some(addr) = node_addr_from_tags(n.tags()) {
+                addrs.insert(n.id(), addr);
+            }
         }
         _ => {}
     })?;
-    Ok(out)
+    Ok((coords, addrs))
+}
+
+fn node_addr_from_tags<'a>(tags: impl IntoIterator<Item = (&'a str, &'a str)>) -> Option<NodeAddr> {
+    let mut housenumber: Option<String> = None;
+    let mut street: Option<String> = None;
+    for (k, v) in tags {
+        match k {
+            "addr:housenumber" => housenumber = Some(v.to_string()),
+            "addr:street" => street = Some(v.to_string()),
+            _ => {}
+        }
+    }
+    housenumber.map(|hn| NodeAddr {
+        housenumber: hn,
+        street,
+    })
 }
 
 fn node_to_place(
@@ -407,6 +454,166 @@ fn collect_tags<'a, I: IntoIterator<Item = (&'a str, &'a str)>>(iter: I) -> Vec<
         .collect()
 }
 
+/// Synthesize Address Places from an `addr:interpolation` way.
+///
+/// Phase 6.1 scope: linear interpolation along a 2-node way whose endpoints
+/// both carry `addr:housenumber`. Multi-segment ways are skipped — they
+/// need polyline arc-length distribution, which lands in a follow-up.
+/// `addr:interpolation` values handled: `odd`, `even`, `all`, `1` (any
+/// step). `alphabetic` is skipped (no integer arithmetic).
+fn interpolate_way_addresses(
+    way: &Way<'_>,
+    node_coords: &NodeCoords,
+    node_addrs: &NodeAddrs,
+    local_counters: &mut HashMap<(u8, u32), u64>,
+    counters: &mut Counters,
+    places: &mut Vec<Place>,
+) {
+    let tags = collect_tags(way.tags());
+    let interpolation = match tag_value(&tags, "addr:interpolation") {
+        Some(v) => v,
+        None => return,
+    };
+    let way_street = tag_value(&tags, "addr:street").map(str::to_string);
+    let refs: Vec<i64> = way.refs().collect();
+    let synth = interpolate_addresses(
+        interpolation,
+        &refs,
+        node_coords,
+        node_addrs,
+        way_street.as_deref(),
+    );
+    for s in synth {
+        let level = Level::L2;
+        let tile = TileCoord::from_coord(level, s.centroid);
+        let key = (level.as_u8(), tile.id());
+        let local = local_counters.entry(key).or_insert(0);
+        let local_id = *local;
+        *local += 1;
+        let id = match PlaceId::new(level.as_u8(), tile.id(), local_id) {
+            Ok(id) => id,
+            Err(err) => {
+                debug!(?err, "PlaceId overflow on interpolation; skipping");
+                continue;
+            }
+        };
+        let mut tags: Vec<(String, String)> = vec![
+            ("source".into(), "osm-interpolation".into()),
+            ("addr:housenumber".into(), s.housenumber.clone()),
+        ];
+        if let Some(street) = s.street.as_deref() {
+            tags.push(("addr:street".into(), street.to_string()));
+        }
+        places.push(Place {
+            id,
+            kind: PlaceKind::Address,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: s.display_name,
+            }],
+            centroid: s.centroid,
+            admin_path: vec![],
+            tags,
+        });
+        counters.interpolated_addresses += 1;
+    }
+}
+
+/// Synthetic address generated from an interpolation way.
+#[derive(Clone, Debug, PartialEq)]
+struct InterpolatedAddress {
+    housenumber: String,
+    street: Option<String>,
+    display_name: String,
+    centroid: Coord,
+}
+
+/// Pure logic for `addr:interpolation` expansion. Separated from the
+/// `Way` reader so it's unit-testable without an osmpbf fixture.
+fn interpolate_addresses(
+    interpolation: &str,
+    refs: &[i64],
+    node_coords: &NodeCoords,
+    node_addrs: &NodeAddrs,
+    way_street: Option<&str>,
+) -> Vec<InterpolatedAddress> {
+    if refs.len() != 2 {
+        return Vec::new();
+    }
+    let (start_id, end_id) = (refs[0], refs[1]);
+    let start_addr = match node_addrs.get(&start_id) {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    let end_addr = match node_addrs.get(&end_id) {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    let start_num: i64 = match start_addr.housenumber.parse() {
+        Ok(n) => n,
+        Err(_) => return Vec::new(),
+    };
+    let end_num: i64 = match end_addr.housenumber.parse() {
+        Ok(n) => n,
+        Err(_) => return Vec::new(),
+    };
+    if start_num == end_num {
+        return Vec::new();
+    }
+    let step: i64 = match interpolation {
+        "odd" | "even" => 2,
+        "all" | "1" => 1,
+        _ => return Vec::new(),
+    };
+    let start_coord = match node_coords.get(&start_id) {
+        Some(c) => *c,
+        None => return Vec::new(),
+    };
+    let end_coord = match node_coords.get(&end_id) {
+        Some(c) => *c,
+        None => return Vec::new(),
+    };
+    let (lo, hi, lo_coord, hi_coord) = if start_num <= end_num {
+        (start_num, end_num, start_coord, end_coord)
+    } else {
+        (end_num, start_num, end_coord, start_coord)
+    };
+    let total_span = (hi - lo) as f64;
+    if total_span <= 0.0 {
+        return Vec::new();
+    }
+    let street = way_street
+        .map(str::to_string)
+        .or_else(|| start_addr.street.clone())
+        .or_else(|| end_addr.street.clone());
+
+    let first_synth = lo + step;
+    let last_synth = hi - step;
+    let mut out = Vec::new();
+    let mut n = first_synth;
+    while n <= last_synth {
+        if step == 2 && (n % 2) != (lo % 2) {
+            n += 1;
+            continue;
+        }
+        let t = (n - lo) as f64 / total_span;
+        let lon = lo_coord[0] + t * (hi_coord[0] - lo_coord[0]);
+        let lat = lo_coord[1] + t * (hi_coord[1] - lo_coord[1]);
+        let display_name = match street.as_deref() {
+            Some(s) => format!("{n} {s}"),
+            None => n.to_string(),
+        };
+        out.push(InterpolatedAddress {
+            housenumber: n.to_string(),
+            street: street.clone(),
+            display_name,
+            centroid: Coord { lon, lat },
+        });
+        n += step;
+    }
+    out
+}
+
 /// Build an `AdminFeature` from an OSM admin-boundary relation by stitching
 /// outer-role member ways into closed rings. Returns `None` if the relation
 /// isn't admin, doesn't have a usable name + admin_level, or none of its
@@ -663,6 +870,109 @@ mod tests {
         assert!(names.iter().any(|n| n.lang == "default"));
         assert!(names.iter().any(|n| n.lang == "de"));
         assert!(names.iter().any(|n| n.lang == "zh-Hant"));
+    }
+
+    #[test]
+    fn interpolation_odd_2_to_10() {
+        let mut coords: NodeCoords = HashMap::new();
+        coords.insert(1, [9.0, 47.0]);
+        coords.insert(2, [9.0, 47.5]);
+        let mut addrs: NodeAddrs = HashMap::new();
+        addrs.insert(
+            1,
+            NodeAddr {
+                housenumber: "1".into(),
+                street: Some("Main St".into()),
+            },
+        );
+        addrs.insert(
+            2,
+            NodeAddr {
+                housenumber: "11".into(),
+                street: Some("Main St".into()),
+            },
+        );
+        let synth = interpolate_addresses("odd", &[1, 2], &coords, &addrs, None);
+        let nums: Vec<&str> = synth.iter().map(|s| s.housenumber.as_str()).collect();
+        assert_eq!(nums, vec!["3", "5", "7", "9"]);
+        // Linear interpolation: 5 sits at t = (5-1)/(11-1) = 0.4
+        let mid = synth.iter().find(|s| s.housenumber == "5").unwrap();
+        assert!((mid.centroid.lat - (47.0 + 0.4 * 0.5)).abs() < 1e-9);
+        assert_eq!(mid.display_name, "5 Main St");
+    }
+
+    #[test]
+    fn interpolation_even_with_swapped_endpoints() {
+        let mut coords: NodeCoords = HashMap::new();
+        coords.insert(1, [10.0, 50.0]);
+        coords.insert(2, [10.0, 50.0]);
+        let mut addrs: NodeAddrs = HashMap::new();
+        addrs.insert(
+            1,
+            NodeAddr {
+                housenumber: "12".into(),
+                street: None,
+            },
+        );
+        addrs.insert(
+            2,
+            NodeAddr {
+                housenumber: "4".into(),
+                street: None,
+            },
+        );
+        let synth = interpolate_addresses("even", &[1, 2], &coords, &addrs, None);
+        let nums: Vec<&str> = synth.iter().map(|s| s.housenumber.as_str()).collect();
+        assert_eq!(nums, vec!["6", "8", "10"]);
+    }
+
+    #[test]
+    fn interpolation_all() {
+        let mut coords: NodeCoords = HashMap::new();
+        coords.insert(1, [0.0, 0.0]);
+        coords.insert(2, [0.0, 0.0]);
+        let mut addrs: NodeAddrs = HashMap::new();
+        addrs.insert(
+            1,
+            NodeAddr {
+                housenumber: "1".into(),
+                street: None,
+            },
+        );
+        addrs.insert(
+            2,
+            NodeAddr {
+                housenumber: "5".into(),
+                street: None,
+            },
+        );
+        let synth = interpolate_addresses("all", &[1, 2], &coords, &addrs, None);
+        let nums: Vec<&str> = synth.iter().map(|s| s.housenumber.as_str()).collect();
+        assert_eq!(nums, vec!["2", "3", "4"]);
+    }
+
+    #[test]
+    fn interpolation_unsupported_kind() {
+        let mut coords: NodeCoords = HashMap::new();
+        coords.insert(1, [0.0, 0.0]);
+        coords.insert(2, [0.0, 0.0]);
+        let mut addrs: NodeAddrs = HashMap::new();
+        addrs.insert(
+            1,
+            NodeAddr {
+                housenumber: "1A".into(),
+                street: None,
+            },
+        );
+        addrs.insert(
+            2,
+            NodeAddr {
+                housenumber: "1F".into(),
+                street: None,
+            },
+        );
+        let synth = interpolate_addresses("alphabetic", &[1, 2], &coords, &addrs, None);
+        assert!(synth.is_empty());
     }
 
     #[test]
