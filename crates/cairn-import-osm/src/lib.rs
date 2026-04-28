@@ -776,7 +776,8 @@ fn admin_level_kind(tags: &[(String, String)]) -> Option<PlaceKind> {
         3..=4 => PlaceKind::Region,
         5..=6 => PlaceKind::County,
         7..=8 => PlaceKind::City,
-        9..=12 => PlaceKind::Neighborhood,
+        9 => PlaceKind::District,
+        10..=12 => PlaceKind::Neighborhood,
         _ => return None,
     })
 }
@@ -932,6 +933,24 @@ mod tests {
             Some(PlaceKind::Poi)
         );
         assert!(place_kind(&tags(&[("highway", "residential")])).is_none(),);
+    }
+
+    #[test]
+    fn admin_level_kind_mapping() {
+        let case = |lvl: &str| {
+            admin_level_kind(&tags(&[
+                ("boundary", "administrative"),
+                ("admin_level", lvl),
+            ]))
+        };
+        assert_eq!(case("2"), Some(PlaceKind::Country));
+        assert_eq!(case("4"), Some(PlaceKind::Region));
+        assert_eq!(case("6"), Some(PlaceKind::County));
+        assert_eq!(case("8"), Some(PlaceKind::City));
+        assert_eq!(case("9"), Some(PlaceKind::District));
+        assert_eq!(case("10"), Some(PlaceKind::Neighborhood));
+        assert_eq!(case("12"), Some(PlaceKind::Neighborhood));
+        assert_eq!(case("13"), None);
     }
 
     #[test]
