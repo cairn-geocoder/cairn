@@ -21,3 +21,10 @@ bincode = { workspace = true }
 blake3 = { workspace = true }
 lru = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "pip"
+harness = false
