@@ -382,7 +382,9 @@ version = "0.0.2-alpha"
 dependencies = [
  "cairn-place",
  "cairn-tile",
+ "csv",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -449,6 +451,7 @@ dependencies = [
  "cairn-api",
  "cairn-spatial",
  "cairn-text",
+ "cairn-tile",
  "clap",
  "tokio",
  "tracing",

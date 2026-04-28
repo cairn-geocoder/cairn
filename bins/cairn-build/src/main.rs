@@ -153,8 +153,17 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         });
     }
 
-    if args.geonames.is_some() {
-        tracing::warn!("Geonames importer is still a stub");
+    if let Some(geonames_path) = args.geonames.as_ref() {
+        tracing::info!(path = %geonames_path.display(), "ingesting Geonames TSV");
+        let imported = cairn_import_geonames::import(geonames_path)
+            .with_context(|| format!("Geonames import failed: {}", geonames_path.display()))?;
+        tracing::info!(count = imported.len(), "Geonames places imported");
+        places.extend(imported);
+        sources.push(SourceVersion {
+            name: "geonames".into(),
+            version: geonames_path.display().to_string(),
+            blake3: hash_file(geonames_path)?,
+        });
     }
 
     // Build the text index from the full place set first; tile bucketing

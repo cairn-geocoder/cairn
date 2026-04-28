@@ -380,12 +380,16 @@ mod tests {
         let layer = AdminLayer {
             features: vec![feature(1, "A", "country", 0.0, 0.0)],
         };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "cairn-spatial-test-{}",
+            "cairn-spatial-test-{}-{}-{}",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            COUNTER.fetch_add(1, Ordering::Relaxed),
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("admin.bin");

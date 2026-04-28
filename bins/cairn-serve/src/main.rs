@@ -1,9 +1,10 @@
 //! `cairn-serve` — airgap-ready HTTP geocoder runtime.
 
 use anyhow::{Context, Result};
-use cairn_api::{router, AppState};
+use cairn_api::{router, AppState, Metrics};
 use cairn_spatial::{AdminIndex, AdminLayer, NearestIndex, PointLayer};
 use cairn_text::TextIndex;
+use cairn_tile::read_manifest;
 use clap::Parser;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
@@ -66,11 +67,21 @@ async fn main() -> Result<()> {
         None
     };
 
+    let manifest = read_manifest(&cli.bundle.join("manifest.toml")).ok();
+    let bundle_id = manifest
+        .as_ref()
+        .map(|m| m.bundle_id.clone())
+        .unwrap_or_else(|| "unknown".into());
+    let admin_features = admin.as_ref().map(|a| a.len() as u64).unwrap_or(0);
+    let point_count = nearest.as_ref().map(|n| n.len() as u64).unwrap_or(0);
+    let metrics = Arc::new(Metrics::new(bundle_id, admin_features, point_count));
+
     let state = AppState {
         bundle_path: Arc::new(cli.bundle.clone()),
         text,
         admin,
         nearest,
+        metrics,
     };
     let app = router(state);
 

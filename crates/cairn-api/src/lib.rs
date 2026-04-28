@@ -6,6 +6,7 @@
 //!   GET /v1/structured    (Phase 4)
 //!   GET /healthz, /readyz
 
+use axum::http::header;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -17,8 +18,49 @@ use cairn_place::Coord;
 use cairn_spatial::{AdminIndex, NearestIndex};
 use cairn_text::{Hit, SearchMode, SearchOptions, TextError, TextIndex};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tracing::error;
+
+/// Hand-rolled Prometheus-compatible metrics. Avoids adding a dep just to
+/// emit a few counters. Hot paths bump atomics; `/metrics` formats them.
+pub struct Metrics {
+    pub started: Instant,
+    pub bundle_id: String,
+    pub admin_features: u64,
+    pub point_count: u64,
+
+    pub search_ok: AtomicU64,
+    pub search_err: AtomicU64,
+    pub autocomplete_ok: AtomicU64,
+    pub structured_ok: AtomicU64,
+    pub structured_err: AtomicU64,
+    pub reverse_pip: AtomicU64,
+    pub reverse_nearest: AtomicU64,
+    pub reverse_empty: AtomicU64,
+    pub bad_request: AtomicU64,
+}
+
+impl Metrics {
+    pub fn new(bundle_id: String, admin_features: u64, point_count: u64) -> Self {
+        Self {
+            started: Instant::now(),
+            bundle_id,
+            admin_features,
+            point_count,
+            search_ok: AtomicU64::new(0),
+            search_err: AtomicU64::new(0),
+            autocomplete_ok: AtomicU64::new(0),
+            structured_ok: AtomicU64::new(0),
+            structured_err: AtomicU64::new(0),
+            reverse_pip: AtomicU64::new(0),
+            reverse_nearest: AtomicU64::new(0),
+            reverse_empty: AtomicU64::new(0),
+            bad_request: AtomicU64::new(0),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -26,12 +68,14 @@ pub struct AppState {
     pub text: Option<Arc<TextIndex>>,
     pub admin: Option<Arc<AdminIndex>>,
     pub nearest: Option<Arc<NearestIndex>>,
+    pub metrics: Arc<Metrics>,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/metrics", get(metrics))
         .route("/v1/search", get(search))
         .route("/v1/reverse", get(reverse))
         .route("/v1/structured", get(structured))
@@ -94,6 +138,7 @@ async fn search(
 ) -> impl IntoResponse {
     let q = params.q.trim();
     if q.is_empty() {
+        state.metrics.bad_request.fetch_add(1, Ordering::Relaxed);
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "query parameter 'q' is required" })),
@@ -142,13 +187,23 @@ async fn search(
     };
 
     match text.search(q, &opts) {
-        Ok(results) => Json(SearchResponse {
-            query: q,
-            mode: &mode_label,
-            results,
-        })
-        .into_response(),
+        Ok(results) => {
+            match mode {
+                SearchMode::Search => state.metrics.search_ok.fetch_add(1, Ordering::Relaxed),
+                SearchMode::Autocomplete => state
+                    .metrics
+                    .autocomplete_ok
+                    .fetch_add(1, Ordering::Relaxed),
+            };
+            Json(SearchResponse {
+                query: q,
+                mode: &mode_label,
+                results,
+            })
+            .into_response()
+        }
         Err(err) => {
+            state.metrics.search_err.fetch_add(1, Ordering::Relaxed);
             error!(?err, q, mode = %mode_label, "search failed");
             map_err(err).into_response()
         }
@@ -194,6 +249,7 @@ async fn reverse(
     let (lat, lon) = match (params.lat, params.lon) {
         (Some(lat), Some(lon)) => (lat, lon),
         _ => {
+            state.metrics.bad_request.fetch_add(1, Ordering::Relaxed);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -204,6 +260,7 @@ async fn reverse(
         }
     };
     if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        state.metrics.bad_request.fetch_add(1, Ordering::Relaxed);
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -221,6 +278,7 @@ async fn reverse(
     if let Some(admin) = state.admin.as_ref() {
         let matches = admin.point_in_polygon(probe);
         if !matches.is_empty() {
+            state.metrics.reverse_pip.fetch_add(1, Ordering::Relaxed);
             let results: Vec<ReverseHit> = matches
                 .iter()
                 .take(limit)
@@ -248,6 +306,10 @@ async fn reverse(
     // Fallback: nearest-K centroid query.
     if nearest_k > 0 {
         if let Some(nearest) = state.nearest.as_ref() {
+            state
+                .metrics
+                .reverse_nearest
+                .fetch_add(1, Ordering::Relaxed);
             let hits = nearest.nearest_k(probe, nearest_k.min(limit));
             let results: Vec<ReverseHit> = hits
                 .into_iter()
@@ -282,6 +344,7 @@ async fn reverse(
             .into_response();
     }
 
+    state.metrics.reverse_empty.fetch_add(1, Ordering::Relaxed);
     Json(ReverseResponse {
         lat,
         lon,
@@ -359,6 +422,7 @@ async fn structured(
     .collect();
 
     if parts.is_empty() {
+        state.metrics.bad_request.fetch_add(1, Ordering::Relaxed);
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -437,17 +501,69 @@ async fn structured(
     };
 
     match text.search(&query, &opts) {
-        Ok(results) => Json(StructuredResponse {
-            query: &query,
-            layer_hint,
-            results,
-        })
-        .into_response(),
+        Ok(results) => {
+            state.metrics.structured_ok.fetch_add(1, Ordering::Relaxed);
+            Json(StructuredResponse {
+                query: &query,
+                layer_hint,
+                results,
+            })
+            .into_response()
+        }
         Err(err) => {
+            state.metrics.structured_err.fetch_add(1, Ordering::Relaxed);
             error!(?err, query, "structured search failed");
             map_err(err).into_response()
         }
     }
+}
+
+async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    let m = state.metrics.as_ref();
+    let uptime = m.started.elapsed().as_secs();
+    let body = format!(
+        "# HELP cairn_uptime_seconds Seconds since cairn-serve started.\n\
+         # TYPE cairn_uptime_seconds gauge\n\
+         cairn_uptime_seconds{{bundle_id=\"{bundle}\"}} {uptime}\n\
+         # HELP cairn_admin_features Number of admin polygons loaded.\n\
+         # TYPE cairn_admin_features gauge\n\
+         cairn_admin_features{{bundle_id=\"{bundle}\"}} {admin}\n\
+         # HELP cairn_point_count Number of place centroids in the nearest fallback layer.\n\
+         # TYPE cairn_point_count gauge\n\
+         cairn_point_count{{bundle_id=\"{bundle}\"}} {points}\n\
+         # HELP cairn_requests_total HTTP requests handled, by endpoint and outcome.\n\
+         # TYPE cairn_requests_total counter\n\
+         cairn_requests_total{{endpoint=\"search\",outcome=\"ok\"}} {search_ok}\n\
+         cairn_requests_total{{endpoint=\"search\",outcome=\"err\"}} {search_err}\n\
+         cairn_requests_total{{endpoint=\"autocomplete\",outcome=\"ok\"}} {autocomplete_ok}\n\
+         cairn_requests_total{{endpoint=\"structured\",outcome=\"ok\"}} {structured_ok}\n\
+         cairn_requests_total{{endpoint=\"structured\",outcome=\"err\"}} {structured_err}\n\
+         cairn_requests_total{{endpoint=\"reverse\",outcome=\"pip\"}} {reverse_pip}\n\
+         cairn_requests_total{{endpoint=\"reverse\",outcome=\"nearest\"}} {reverse_nearest}\n\
+         cairn_requests_total{{endpoint=\"reverse\",outcome=\"empty\"}} {reverse_empty}\n\
+         cairn_requests_total{{endpoint=\"any\",outcome=\"bad_request\"}} {bad}\n",
+        bundle = m.bundle_id,
+        uptime = uptime,
+        admin = m.admin_features,
+        points = m.point_count,
+        search_ok = m.search_ok.load(Ordering::Relaxed),
+        search_err = m.search_err.load(Ordering::Relaxed),
+        autocomplete_ok = m.autocomplete_ok.load(Ordering::Relaxed),
+        structured_ok = m.structured_ok.load(Ordering::Relaxed),
+        structured_err = m.structured_err.load(Ordering::Relaxed),
+        reverse_pip = m.reverse_pip.load(Ordering::Relaxed),
+        reverse_nearest = m.reverse_nearest.load(Ordering::Relaxed),
+        reverse_empty = m.reverse_empty.load(Ordering::Relaxed),
+        bad = m.bad_request.load(Ordering::Relaxed),
+    );
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
 }
 
 fn map_err(err: TextError) -> (StatusCode, Json<serde_json::Value>) {
