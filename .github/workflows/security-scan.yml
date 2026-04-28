@@ -1,0 +1,94 @@
+name: Security scan (CVE)
+
+on:
+  # Re-scan on every push so a fresh CVE in the dep graph surfaces on
+  # the next merge, not at the next release.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Re-scan daily — the CVE database advances even when the image
+  # doesn't, so a bug disclosed today can affect a tag we shipped weeks
+  # ago. Re-running picks that up.
+  schedule:
+    - cron: '17 6 * * *'
+  # Manual trigger for ad-hoc audits.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  IMAGE_REF: ghcr.io/cairn-geocoder/cairn:latest
+
+jobs:
+  trivy-image:
+    name: Trivy — container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (local tag for scan)
+        run: |
+          docker build -t cairn:scan .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: cairn:scan
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: false
+          exit-code: 0
+
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Generate human-readable summary
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: cairn:scan
+          format: table
+          output: trivy-summary.txt
+          severity: CRITICAL,HIGH,MEDIUM
+
+      - name: Attach summary to job log
+        if: always()
+        run: |
+          {
+            echo '### Trivy image scan (`'"${IMAGE_REF}"'`)'
+            echo
+            echo '```'
+            cat trivy-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  trivy-fs:
+    name: Trivy — workspace filesystem
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy on the source tree (Cargo.lock + Dockerfile)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: false
+          exit-code: 0
+
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs

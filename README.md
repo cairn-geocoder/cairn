@@ -1,5 +1,11 @@
 # Cairn
 
+[![CI](https://github.com/cairn-geocoder/cairn/actions/workflows/ci.yml/badge.svg)](https://github.com/cairn-geocoder/cairn/actions/workflows/ci.yml)
+[![Security scan](https://github.com/cairn-geocoder/cairn/actions/workflows/security-scan.yml/badge.svg)](https://github.com/cairn-geocoder/cairn/actions/workflows/security-scan.yml)
+[![Code Scanning Alerts](https://img.shields.io/badge/CVEs-GitHub_Security-blue)](https://github.com/cairn-geocoder/cairn/security/code-scanning)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE-MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE-APACHE)
+
 Offline, airgap-ready geocoder written in Rust.
 
 > Cairn (n.) — a pile of stones marking a trail.
@@ -199,6 +205,22 @@ cargo test --workspace
 corruption detection, OSM tag classification, OA row validation, WoF
 parent-chain walking, tantivy search/autocomplete/fuzzy/layer/focus, admin
 PIP ordering, and nearest-K queries.
+
+## Security
+
+- Continuous Trivy scans of the published image and the source tree
+  (every push, every PR, daily cron). Results land in the
+  [GitHub Code Scanning tab][cs] as the live, version-pinned CVE list.
+- Bundle integrity is anchored by per-tile blake3 hashes in
+  `manifest.toml`; `cairn-build verify` recomputes every tile, every
+  spatial blob, and every tantivy segment hash and bails on mismatch.
+- API key auth and per-IP rate limiting are opt-in via env vars;
+  `X-Forwarded-For` is honored only when the per-connection peer is
+  inside a configured CIDR allowlist.
+- Full threat model, triage policy, and reporting instructions:
+  [SECURITY.md](SECURITY.md).
+
+[cs]: https://github.com/cairn-geocoder/cairn/security/code-scanning
 
 ## Roadmap
 
