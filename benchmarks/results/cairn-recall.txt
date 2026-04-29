@@ -1,0 +1,6 @@
+variant	hits	recall
+baseline	257/1153	22.3%
+fuzzy=1	865/1153	75.0%
+phonetic	1147/1153	99.5%
+semantic	257/1153	22.3%
+all-on	1153/1153	100.0%

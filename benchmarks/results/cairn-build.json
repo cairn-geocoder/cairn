@@ -1,0 +1,12 @@
+{
+  "engine": "cairn",
+  "phase": "build",
+  "host": "Marcos-MacBook-Pro.local",
+  "compile_seconds": 0,
+  "build_seconds": 27,
+  "peak_rss_bytes": 8925708288,
+  "bundle_disk_bytes": 222318592,
+  "bundle_disk_mb": 212,
+  "bundle_id": "switzerland-bench",
+  "input_pbf_bytes": 530941104
+}

@@ -1,0 +1,26 @@
+# Photon 0.6 single-container deploy. Photon imports from a
+# pre-existing Nominatim Postgres OR from its own Geofabrik dump.
+# We use the dump path so the bench doesn't depend on Nominatim being
+# up at the same time. Reference: https://github.com/komoot/photon
+#
+# Note: photon-db.tar.bz2 isn't published per-country, so the
+# `import` step runs `update.sh switzerland` against the latest
+# Geofabrik update file or falls back to a fresh Nominatim if the
+# dump is missing.
+
+services:
+  photon:
+    image: rtuszik/photon-docker:latest
+    container_name: bench_photon
+    ports:
+      - "127.0.0.1:2322:2322"
+    environment:
+      - COUNTRY_CODE=ch
+      # Update mode pulls deltas from the official mirror; on first
+      # run it bootstraps from the photon-db.tar.bz2 archive.
+      - UPDATE_STRATEGY=PARALLEL
+    volumes:
+      - bench_photon_data:/photon/photon_data
+
+volumes:
+  bench_photon_data:

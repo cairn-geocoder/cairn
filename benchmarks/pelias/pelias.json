@@ -1,0 +1,21 @@
+{
+  "esclient": {
+    "hosts": [{ "host": "elasticsearch", "port": 9200, "protocol": "http" }]
+  },
+  "api": {
+    "host": "http://localhost:4000",
+    "services": {
+      "placeholder": { "url": "http://placeholder:4100" },
+      "libpostal":   { "url": "http://libpostal:4400" }
+    }
+  },
+  "imports": {
+    "whosonfirst": { "datapath": "/data/whosonfirst", "countryCode": "CH" },
+    "openstreetmap": {
+      "datapath": "/data/openstreetmap",
+      "leveldbpath": "/tmp",
+      "import": [{ "filename": "switzerland-latest.osm.pbf" }]
+    }
+  },
+  "logger": { "level": "info" }
+}

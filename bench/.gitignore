@@ -1,0 +1,4 @@
+data/
+runner/target/
+results/*.json
+results/summary.md

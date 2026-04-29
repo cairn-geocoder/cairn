@@ -1,0 +1,27 @@
+# Nominatim 4.4 single-container deploy.
+# Reference: https://github.com/mediagis/nominatim-docker
+
+services:
+  nominatim:
+    image: mediagis/nominatim:4.4
+    container_name: bench_nominatim
+    ports:
+      - "127.0.0.1:8081:8080"
+    environment:
+      - PBF_PATH=/nominatim/data/switzerland-latest.osm.pbf
+      - REPLICATION_URL=https://download.geofabrik.de/europe/switzerland-updates/
+      - IMPORT_STYLE=full
+      - THREADS=8
+      - POSTGRES_SHARED_BUFFERS=2GB
+      - POSTGRES_MAINTENANCE_WORK_MEM=8GB
+      - POSTGRES_AUTOVACUUM_WORK_MEM=2GB
+      - POSTGRES_WORK_MEM=64MB
+      - POSTGRES_EFFECTIVE_CACHE_SIZE=8GB
+      - POSTGRES_SYNCHRONOUS_COMMIT=off
+    volumes:
+      - ../data:/nominatim/data:ro
+      - bench_nominatim_pgdata:/var/lib/postgresql/14/main
+    shm_size: 1gb
+
+volumes:
+  bench_nominatim_pgdata:

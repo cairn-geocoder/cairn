@@ -1,0 +1,57 @@
+services:
+  # Pelias is a multi-service stack. The canonical bench layout is
+  # `pelias/docker` (https://github.com/pelias/docker). For our
+  # benchmark we replicate the minimum viable stack:
+  #   - elasticsearch: index store
+  #   - api:           HTTP front (port 4000)
+  #   - placeholder:   admin polygon resolver
+  #   - libpostal:     parser daemon
+  #   - schema:        index schema bootstrap (runs once)
+  # Country-scope import (Switzerland) is driven by `pelias-config`
+  # and the importer images. The full Pelias bench bringup is
+  # genuinely multi-hour on first run; the stack below is the
+  # docker-compose form so a Mac with 16 GB RAM allocated to
+  # Docker can hold all services concurrently.
+  elasticsearch:
+    image: pelias/elasticsearch:7.17.5
+    container_name: pelias-es
+    ports:
+      - "127.0.0.1:9200:9200"
+    environment:
+      - cluster.name=pelias
+      - node.name=pelias
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+      - discovery.type=single-node
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - ./es-data:/usr/share/elasticsearch/data
+
+  api:
+    image: pelias/api:master
+    container_name: pelias-api
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      - elasticsearch
+      - libpostal
+      - placeholder
+    volumes:
+      - ./pelias.json:/etc/pelias/pelias.json:ro
+
+  libpostal:
+    image: pelias/libpostal-service:master
+    container_name: pelias-libpostal
+    ports:
+      - "127.0.0.1:4400:4400"
+
+  placeholder:
+    image: pelias/placeholder:master
+    container_name: pelias-placeholder
+    ports:
+      - "127.0.0.1:4100:4100"
+    volumes:
+      - ./placeholder-data:/data

@@ -1,0 +1,14 @@
+data/*.pbf
+data/*.zip
+data/*.txt
+queries/swiss-10k.txt
+queries/swiss-noisy.txt
+results/*.timings.txt
+cairn/bundle/
+cairn/.pid
+cairn/serve.log
+pelias/es-data/
+pelias/placeholder-data/
+nominatim/data/
+nominatim/flatnode/
+photon/photon_data/
