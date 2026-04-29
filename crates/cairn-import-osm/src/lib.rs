@@ -302,9 +302,23 @@ pub fn import_with(pbf_path: &Path, strategy: NodeCacheStrategy) -> Result<OsmIm
         "pass 2a done"
     );
 
+    // Phase 6g: pre-filter way_nodes to relation-referenced ways
+    // only. Without this every named highway / addr:interpolation /
+    // closed area in the PBF lands in a `HashMap<i64, Vec<i64>>`
+    // (~80 B/entry); at country scale most of those entries never get
+    // looked up because admin assembly only walks ways referenced by
+    // `boundary=*` relations. DE: 6.2 M ways → ~50 K relation members,
+    // dropping the way_nodes RAM cost by >99 %.
+    info!("OSM PBF pass 2b0: scan relations for relevant way ref-set");
+    let needed_way_ids = collect_relation_way_refs(pbf_path)?;
+    info!(
+        relation_way_refs = needed_way_ids.len(),
+        "way ref-set built"
+    );
+
     info!("OSM PBF pass 2b1: parallel way-place emit + way_nodes register");
     let (way_places, way_nodes, way_counters) =
-        parallel_way_places(pbf_path, &node_coords, &node_addrs)?;
+        parallel_way_places(pbf_path, &node_coords, &node_addrs, &needed_way_ids)?;
     places.extend(way_places);
     counters.merge(way_counters);
     info!(
@@ -439,6 +453,7 @@ fn parallel_way_places(
     pbf_path: &Path,
     node_coords: &NodeCoords,
     node_addrs: &NodeAddrs,
+    needed_way_ids: &HashSet<i64>,
 ) -> Result<(Vec<Place>, WayNodes, Counters), ImportError> {
     let blob_reader = BlobReader::from_path(pbf_path)?;
     blob_reader
@@ -458,7 +473,9 @@ fn parallel_way_places(
                         for elem in block.elements() {
                             if let Element::Way(w) = elem {
                                 counters.ways_seen += 1;
-                                way_nodes.insert(w.id(), w.refs().collect());
+                                if needed_way_ids.contains(&w.id()) {
+                                    way_nodes.insert(w.id(), w.refs().collect());
+                                }
                                 if let Some(p) = way_to_place(
                                     &w,
                                     node_coords,
@@ -654,6 +671,52 @@ fn load_node_caches_inline(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs), I
             },
         )?;
     Ok((NodeCoords::from_inline_map(coords_map), addrs))
+}
+
+/// Pre-filter pass: parallel scan of all blobs, collecting the set of
+/// way ids referenced as members of any relation. Used by the
+/// way-place pass so only ways that admin / multipolygon assembly
+/// will actually walk get their refs cached. Most ways are not
+/// relation members (named highways, addr interpolation lines,
+/// closed areas tagged directly), so the resulting set is tiny.
+fn collect_relation_way_refs(pbf_path: &Path) -> Result<HashSet<i64>, ImportError> {
+    let blob_reader = BlobReader::from_path(pbf_path)?;
+    blob_reader
+        .par_bridge()
+        .map(|blob| -> Result<HashSet<i64>, ImportError> {
+            let blob = blob?;
+            match blob.decode()? {
+                BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => Ok(HashSet::new()),
+                BlobDecode::OsmData(block) => {
+                    let mut ids: HashSet<i64> = HashSet::new();
+                    for elem in block.elements() {
+                        if let Element::Relation(r) = elem {
+                            for m in r.members() {
+                                if matches!(m.member_type, osmpbf::RelMemberType::Way) {
+                                    ids.insert(m.member_id);
+                                }
+                            }
+                        }
+                    }
+                    Ok(ids)
+                }
+            }
+        })
+        .reduce(
+            || Ok(HashSet::new()),
+            |a, b| match (a, b) {
+                (Ok(aa), Ok(bb)) => {
+                    let (mut big, small) = if aa.len() >= bb.len() {
+                        (aa, bb)
+                    } else {
+                        (bb, aa)
+                    };
+                    big.extend(small);
+                    Ok(big)
+                }
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            },
+        )
 }
 
 /// Pre-filter pass: parallel scan of all blobs, collecting the set of
