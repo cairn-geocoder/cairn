@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod edit;
 pub mod semantic;
+pub mod stopwords;
 pub mod trigram;
 use std::path::Path;
 use tantivy::collector::TopDocs;
@@ -607,6 +608,13 @@ impl TextIndex {
         if trimmed.is_empty() {
             return Ok(Vec::new());
         }
+        // Phase 7a-E — drop multi-token interior stop-words ("de",
+        // "la", "der", "the"…) before BM25 weighting so a "Place de la
+        // Bastille" query doesn't get crushed by POIs that just
+        // contain "de" + "la". Single- and two-token queries pass
+        // through untouched; head + tail tokens always preserved.
+        let stop_filtered = stopwords::filter(trimmed);
+        let trimmed = stop_filtered.as_str();
 
         let text_q = self.build_text_query(trimmed, opts)?;
         let text_q = self.apply_phonetic_orclause(text_q, trimmed, opts);
