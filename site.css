@@ -241,6 +241,64 @@ img, svg { display: block; max-width: 100%; }
   margin: 0 0 28px;
 }
 .hero-cta { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* Hero stats — Tier 5 benchmark headline tucked under the CTA. */
+.hero-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 36px 0 14px;
+  padding: 18px 22px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+.hero-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.hero-stat-num {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 30px;
+  line-height: 1;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+.hero-stat-num .hero-stat-unit {
+  font-family: var(--sans);
+  font-style: normal;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-2);
+  letter-spacing: 0;
+  margin-left: 2px;
+}
+.hero-stat-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.hero-stat-foot {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin: 0 0 6px;
+  line-height: 1.55;
+}
+.hero-stat-foot strong { color: var(--ink); font-weight: 600; }
+.hero-stat-foot a {
+  color: var(--accent);
+  font-weight: 500;
+  border-bottom: 1px dashed var(--accent-soft);
+  margin-left: 4px;
+}
+.hero-stat-foot a:hover { border-bottom-style: solid; }
+@media (max-width: 720px) {
+  .hero-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .btn {
   display: inline-flex;
   align-items: center;
