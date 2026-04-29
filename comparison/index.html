@@ -249,12 +249,111 @@
           </tr>
         </tbody>
       </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <h2>End-to-end Switzerland benchmark</h2>
+      <p>
+        Same 506 MB Switzerland OSM PBF, same 6 408-query workload
+        (Geonames-derived city + postcode + composite queries), same
+        Apple Silicon host (36 GB RAM, OrbStack). Sequential
+        single-client p50/p95/p99 from <code>curl --time-total</code>;
+        peak RPS from <code>ab -k</code> keepalive sweep.
+        Reproducible — see <code>benchmarks/</code> in the repo for
+        the harness.
+      </p>
+      <table class="api">
+        <thead>
+          <tr>
+            <th>Engine</th>
+            <th>Build</th>
+            <th>Disk</th>
+            <th>Hot RSS</th>
+            <th>p50</th>
+            <th>p95</th>
+            <th>p99</th>
+            <th>Peak RPS</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Cairn</strong></td>
+            <td><strong>27 s</strong></td>
+            <td><strong>212 MB</strong></td>
+            <td><strong>102 MB</strong></td>
+            <td><strong><code>0.68 ms</code></strong></td>
+            <td><strong><code>1.08 ms</code></strong></td>
+            <td><strong><code>1.32 ms</code></strong></td>
+            <td><strong>29 342</strong></td>
+          </tr>
+          <tr>
+            <td>Pelias</td>
+            <td>3 m 46 s</td>
+            <td>3.5 GB</td>
+            <td>2.7 GB</td>
+            <td><code>13.76 ms</code></td>
+            <td><code>34.41 ms</code></td>
+            <td><code>57.23 ms</code></td>
+            <td>362</td>
+          </tr>
+          <tr>
+            <td>Nominatim</td>
+            <td>3 h 13 m</td>
+            <td>9.2 GB</td>
+            <td>2.4 GB</td>
+            <td><code>9.51 ms</code></td>
+            <td><code>15.15 ms</code></td>
+            <td><code>23.00 ms</code></td>
+            <td>1 109</td>
+          </tr>
+          <tr>
+            <td>Photon</td>
+            <td>2 m 1 s</td>
+            <td>1.3 GB</td>
+            <td>2.1 GB</td>
+            <td><code>5.88 ms</code></td>
+            <td><code>15.26 ms</code></td>
+            <td><code>25.18 ms</code></td>
+            <td>2 406</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Cairn ships the workload <strong>17–43× faster at p99</strong>,
+        sustains <strong>12–81× higher peak RPS</strong>,
+        with <strong>21–27× smaller hot RSS</strong> and
+        <strong>6–44× smaller disk</strong> than the incumbents. Build
+        wall-clock is <strong>4.5–430× faster</strong> on the same
+        506 MB PBF input.
+      </p>
+      <h3>Recall on noisy queries</h3>
+      <p>
+        1 153 deliberate typo / ASCII-fold variants, top-1 hit rate.
+        Cairn's <code>?phonetic=true</code> (DoubleMetaphone)
+        single-handedly recovers nearly every typo. No incumbent
+        ships a phonetic toggle today.
+      </p>
+      <table class="api">
+        <thead>
+          <tr><th>Variant</th><th>Hits</th><th>Recall</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>baseline</td><td>257 / 1 153</td><td>22.3 %</td></tr>
+          <tr><td><code>?fuzzy=1</code></td><td>865 / 1 153</td><td>75.0 %</td></tr>
+          <tr><td><code>?phonetic=true</code></td><td>1 147 / 1 153</td><td><strong>99.5 %</strong></td></tr>
+          <tr><td><code>?semantic=true</code></td><td>257 / 1 153</td><td>22.3 %</td></tr>
+          <tr><td>all flags on</td><td>1 153 / 1 153</td><td><strong>100.0 %</strong></td></tr>
+        </tbody>
+      </table>
       <p class="caveat">
-        For honest comparison numbers against Pelias / Photon /
-        Nominatim, the right benchmark is end-to-end p50/p99 on identical
-        hardware with the same query set. We have not run that yet — when
-        we do, results land here. Vendor-published numbers vary too widely
-        with cluster shape to be apples-to-apples.
+        Numbers shift on different disks / kernels / host load.
+        Re-run with <code>./run.sh &lt;engine&gt;</code> from the
+        <code>benchmarks/</code> directory to validate on your own
+        hardware. The full report including per-engine setup
+        gotchas is at
+        <a href="https://github.com/cairn-geocoder/cairn/blob/main/benchmarks/results/REPORT.md"><code>benchmarks/results/REPORT.md</code></a>.
       </p>
     </div>
   </section>
