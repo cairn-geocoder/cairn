@@ -7,7 +7,7 @@ services:
     image: mediagis/nominatim:4.4
     container_name: nominatim-bench
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9999:8080"
     environment:
       PBF_URL: "https://download.geofabrik.de/europe/switzerland-latest.osm.pbf"
       REPLICATION_URL: "https://download.geofabrik.de/europe/switzerland-updates/"

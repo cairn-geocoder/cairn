@@ -1,0 +1,22 @@
+{
+  "engine": "nominatim",
+  "queries": 6408,
+  "errors": 0,
+  "total_seconds": 233.888475,
+  "rps": 27.397673185906232,
+  "latency_ms": {
+    "p50": 9.51,
+    "p90": 13.251000000000001,
+    "p95": 15.145999999999999,
+    "p99": 23.001,
+    "max": 71.674,
+    "mean": 10.167970037453182
+  },
+  "rss_bytes": {
+    "cold": 2569464184,
+    "hot": 2569464184
+  },
+  "disk_bytes": 9878424780,
+  "disk_flatnode_logical_bytes": 110595407872,
+  "import_seconds": 11580
+}

@@ -13,7 +13,7 @@ services:
   # docker-compose form so a Mac with 16 GB RAM allocated to
   # Docker can hold all services concurrently.
   elasticsearch:
-    image: pelias/elasticsearch:7.17.5
+    image: pelias/elasticsearch:7.16.1
     container_name: pelias-es
     ports:
       - "127.0.0.1:9200:9200"
@@ -34,13 +34,13 @@ services:
     image: pelias/api:master
     container_name: pelias-api
     ports:
-      - "127.0.0.1:4000:4000"
+      - "127.0.0.1:4000:3100"
     depends_on:
       - elasticsearch
       - libpostal
       - placeholder
     volumes:
-      - ./pelias.json:/etc/pelias/pelias.json:ro
+      - ./pelias.json:/code/pelias.json:ro
 
   libpostal:
     image: pelias/libpostal-service:master

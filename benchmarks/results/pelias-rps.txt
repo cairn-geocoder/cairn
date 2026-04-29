@@ -1,0 +1,32 @@
+=== pelias c=1 ===
+Failed requests:        0
+Requests per second:    129.73 [#/sec] (mean)
+Time per request:       7.708 [ms] (mean)
+Time per request:       7.708 [ms] (mean, across all concurrent requests)
+  95%     11
+  99%     17
+
+=== pelias c=8 ===
+Failed requests:        0
+Requests per second:    320.96 [#/sec] (mean)
+Time per request:       24.925 [ms] (mean)
+Time per request:       3.116 [ms] (mean, across all concurrent requests)
+  95%     38
+  99%     51
+
+=== pelias c=32 ===
+Failed requests:        0
+Requests per second:    362.23 [#/sec] (mean)
+Time per request:       88.341 [ms] (mean)
+Time per request:       2.761 [ms] (mean, across all concurrent requests)
+  95%    126
+  99%    153
+
+=== pelias c=64 ===
+Failed requests:        0
+Requests per second:    308.79 [#/sec] (mean)
+Time per request:       207.259 [ms] (mean)
+Time per request:       3.238 [ms] (mean, across all concurrent requests)
+  95%    357
+  99%    505
+

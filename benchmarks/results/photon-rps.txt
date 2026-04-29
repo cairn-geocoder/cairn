@@ -1,0 +1,32 @@
+=== photon c=1 ===
+Failed requests:        0
+Requests per second:    565.17 [#/sec] (mean)
+Time per request:       1.769 [ms] (mean)
+Time per request:       1.769 [ms] (mean, across all concurrent requests)
+  95%      3
+  99%      4
+
+=== photon c=8 ===
+Failed requests:        0
+Requests per second:    1958.82 [#/sec] (mean)
+Time per request:       4.084 [ms] (mean)
+Time per request:       0.511 [ms] (mean, across all concurrent requests)
+  95%      7
+  99%     11
+
+=== photon c=32 ===
+Failed requests:        0
+Requests per second:    2406.19 [#/sec] (mean)
+Time per request:       13.299 [ms] (mean)
+Time per request:       0.416 [ms] (mean, across all concurrent requests)
+  95%     19
+  99%     23
+
+=== photon c=64 ===
+Failed requests:        0
+Requests per second:    2286.54 [#/sec] (mean)
+Time per request:       27.990 [ms] (mean)
+Time per request:       0.437 [ms] (mean, across all concurrent requests)
+  95%     36
+  99%     43
+

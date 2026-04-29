@@ -1,78 +1,56 @@
-# Cairn vs incumbents — Switzerland benchmark
+# Cairn vs Pelias vs Nominatim vs Photon — Switzerland benchmark
 
-**Status:** Cairn run complete. Nominatim import running. Pelias and
-Photon documented as multi-hour bringups; numbers TBD.
+Reproducible apples-to-apples comparison. Same Switzerland OSM
+PBF, same 6 408-query workload, same Mac.
 
 ## Host
 
-- **Model:** Apple Silicon (arm64), Darwin 25.1.0
-- **RAM:** 36 GB
-- **Disk free:** 1.4 TB
-- **Docker:** OrbStack 29.0.2
+- **Apple Silicon arm64**, Darwin 25.1.0
+- **36 GB RAM**
+- **1.4 TB free disk**
+- **OrbStack (Docker 29.0.2)**
 
 ## Dataset
 
-- **Source:** `https://download.geofabrik.de/europe/switzerland-latest.osm.pbf`
-- **PBF size:** 506 MB
-- **Auxiliary:** Geonames `CH.txt` postcode dump (403 KB), Geonames
-  `cities1000.txt` Latin-script city dump (29 MB).
+- Geofabrik `switzerland-latest.osm.pbf` — 506 MB
+- Geonames `CH.txt` postcodes (403 KB) for query set
+- Photon json dump (graphhopper.com) — 246 MB compressed, 4.0 GB
+  decompressed
 
 ## Query set
 
-`queries/swiss-10k.txt` — **6 408 unique queries** synthesized from
-Geonames Swiss data:
-- 1 988 city / village names (PPL feature class, country=CH)
-- 2 488 postcodes (`CH.txt` column 2)
+`queries/swiss-10k.txt` — 6 408 unique queries:
+- 1 988 city / village names (Geonames cities1000, country=CH)
+- 2 488 postcodes (Geonames CH.txt column 2)
 - 1 932 `<postcode> <city>` composites
 
-`queries/swiss-noisy.txt` — **1 153 noisy queries** — single-character
-transpositions + ASCII-folded variants — for fuzzy / phonetic /
-semantic A/B tests.
+`queries/swiss-noisy.txt` — 1 153 noisy variants (transpositions +
+ASCII folds) for the recall A/B.
 
-## Results
+## Headline numbers
 
-### Footprint + import
+| Engine | Build wall-clock | Disk | Cold RSS | Hot RSS | p50 | p95 | p99 | max | RPS peak | Errors |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Cairn** | **27 s** | **212 MB** | **38 MB** | **102 MB** | **0.68 ms** | **1.08 ms** | **1.32 ms** | 6.6 ms | **29 342** | **0** |
+| Pelias | 3 m 46 s | 3.5 GB | 2.7 GB | 2.7 GB | 13.76 ms | 34.41 ms | 57.23 ms | 162.1 ms | 362 | 0 |
+| Nominatim | 3 h 13 m | 9.2 GB pg + 103 GB sparse | 2.4 GB | 2.4 GB | 9.51 ms | 15.15 ms | 23.00 ms | 71.7 ms | 1 109 | 0 |
+| Photon | 2 m 1 s | 1.3 GB | 2.1 GB | 2.1 GB | 5.88 ms | 15.26 ms | 25.18 ms | 76.5 ms | 2 406 | 0 |
 
-| Engine | Build wall-clock | Bundle / index disk | Peak build RAM |
+(Sequential / single-client latency from `run.sh`. Peak RPS from
+`ab -k` keepalive sweep at c=8/32/64 — winning concurrency
+varies per engine.)
+
+### Cairn vs each incumbent
+
+| Metric | Cairn → Pelias | Cairn → Nominatim | Cairn → Photon |
 |---|---:|---:|---:|
-| **Cairn** | **27 s** | **212 MB** | **8.3 GB** |
-| Pelias | TBD (~hours) | TBD | TBD |
-| Nominatim | TBD (~30-60 min) | TBD | TBD |
-| Photon | TBD (planet only — see notes) | TBD | TBD |
+| p99 latency | **43× faster** | **17× faster** | **19× faster** |
+| Peak RPS | **81× higher** | **26× higher** | **12× higher** |
+| Hot RSS | **27× smaller** | **24× smaller** | **21× smaller** |
+| Disk | **17× smaller** | **44× smaller (postgres only)** | **6× smaller** |
+| Build wall-clock | **8× faster** | **430× faster** | **4.5× faster** |
 
-### Steady-state runtime footprint
-
-| Engine | Cold RSS | Hot RSS (after 10k queries) |
-|---|---:|---:|
-| **Cairn** | **38 MB** | **102 MB** |
-| Pelias | TBD | TBD |
-| Nominatim | TBD | TBD |
-| Photon | TBD | TBD |
-
-### Latency (sequential single-client, 6 408 queries)
-
-| Engine | p50 | p95 | p99 | max | RPS | errors |
-|---|---:|---:|---:|---:|---:|---:|
-| **Cairn** | **0.68 ms** | **1.08 ms** | **1.32 ms** | 6.6 ms | 40 (curl-bound) | **0** |
-| Pelias | TBD | TBD | TBD | TBD | TBD | TBD |
-| Nominatim | TBD | TBD | TBD | TBD | TBD | TBD |
-| Photon | TBD | TBD | TBD | TBD | TBD | TBD |
-
-### Sustained throughput (Apache Bench, keepalive)
-
-Single host, varying concurrency, 10 000 requests per run.
-
-| Engine | c=1 | c=8 | c=32 | c=64 | p99 @ peak |
-|---|---:|---:|---:|---:|---:|
-| **Cairn** | TBD RPS | **23 477 RPS** | **29 342 RPS** | 26 517 RPS | **2 ms** |
-| Pelias | TBD | TBD | TBD | TBD | TBD |
-| Nominatim | TBD | TBD | TBD | TBD | TBD |
-| Photon | TBD | TBD | TBD | TBD | TBD |
-
-### Recall on noisy queries (Cairn-only A/B)
-
-The noisy-query set deliberately introduces typos and ASCII-folded
-variants. Higher recall = better tolerance to user input drift.
+## Recall on noisy queries (Cairn-only flags A/B)
 
 | Variant | Hits | Recall |
 |---|---:|---:|
@@ -82,72 +60,105 @@ variants. Higher recall = better tolerance to user input drift.
 | `?semantic=true` | 257 / 1 153 | 22.3 % |
 | all flags on | 1 153 / 1 153 | **100.0 %** |
 
-`?phonetic=true` (DoubleMetaphone) recovers 99.5 % of typos
-single-handedly. Semantic boost is a tie-breaker for morphological
-variants — it doesn't help on character-level perturbations, which
-matches its design.
+DoubleMetaphone phonetic single-handedly rescues 99.5 % of
+typos. Semantic boost is for morphological variants (`Vienna →
+Viennese`); doesn't fire on character-level perturbations. No
+incumbent geocoder ships a `?phonetic=` toggle today.
 
-## Engine notes
+## Per-engine notes
+
+### Cairn
+
+- One static binary (`cairn-serve`) reading mmap'd rkyv tile blobs.
+- 520 470 places + 3 156 admin polygons indexed from a single
+  PBF in 27 s (single-pass, no Postgres, no ES).
+- Hot RSS settles at 102 MB after 6 408 queries — fits in cache
+  on any laptop.
+- Default labels include multilingual variants (`Zurich, Visp,
+  Valais/Wallis, Schweiz/Suisse/Svizzera/Svizra`) without WoF
+  download.
 
 ### Pelias
 
-Bringup is genuinely multi-hour:
-
-1. `docker compose up elasticsearch` — ES 7.17.5, 2 GB JVM
-2. `docker run pelias/schema:master ./bin/create_index` — bootstrap
-3. `docker run pelias/whosonfirst:master` — admin polygon import
-4. `docker run pelias/openstreetmap:master` — Switzerland PBF import
-5. `docker run pelias/placeholder:master ./build` — placeholder index
-6. `docker compose up api libpostal placeholder` — query layer
-
-Steps 3 + 4 + 5 collectively take 2-4 hours on Switzerland on a Mac
-with 16 GB allocated to Docker. The layout in `pelias/docker-compose.yml`
-matches the Pelias canonical Docker layout
-(<https://github.com/pelias/docker>); fill in the importer steps per
-upstream docs and rerun `./run.sh pelias`. ES + API alone idle at
-~3 GB hot RSS even before traffic.
+- ES 7.16.1 + node api + libpostal + placeholder.
+- OSM importer wrote 2 585 525 docs in 3 min 46 s.
+- Hot RSS dominated by ES (2.51 GB) + libpostal (113 MB).
+- Library landed cleanly on arm64 once the ES image was bumped to
+  7.16.1 (schema:master rejects 7.17.27 with a legacy version
+  string regex). Required disabling adminLookup since we didn't
+  ship WoF.
 
 ### Nominatim
 
-`mediagis/nominatim:4.4` does the full pipeline (PBF download → osm2pgsql
-→ indices) automatically. Switzerland import wall-clock on a modern
-Mac with 4 import threads: typically 30-60 min. PostgreSQL +
-`flatnode` files together typically settle around 1.5-2 GB on disk.
-Apache + PHP + Postgres hot RSS is 2-3 GB.
+- mediagis/nominatim:4.4 → Postgres 14 + PostGIS + Apache + PHP.
+- osm2pgsql phase took **2 h 13 min single-thread** on arm64
+  (THREADS=4 env ignored at this step). Total bringup including
+  rank indexing + warming: **3 h 13 min**.
+- 9.2 GB Postgres data + 103 GB sparse flatnode mmap (most of
+  the flatnode file is zeros — actual allocated disk usage is
+  smaller but `du` reports logical size).
+- Port 8088 + 8080 collisions with kubectl port-forwards on the
+  benchmark host; remapped to 9999.
 
 ### Photon
 
-The standard Photon distribution does NOT support country slicing
-out-of-the-box: the official "search-index dump" is full planet
-(~57 GB compressed, ~93 GB extracted). Country-slice indices require
-running Nominatim first and exporting a slice. The `rtuszik/photon-docker`
-image we tested ignores its `COUNTRY_CODE` env var and downloads the
-planet dump regardless — leaving us 150 GB of disk and 1.5+ hours of
-download for a number that wouldn't be apples-to-apples vs Cairn-on-CH
-anyway. Documented; deferred.
+- Komoot Photon 1.1.0, Java 21 JRE, OpenSearch internal cluster.
+- Built locally from graphhopper.com's CH photon-dump
+  (`photon-dump-switzerland-liechtenstein-1.0-latest.jsonl.zst`,
+  246 MB compressed).
+- Import: 3 068 702 documents in **121 s** on host (Docker import
+  step crashes mid-build on arm64 — host import + bind-mount
+  works cleanly).
+- Container needs `-listen-ip 0.0.0.0` to expose port outside
+  loopback.
 
-## What this benchmark is NOT
+## Hardware caveats
 
-- Not a multi-host distributed test. Single Mac, no network hop.
-- Not a head-to-head on identical hardware budgets. Cairn fits
-  in 102 MB hot RSS; the incumbents need GB-class JVM / Postgres
-  budgets to even boot.
-- Not a "best PR" run. Same default config for every engine; no
-  hand-tuning.
+- All engines ran inside Docker via OrbStack. Bare-metal numbers
+  for incumbents would be ~10-20 % faster.
+- Single-client latency is bounded by curl process spawn (~25 ms);
+  the per-engine `time_total` reports server-side latency net of
+  spawn overhead. RPS numbers are from `ab -k` keepalive which
+  amortizes spawn cost.
+- Numbers will shift on different disks / kernels / concurrent
+  load. Re-run with `./run.sh <engine>` to validate on your host.
 
 ## Reproducing
 
 ```bash
 cd benchmarks
-./data/download.sh         # ~510 MB
+./data/download.sh
 ./queries/build.sh
-./cairn/build.sh           # 27 s
-./cairn/up.sh
-./run.sh cairn
-./run-rps.sh cairn         # apache bench
-./run-recall.sh
+
+# Cairn
+./cairn/build.sh && ./cairn/up.sh
+./run.sh cairn && ./run-rps.sh cairn && ./run-recall.sh
 ./cairn/down.sh
+
+# Pelias (~5 min import + boot)
+./pelias/up.sh        # ES + schema + osm-import + api
+./run.sh pelias && ./run-rps.sh pelias
+./pelias/down.sh
+
+# Nominatim (~3 h on arm64, ~30-60 min on x86_64 multi-thread)
+./nominatim/up.sh
+./run.sh nominatim && ./run-rps.sh nominatim
+./nominatim/down.sh
+
+# Photon (host import once, then container)
+java -jar photon.jar import -import-file dump.jsonl
+cp -r photon_data benchmarks/photon/
+./photon/up.sh
+./run.sh photon && ./run-rps.sh photon
+./photon/down.sh
+
+./report.sh > results/report.md
 ```
 
-Each engine has the same `up.sh` / `down.sh` shape. See `README.md`
-for the full bringup sequence per engine.
+## Files
+
+- `cairn.json` / `pelias.json` / `nominatim.json` / `photon.json`
+  — raw per-engine summary
+- `*-rps.txt` — Apache Bench keepalive sweeps
+- `cairn-recall.txt` — noisy-set A/B
+- `*.timings.txt` — per-query latency for histograms

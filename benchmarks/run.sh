@@ -35,8 +35,8 @@ case "$ENGINE" in
     PROC_NAME="pelias-api"
     ;;
   nominatim)
-    PORT=8080
-    URL_TPL='http://127.0.0.1:8080/search?q={Q}&format=json&limit=1'
+    PORT=9999
+    URL_TPL='http://127.0.0.1:9999/search?q={Q}&format=jsonv2&limit=1'
     DATA_PATH="nominatim/data"
     PROC_NAME="apache2"
     ;;

@@ -1,0 +1,32 @@
+=== nominatim c=1 ===
+Failed requests:        0
+Requests per second:    129.15 [#/sec] (mean)
+Time per request:       7.743 [ms] (mean)
+Time per request:       7.743 [ms] (mean, across all concurrent requests)
+  95%      9
+  99%     10
+
+=== nominatim c=8 ===
+Failed requests:        0
+Requests per second:    914.14 [#/sec] (mean)
+Time per request:       8.751 [ms] (mean)
+Time per request:       1.094 [ms] (mean, across all concurrent requests)
+  95%     11
+  99%     13
+
+=== nominatim c=32 ===
+Failed requests:        0
+Requests per second:    1068.97 [#/sec] (mean)
+Time per request:       29.935 [ms] (mean)
+Time per request:       0.935 [ms] (mean, across all concurrent requests)
+  95%     52
+  99%     74
+
+=== nominatim c=64 ===
+Failed requests:        0
+Requests per second:    1108.85 [#/sec] (mean)
+Time per request:       57.718 [ms] (mean)
+Time per request:       0.902 [ms] (mean, across all concurrent requests)
+  95%    104
+  99%    141
+

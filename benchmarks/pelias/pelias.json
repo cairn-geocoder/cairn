@@ -10,10 +10,12 @@
     }
   },
   "imports": {
+    "adminLookup": { "enabled": false },
     "whosonfirst": { "datapath": "/data/whosonfirst", "countryCode": "CH" },
     "openstreetmap": {
       "datapath": "/data/openstreetmap",
       "leveldbpath": "/tmp",
+      "adminLookup": false,
       "import": [{ "filename": "switzerland-latest.osm.pbf" }]
     }
   },

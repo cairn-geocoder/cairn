@@ -9,7 +9,7 @@ ENGINE="${1:-cairn}"
 case "$ENGINE" in
   cairn)     URL="http://127.0.0.1:7100/v1/search?q=Zurich&limit=1" ;;
   pelias)    URL="http://127.0.0.1:4000/v1/search?text=Zurich&size=1" ;;
-  nominatim) URL="http://127.0.0.1:8080/search?q=Zurich&format=json&limit=1" ;;
+  nominatim) URL="http://127.0.0.1:9999/search?q=Zurich&format=jsonv2&limit=1" ;;
   photon)    URL="http://127.0.0.1:2322/api?q=Zurich&limit=1" ;;
   *) echo "unknown engine $ENGINE"; exit 2;;
 esac

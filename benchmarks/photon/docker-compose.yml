@@ -1,19 +1,15 @@
 services:
-  # Photon ships an FST + Lucene index built FROM a Nominatim dump,
-  # not directly from PBF. The official "photon-search/photon"
-  # distribution provides a `--country-codes` mode that auto-pulls
-  # an upstream search-index dump (saves the multi-hour Nominatim
-  # bootstrap when you only want the binary index). We use that
-  # path so the benchmark stays reproducible without a 100 GB
-  # Postgres detour.
+  # Photon CH-only index built from graphhopper.com's Swiss
+  # photon-dump jsonl (~246 MB). Custom Dockerfile imports + serves;
+  # avoids the 57 GB full-planet pull baked into rtuszik/photon-docker.
   photon:
-    image: rtuszik/photon-docker:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cairn-bench-photon:ch
     container_name: photon-bench
     ports:
       - "127.0.0.1:2322:2322"
-    environment:
-      COUNTRY_CODE: "ch"      # download Switzerland index slice
-      UPDATE_STRATEGY: "PARALLEL"
     volumes:
-      - ./photon_data:/photon/photon_data
+      - ./photon_data:/photon/data/photon_data
     restart: "no"
