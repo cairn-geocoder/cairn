@@ -13,6 +13,7 @@ use rphonetic::DoubleMetaphone;
 use serde::{Deserialize, Serialize};
 
 pub mod semantic;
+pub mod trigram;
 use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, FuzzyTermQuery, Occur, Query, QueryParser, TermQuery};
@@ -294,6 +295,12 @@ struct TextSchema {
     /// `Müller` ↔ `Mueller`, `Smith` ↔ `Smyth`, `Catherine` ↔
     /// `Katherine` would otherwise miss.
     name_phonetic: Field,
+    /// Phase 7a — character-trigram pre-filter for fuzzy matching.
+    /// STRING multi-value field (one term per distinct boundary-padded
+    /// trigram of every name variant). Used as a `Should`-OR clause
+    /// `Must`-AND'd with the `FuzzyTermQuery` so docs sharing zero
+    /// trigrams with the query never reach the BM25 scoring stage.
+    name_trigrams: Field,
     /// Packed `DIM*4` little-endian f32 lexical-vector embedding
     /// of the place's primary name. STORED only — never indexed,
     /// since cosine ranking happens on the candidate set after
@@ -340,6 +347,9 @@ impl TextSchema {
         // need to echo encoded codes back; only used as a query
         // pivot. Indexed to support TermQuery lookups.
         let name_phonetic = sb.add_text_field("name_phonetic", STRING);
+        // Phase 7a — char-trigram pre-filter. STRING (whole-token,
+        // no analyzer); the indexer feeds pre-extracted trigrams.
+        let name_trigrams = sb.add_text_field("name_trigrams", STRING);
         // Lexical-vector embedding: DIM*4 packed bytes per place,
         // STORED only (no indexing). The cosine rerank reads it on
         // the candidate set after BM25, so this stays out of the
@@ -365,6 +375,7 @@ impl TextSchema {
             lang_codes,
             categories,
             name_phonetic,
+            name_trigrams,
             name_vec,
         }
     }
@@ -460,6 +471,8 @@ where
         let mut langs_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut phonetic_seen: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
+        let mut trigrams_seen: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         for n in &place.names {
             doc.add_text(schema.name, &n.value);
             doc.add_text(schema.name_prefix, &n.value);
@@ -477,12 +490,22 @@ where
                     phonetic_seen.insert(code);
                 }
             }
+            // Phase 7a — char-trigram pre-filter. Aggregate distinct
+            // trigrams across every name variant so the fuzzy
+            // pre-filter survives translation drift (`Munich` ↔
+            // `München` ↔ `Monaco di Baviera`).
+            for tg in trigram::extract_indexed(&n.value) {
+                trigrams_seen.insert(tg);
+            }
             if !n.lang.is_empty() {
                 langs_seen.insert(n.lang.clone());
             }
         }
         for code in phonetic_seen {
             doc.add_text(schema.name_phonetic, &code);
+        }
+        for tg in trigrams_seen {
+            doc.add_text(schema.name_trigrams, &tg);
         }
         for lang in langs_seen {
             doc.add_text(schema.lang_codes, &lang);
@@ -776,7 +799,43 @@ impl TextIndex {
             };
             clauses.push((occur, q));
         }
-        Ok(Box::new(BooleanQuery::new(clauses)))
+        let fuzzy_query: Box<dyn Query> = Box::new(BooleanQuery::new(clauses));
+
+        // Phase 7a — char-trigram pre-filter. Adds a `Must` clause
+        // requiring at least one query trigram to match the doc's
+        // `name_trigrams` field, so docs sharing zero trigrams with
+        // the query never reach BM25 scoring. Bypassed for queries
+        // shorter than `MIN_QUERY_LEN_FOR_FILTER` (too few trigrams
+        // to avoid false negatives on edit-distance-1 typos).
+        if let Some(filter) = self.build_trigram_prefilter(query) {
+            return Ok(Box::new(BooleanQuery::new(vec![
+                (Occur::Must, fuzzy_query),
+                (Occur::Must, filter),
+            ])));
+        }
+        Ok(fuzzy_query)
+    }
+
+    /// Build the trigram pre-filter clause for a query string.
+    /// Returns `None` when the query is too short to filter safely
+    /// or when no trigrams could be extracted.
+    fn build_trigram_prefilter(&self, query: &str) -> Option<Box<dyn Query>> {
+        if query.chars().count() < trigram::MIN_QUERY_LEN_FOR_FILTER {
+            return None;
+        }
+        let trigrams = trigram::extract_query(query);
+        if trigrams.is_empty() {
+            return None;
+        }
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(trigrams.len());
+        for tg in trigrams {
+            let term = Term::from_field_text(self.schema.name_trigrams, &tg);
+            clauses.push((
+                Occur::Should,
+                Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
+            ));
+        }
+        Some(Box::new(BooleanQuery::new(clauses)))
     }
 
     /// When `phonetic=true` and the query produces non-empty
