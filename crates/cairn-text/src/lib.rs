@@ -12,6 +12,7 @@ use cairn_place::{Coord, Place, PlaceKind};
 use rphonetic::DoubleMetaphone;
 use serde::{Deserialize, Serialize};
 
+pub mod edit;
 pub mod semantic;
 pub mod trigram;
 use std::path::Path;
@@ -676,6 +677,14 @@ impl TextIndex {
         if matches!(opts.mode, SearchMode::Search) {
             apply_exact_name_boost(&mut hits, trimmed);
         }
+        // Phase 7a-N — Myers bit-parallel Levenshtein boost. Only
+        // fires when fuzzy matching produced > 1 hit AND the query
+        // length is in the Myers fast-path range. Pulls candidates
+        // closer to the query in edit-distance space without
+        // disturbing exact / population / lang scoring.
+        if matches!(opts.mode, SearchMode::Search) && opts.fuzzy > 0 && hits.len() > 1 {
+            apply_edit_distance_boost(&mut hits, trimmed);
+        }
         apply_population_boost(&mut hits);
         if let Some(lang) = opts.prefer_lang.as_deref() {
             apply_lang_preference_boost(&mut hits, lang);
@@ -1043,6 +1052,38 @@ fn apply_exact_name_boost(hits: &mut [Hit], query: &str) {
                 ex.exact_match_boost = EXACT_MATCH_BOOST;
             }
         }
+    }
+}
+
+/// Phase 7a-N — multiplicative score boost based on Myers bit-parallel
+/// Levenshtein edit distance between (folded) query and (folded) hit
+/// name. The boost decays linearly from `EDIT_DIST_BOOST_MAX` at zero
+/// distance down to `1.0` (no boost) at `EDIT_DIST_NEUTRAL` and beyond.
+///
+/// Only fires when the candidate set is fuzzy-matched (otherwise the
+/// pre-existing exact-match boost already covers the relevant cases).
+/// `fuzzy=0` skips the rerank entirely; for short queries we also bail
+/// because edit-distance scaling on 2-3 char names is degenerate.
+const EDIT_DIST_BOOST_MAX: f32 = 1.6;
+const EDIT_DIST_NEUTRAL: f32 = 4.0;
+
+fn apply_edit_distance_boost(hits: &mut [Hit], query: &str) {
+    let q = fold_for_compare(query);
+    if q.chars().count() < 4 {
+        return;
+    }
+    for h in hits.iter_mut() {
+        let folded_name = fold_for_compare(&h.name);
+        if folded_name.is_empty() {
+            continue;
+        }
+        let dist = edit::edit_distance(&q, &folded_name) as f32;
+        if dist >= EDIT_DIST_NEUTRAL {
+            continue;
+        }
+        let t = (EDIT_DIST_NEUTRAL - dist) / EDIT_DIST_NEUTRAL;
+        let boost = 1.0 + (EDIT_DIST_BOOST_MAX - 1.0) * t;
+        h.score *= boost;
     }
 }
 
