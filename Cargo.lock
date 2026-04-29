@@ -452,8 +452,10 @@ dependencies = [
  "cairn-tile",
  "geo",
  "geo-types",
+ "memmap2 0.9.10",
  "osmpbf",
  "rayon",
+ "tempfile",
  "thiserror 1.0.69",
  "tracing",
 ]

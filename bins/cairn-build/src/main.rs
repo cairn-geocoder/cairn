@@ -29,21 +29,36 @@ enum NodeCacheArg {
     Inline,
     #[value(name = "sorted-vec")]
     SortedVec,
+    Flatnode,
 }
 
 impl NodeCacheArg {
     /// Resolve `Auto` against the PBF size on disk. ≤ 5 GB uses
-    /// inline; larger inputs use sorted-vec.
-    fn resolve(self, pbf_path: &Path) -> cairn_import_osm::NodeCacheStrategy {
+    /// inline, 5-30 GB sorted-vec, > 30 GB flatnode.
+    fn resolve(
+        self,
+        pbf_path: &Path,
+        flatnode_path: Option<&Path>,
+    ) -> cairn_import_osm::NodeCacheStrategy {
         match self {
             NodeCacheArg::Inline => cairn_import_osm::NodeCacheStrategy::Inline,
             NodeCacheArg::SortedVec => cairn_import_osm::NodeCacheStrategy::SortedVec,
+            NodeCacheArg::Flatnode => cairn_import_osm::NodeCacheStrategy::Flatnode {
+                path: flatnode_path
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| default_flatnode_path(pbf_path)),
+            },
             NodeCacheArg::Auto => {
-                let size = std::fs::metadata(pbf_path)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                const THRESHOLD: u64 = 5 * 1024 * 1024 * 1024;
-                if size > THRESHOLD {
+                let size = std::fs::metadata(pbf_path).map(|m| m.len()).unwrap_or(0);
+                const SORTED_VEC_THRESHOLD: u64 = 5 * 1024 * 1024 * 1024;
+                const FLATNODE_THRESHOLD: u64 = 30 * 1024 * 1024 * 1024;
+                if size > FLATNODE_THRESHOLD {
+                    cairn_import_osm::NodeCacheStrategy::Flatnode {
+                        path: flatnode_path
+                            .map(Path::to_path_buf)
+                            .unwrap_or_else(|| default_flatnode_path(pbf_path)),
+                    }
+                } else if size > SORTED_VEC_THRESHOLD {
                     cairn_import_osm::NodeCacheStrategy::SortedVec
                 } else {
                     cairn_import_osm::NodeCacheStrategy::Inline
@@ -51,6 +66,18 @@ impl NodeCacheArg {
             }
         }
     }
+}
+
+/// Where to drop the flatnode file when the operator didn't pick a
+/// path. Sits next to the PBF as `<pbf-stem>.flatnode.bin`.
+fn default_flatnode_path(pbf_path: &Path) -> PathBuf {
+    let mut p = pbf_path.to_path_buf();
+    if p.extension().is_some() {
+        p.set_extension("flatnode.bin");
+    } else {
+        p.push("flatnode.bin");
+    }
+    p
 }
 
 #[derive(Parser, Debug)]
@@ -105,14 +132,23 @@ enum Command {
         #[arg(long, default_value_t = 0.0)]
         simplify_meters: f64,
         /// OSM node-coord cache strategy. `auto` (default) picks
-        /// `inline` for inputs ≤ 5 GB and `sorted-vec` for larger
-        /// inputs. `inline` keeps the legacy HashMap (fastest lookup,
-        /// ~48 B/entry). `sorted-vec` runs a pre-filter pass over
-        /// ways + relations and packs only referenced nodes into a
-        /// sorted Vec of i32-quantized coords (~16 B/entry, 3× less
-        /// RAM, lossless at OSM coord precision).
+        /// `inline` for inputs ≤ 5 GB, `sorted-vec` for 5–30 GB, and
+        /// `flatnode` above 30 GB. `inline` keeps the legacy HashMap
+        /// (fastest lookup, ~48 B/entry). `sorted-vec` packs i32-
+        /// quantized coords into a binary-searchable Vec (~16 B/entry,
+        /// 3× less RAM, lossless at OSM coord precision). `flatnode`
+        /// writes a disk-backed mmap'd dense `[i32;2]` array indexed
+        /// by node id; RSS stays bounded by the kernel's working set
+        /// regardless of input size, at the cost of one extra
+        /// max-id scan up front.
         #[arg(long, default_value = "auto")]
         node_cache: NodeCacheArg,
+        /// Override where the flatnode file lands when
+        /// `--node-cache flatnode` is in effect (or when `auto` picks
+        /// flatnode). Defaults to `<pbf-stem>.flatnode.bin` next to
+        /// the input PBF.
+        #[arg(long)]
+        flatnode_path: Option<PathBuf>,
     },
     /// Extract a regional bundle from an existing planet bundle.
     Extract {
@@ -278,6 +314,7 @@ fn main() -> Result<()> {
             source_priority,
             simplify_meters,
             node_cache,
+            flatnode_path,
         } => cmd_build(BuildArgs {
             osm,
             wof,
@@ -295,6 +332,7 @@ fn main() -> Result<()> {
                 TileCompression::Zstd
             },
             node_cache,
+            flatnode_path,
         }),
         Command::Extract {
             bundle,
@@ -725,6 +763,7 @@ struct BuildArgs {
     source_priority: Vec<cairn_place::SourceKind>,
     simplify_tolerance_deg: f64,
     node_cache: NodeCacheArg,
+    flatnode_path: Option<PathBuf>,
 }
 
 /// Convert a simplification tolerance from meters into degrees of
@@ -772,7 +811,9 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     let mut sources: Vec<SourceVersion> = Vec::new();
 
     if let Some(osm_path) = args.osm.as_ref() {
-        let node_cache_strategy = args.node_cache.resolve(osm_path);
+        let node_cache_strategy = args
+            .node_cache
+            .resolve(osm_path, args.flatnode_path.as_deref());
         tracing::info!(
             path = %osm_path.display(),
             node_cache = ?node_cache_strategy,

@@ -20,6 +20,8 @@
 //!      ways → relations, so ways are always available when relations
 //!      arrive).
 
+pub mod flatnode;
+
 use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
 use cairn_spatial::{AdminFeature, AdminLayer};
 use cairn_tile::{Level, TileCoord};
@@ -27,7 +29,7 @@ use geo_types::{LineString, MultiPolygon, Polygon};
 use osmpbf::{BlobDecode, BlobReader, DenseNode, Element, ElementReader, Node, Relation, Way};
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::{debug, info};
 
@@ -38,8 +40,10 @@ use tracing::{debug, info};
 /// ~430 M nodes × 48 B/HashMap-entry ≈ 21 GB peak, matches the observed
 /// 22 GB). Switching to a sorted `Vec` of `(id, [i32;2])` cuts
 /// per-entry overhead to 16 B (3× smaller) while keeping lookup at
-/// O(log n).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// O(log n). [`Self::Flatnode`] takes the working set off-heap entirely
+/// — RSS ends up bounded by the kernel's mmap working set, regardless
+/// of input size.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum NodeCacheStrategy {
     /// `HashMap<i64, [f64; 2]>`. ~48 B/entry. Fastest lookup, highest
     /// RAM footprint. Default for inputs ≤ 5 GB.
@@ -49,8 +53,17 @@ pub enum NodeCacheStrategy {
     /// per entry; coords quantized to `degrees * 1e7` (i32, ~1 cm
     /// precision — lossless at OSM coord precision). Includes a
     /// reference pre-filter pass that drops nodes not used by any
-    /// way or relation. Default for inputs > 5 GB.
+    /// way or relation. Default for 5–30 GB inputs.
     SortedVec,
+    /// Disk-backed mmap'd dense `[i32; 2]` array indexed by node_id,
+    /// stored at `path`. RSS bounded by the kernel mmap working set
+    /// instead of by total node count. The on-disk file size is
+    /// `16 + (max_node_id + 1) * 8` bytes — for planet that's
+    /// ~72 GB but the resident set typically stays under 4 GB.
+    /// Default for inputs > 30 GB.
+    Flatnode {
+        path: PathBuf,
+    },
 }
 
 /// Quantize a `(lon, lat)` pair to a pair of i32 representing
@@ -76,6 +89,8 @@ pub enum ImportError {
     Osm(#[from] osmpbf::Error),
     #[error("placeid: {0}")]
     PlaceId(#[from] cairn_place::PlaceIdError),
+    #[error("flatnode: {0}")]
+    Flatnode(#[from] flatnode::FlatnodeError),
 }
 
 #[derive(Default)]
@@ -125,6 +140,9 @@ enum NodeCoordsInner {
     Inline(HashMap<i64, [f64; 2]>),
     /// Sorted by id ascending. Coords are i32 quantized.
     SortedVec(Vec<(i64, [i32; 2])>),
+    /// Disk-backed mmap'd flatnode reader. Lookup is `O(1)` slot
+    /// access; RSS scales with working-set, not file size.
+    Flatnode(flatnode::FlatnodeReader),
 }
 
 impl NodeCoords {
@@ -159,15 +177,20 @@ impl NodeCoords {
         }
     }
 
-    /// Insert into an inline-strategy cache. Panics on sorted-vec.
+    /// Wrap a flatnode reader.
+    pub fn from_flatnode(reader: flatnode::FlatnodeReader) -> Self {
+        NodeCoords {
+            inner: NodeCoordsInner::Flatnode(reader),
+        }
+    }
+
+    /// Insert into an inline-strategy cache. Panics on other strategies.
     pub fn insert_inline(&mut self, id: i64, lonlat: [f64; 2]) {
         match &mut self.inner {
             NodeCoordsInner::Inline(m) => {
                 m.insert(id, lonlat);
             }
-            NodeCoordsInner::SortedVec(_) => {
-                panic!("insert_inline on sorted-vec strategy")
-            }
+            _ => panic!("insert_inline on non-inline strategy"),
         }
     }
 
@@ -178,9 +201,7 @@ impl NodeCoords {
             NodeCoordsInner::SortedVec(v) => {
                 v.push((id, quantize_coord(lonlat)));
             }
-            NodeCoordsInner::Inline(_) => {
-                panic!("push_sorted on inline strategy")
-            }
+            _ => panic!("push_sorted on non-sorted-vec strategy"),
         }
     }
 
@@ -202,6 +223,7 @@ impl NodeCoords {
                 .binary_search_by_key(&id, |(k, _)| *k)
                 .ok()
                 .map(|idx| dequantize_coord(v[idx].1)),
+            NodeCoordsInner::Flatnode(r) => r.get(id),
         }
     }
 
@@ -209,6 +231,10 @@ impl NodeCoords {
         match &self.inner {
             NodeCoordsInner::Inline(m) => m.len(),
             NodeCoordsInner::SortedVec(v) => v.len(),
+            // Flatnode reports the addressable slot count, not the
+            // populated count (linear scan). Most callers use this
+            // for diagnostics only.
+            NodeCoordsInner::Flatnode(r) => r.slot_count() as usize,
         }
     }
 
@@ -216,11 +242,13 @@ impl NodeCoords {
         self.len() == 0
     }
 
-    /// Approximate heap usage of the cache, in bytes.
+    /// Approximate heap usage of the cache, in bytes. Returns 0 for
+    /// flatnode (the storage is on disk, not heap).
     pub fn approx_heap_bytes(&self) -> usize {
         match &self.inner {
             NodeCoordsInner::Inline(m) => m.capacity() * 48,
             NodeCoordsInner::SortedVec(v) => v.capacity() * 16,
+            NodeCoordsInner::Flatnode(_) => 0,
         }
     }
 }
@@ -559,6 +587,7 @@ fn load_node_caches(
     match strategy {
         NodeCacheStrategy::Inline => load_node_caches_inline(pbf_path),
         NodeCacheStrategy::SortedVec => load_node_caches_sorted_vec(pbf_path),
+        NodeCacheStrategy::Flatnode { path } => load_node_caches_flatnode(pbf_path, &path),
     }
 }
 
@@ -743,6 +772,99 @@ fn load_node_caches_sorted_vec(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs
     };
     nc.finalize_sorted();
     Ok((nc, addrs))
+}
+
+/// Find the largest `node_id` in the PBF. Parallel scan, reduce by max.
+fn scan_max_node_id(pbf_path: &Path) -> Result<i64, ImportError> {
+    let blob_reader = BlobReader::from_path(pbf_path)?;
+    blob_reader
+        .par_bridge()
+        .map(|blob| -> Result<i64, ImportError> {
+            let blob = blob?;
+            match blob.decode()? {
+                BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => Ok(0),
+                BlobDecode::OsmData(block) => {
+                    let mut m = 0i64;
+                    for elem in block.elements() {
+                        match elem {
+                            Element::Node(n) => {
+                                if n.id() > m {
+                                    m = n.id();
+                                }
+                            }
+                            Element::DenseNode(n) => {
+                                if n.id() > m {
+                                    m = n.id();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok(m)
+                }
+            }
+        })
+        .reduce(
+            || Ok(0),
+            |a, b| match (a, b) {
+                (Ok(aa), Ok(bb)) => Ok(aa.max(bb)),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            },
+        )
+}
+
+/// Build a flatnode file at `out_path` covering every node in the
+/// PBF, then return a [`FlatnodeReader`]-backed [`NodeCoords`].
+///
+/// The build path runs sequentially through the PBF (after a parallel
+/// max-id scan) — `osmpbf` block decompression is the dominant cost
+/// regardless, and a serial writer keeps the mmap-write path
+/// straightforward. At planet scale the wall-clock is similar to the
+/// HashMap path; the win is RSS, not throughput.
+fn load_node_caches_flatnode(
+    pbf_path: &Path,
+    out_path: &Path,
+) -> Result<(NodeCoords, NodeAddrs), ImportError> {
+    info!("OSM PBF flatnode pass 0: scan max node id");
+    let max_id = scan_max_node_id(pbf_path)?;
+    info!(
+        max_node_id = max_id,
+        flatnode_file_bytes = flatnode::flatnode_file_size(max_id),
+        out_path = %out_path.display(),
+        "max id resolved; allocating flatnode"
+    );
+
+    let mut writer = flatnode::FlatnodeWriter::create(out_path, max_id)?;
+    let mut addrs: NodeAddrs = HashMap::new();
+
+    // Sequential write pass — node-write to mmap'd slot is cheap, and
+    // ElementReader::for_each handles the parallel decompression
+    // upstream while serializing handler invocation.
+    let reader = ElementReader::from_path(pbf_path)?;
+    reader.for_each(|element| match element {
+        Element::Node(n) => {
+            writer.set(n.id(), [n.lon(), n.lat()]);
+            if let Some(addr) = node_addr_from_tags(n.tags()) {
+                addrs.insert(n.id(), addr);
+            }
+        }
+        Element::DenseNode(n) => {
+            writer.set(n.id(), [n.lon(), n.lat()]);
+            if let Some(addr) = node_addr_from_tags(n.tags()) {
+                addrs.insert(n.id(), addr);
+            }
+        }
+        _ => {}
+    })?;
+
+    let final_path = writer.finalize()?;
+    let reader = flatnode::FlatnodeReader::open(&final_path)?;
+    info!(
+        flatnode_path = %final_path.display(),
+        slot_count = reader.slot_count(),
+        "flatnode finalized"
+    );
+    Ok((NodeCoords::from_flatnode(reader), addrs))
 }
 
 fn node_addr_from_tags<'a>(tags: impl IntoIterator<Item = (&'a str, &'a str)>) -> Option<NodeAddr> {

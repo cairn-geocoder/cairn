@@ -5,8 +5,9 @@
 # usage: ./cairn/build.sh [country] [node-cache-strategy]
 #   country: switzerland (default), germany, france, italy, austria,
 #            united-kingdom, spain, netherlands, brazil, ...
-#   node-cache: auto (default) | inline | sorted-vec
-#               'auto' picks inline for ≤ 5 GB PBF, sorted-vec above.
+#   node-cache: auto (default) | inline | sorted-vec | flatnode
+#               'auto' picks inline ≤ 5 GB PBF, sorted-vec for
+#               5–30 GB, flatnode above 30 GB.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"

@@ -18,7 +18,11 @@ cairn-tile = { workspace = true }
 cairn-spatial = { workspace = true }
 geo = { workspace = true }
 geo-types = { workspace = true }
+memmap2 = { workspace = true }
 osmpbf = { workspace = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
