@@ -1,0 +1,26 @@
+{
+  "engine": "cairn",
+  "queries": 10000,
+  "errors": 0,
+  "total_seconds": 220.733386,
+  "rps": 45.303522866269084,
+  "latency_ms": {
+    "p50": 0.805,
+    "p90": 1.508,
+    "p95": 2.173,
+    "p99": 3.706,
+    "max": 7.517,
+    "mean": 1.0459199000000001
+  },
+  "rss_bytes": {
+    "cold": 98844672,
+    "hot": 392118272
+  },
+  "disk_bytes": 1751121920,
+  "country": "germany",
+  "arch": "arm64",
+  "host": "Apple M-series, 36 GB",
+  "build_seconds": 633,
+  "peak_build_rss_bytes": 22048931840,
+  "pbf_bytes": 4743302661
+}

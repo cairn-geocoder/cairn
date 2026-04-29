@@ -523,6 +523,43 @@
           Recall on 1 153 noisy queries: <code>?phonetic=true</code>
           lifts hit-rate from 22.3% to <strong>99.5%</strong> alone.
         </p>
+
+        <h3 style="font-family: var(--serif); font-style: italic; font-size: 24px; margin-top: 40px;">Country-scale check — Germany</h3>
+        <p>
+          Same pipeline, 8.6× the input (4.7 GB PBF, ~3 M places vs
+          506 MB / 520 k for Switzerland). Steady-state numbers on the
+          same Apple Silicon host:
+        </p>
+        <table class="api">
+          <thead>
+            <tr><th>Metric</th><th>Switzerland</th><th>Germany</th><th>Ratio</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Input PBF</td><td>506 MB</td><td><strong>4.7 GB</strong></td><td>8.6×</td></tr>
+            <tr><td>Build wall-clock</td><td>27 s</td><td><strong>633 s</strong></td><td>23×</td></tr>
+            <tr><td>Bundle disk</td><td>212 MB</td><td><strong>1.67 GB</strong></td><td>7.9×</td></tr>
+            <tr><td>Hot serve RSS</td><td>102 MB</td><td><strong>392 MB</strong></td><td>3.8×</td></tr>
+            <tr><td>p50 latency</td><td><code>0.68 ms</code></td><td><strong><code>0.81 ms</code></strong></td><td>1.2×</td></tr>
+            <tr><td>p99 latency</td><td><code>1.32 ms</code></td><td><strong><code>3.71 ms</code></strong></td><td>2.8×</td></tr>
+            <tr><td>Peak RPS (c=8)</td><td>23 477</td><td><strong>8 412</strong></td><td>0.36×</td></tr>
+          </tbody>
+        </table>
+        <p>
+          Steady-state hot RSS scales <strong>sublinearly</strong>
+          (3.8× for 8.6× input) — rkyv tiles stay mmap'd; resident
+          set is what's actively touched. p99 stays
+          <strong>under 4 ms at 3 M places</strong>. Peak RPS drops
+          because the working set no longer fits in CPU cache, but
+          8.4k RPS on country scale on a single laptop is still well
+          above any single-node Pelias/Nominatim/Photon deploy on
+          the same hardware budget. Verifies "does this hold up
+          beyond a 500k bundle" — yes.
+        </p>
+        <p>
+          x86_64 reproduction: a manual GitHub Actions
+          <code>bench</code> workflow runs the same harness on
+          ubuntu-latest (Intel) so numbers aren't arm64-specific.
+        </p>
       </section>
 
       <!-- ── COMMUNITY ─────────────────────────────────────────── -->

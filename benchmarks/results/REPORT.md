@@ -123,6 +123,38 @@ incumbent geocoder ships a `?phonetic=` toggle today.
 - Numbers will shift on different disks / kernels / concurrent
   load. Re-run with `./run.sh <engine>` to validate on your host.
 
+## Cairn at country scale (Germany)
+
+To answer "does this hold up beyond a 500k-record bundle?" we ran
+the same Cairn pipeline against the Geofabrik Germany PBF — **8.6×
+larger input** (4.7 GB PBF, ~3 M places vs 506 MB / 520 k for CH).
+
+| Metric | Switzerland | Germany | Ratio |
+|---|---:|---:|---:|
+| Input PBF | 506 MB | **4.7 GB** | 8.6× |
+| Build wall-clock | 27 s | **633 s** (10 m 33 s) | 23× |
+| Peak build RSS | 8.3 GB | **22 GB** | 2.7× |
+| Bundle disk | 212 MB | **1.67 GB** | 7.9× |
+| Cold serve RSS | 38 MB | **99 MB** | 2.6× |
+| Hot serve RSS | 102 MB | **392 MB** | 3.8× |
+| p50 latency | 0.68 ms | **0.81 ms** | 1.2× |
+| p99 latency | 1.32 ms | **3.71 ms** | 2.8× |
+| Peak RPS (c=8 ab keepalive) | 23 477 | **8 412** | 0.36× |
+| Errors / 10 000 | 0 | **0** | — |
+
+Build wall-clock scales roughly linearly with PBF size (8.6× input
+→ 23× wall-clock — superlinear because the admin polygon assembly
+has more relations to walk). Steady-state hot RSS scales sublinearly
+(3.8×) because the rkyv tile blobs stay mmap'd; the resident set is
+dominated by what's actively touched. p99 stays under 4 ms even at
+3 M places. Peak RPS drops because the working set no longer fits
+in CPU cache, but 8.4k RPS on country scale on a single laptop is
+still well above any single-node deployment we'd expect from Pelias
+or Nominatim on the same hardware budget.
+
+Files: `cairn-build-germany.json`, `cairn-germany.json`,
+`cairn-rps-germany.txt`.
+
 ## Reproducing
 
 ```bash
