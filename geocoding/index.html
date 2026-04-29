@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cairn — Geocoding for institutions and operators</title>
+  <meta name="description" content="What geocoding is, why it matters, and what Cairn offers organizations that need an offline, self-hosted, sovereignty-respecting alternative to Google / Mapbox / HERE." />
+  <link rel="icon" type="image/svg+xml" href="../assets/cairn-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../site.css" />
+  <link rel="stylesheet" href="geocoding.css" />
+</head>
+<body>
+
+  <header class="topnav">
+    <div class="topnav-inner">
+      <a class="brand" href="../">
+        <img class="mk" src="../assets/cairn-photoreal.svg" alt="" />
+        <span>cairn<span class="dot">.</span></span>
+      </a>
+      <nav>
+        <a href="../#hero">Docs</a>
+        <a href="../#install">Install</a>
+        <a class="active" href="./">Geocoding</a>
+        <a href="../algorithms/">Algorithms</a>
+        <a href="../comparison/">Comparison</a>
+        <a href="../demo/">Live demo</a>
+      </nav>
+      <div class="right">
+        <span class="ver-pill">v0.1.0 · beta</span>
+        <a class="gh-link" href="https://github.com/cairn-geocoder/cairn">★ GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="geo-page">
+
+    <section class="geo-hero">
+      <div class="geo-hero-inner">
+        <div class="geo-eyebrow">For organizations + institutions</div>
+        <h1>Geocoding,<br><span class="geo-italic">on your own terms.</span></h1>
+        <p class="geo-lede">
+          Every map app, every delivery, every emergency dispatch, every
+          property listing, every voter registration starts with the same
+          question: <em>"Where is this place?"</em> Today most teams answer
+          it by sending the address to <strong>Google's, Mapbox's, or HERE's</strong>
+          servers — and accepting the cost, the lock-in, and the data
+          exposure that comes with it. Cairn is what you reach for when
+          you'd rather not.
+        </p>
+        <div class="geo-hero-cta">
+          <a class="geo-btn" href="../#install">Install →</a>
+          <a class="geo-btn-ghost" href="../comparison/">vs Pelias / Photon / Nominatim</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 1. WHAT IS GEOCODING ──────────────────────────────────── -->
+    <section class="geo-section" id="what">
+      <div class="geo-section-num">01</div>
+      <h2>What is geocoding, exactly?</h2>
+      <p>
+        Geocoding is the translation layer between human-readable place
+        descriptions ("Place de la Concorde, Paris", "8044 Zürich",
+        "Heidelberg University Library") and machine-friendly coordinates
+        (latitude / longitude, polygon shapes, postal codes). It runs in
+        five flavors:
+      </p>
+
+      <div class="geo-flavors">
+        <article class="flavor">
+          <div class="flavor-num">i.</div>
+          <h3>Forward</h3>
+          <p>
+            Address or place name → coordinates + canonical record.
+            <em>"Vaduz Castle"</em> → <code>(47.142, 9.523)</code>,
+            country = Liechtenstein, kind = castle.
+          </p>
+        </article>
+        <article class="flavor">
+          <div class="flavor-num">ii.</div>
+          <h3>Reverse</h3>
+          <p>
+            Coordinates → containing admin chain + nearest features.
+            <code>(47.142, 9.523)</code> → "Vaduz, Oberland,
+            Liechtenstein" + nearest road, POI, address.
+          </p>
+        </article>
+        <article class="flavor">
+          <div class="flavor-num">iii.</div>
+          <h3>Autocomplete</h3>
+          <p>
+            Partial input → ranked suggestions, keystroke-grain. The
+            search box on every shipping form, every map UI, every
+            store-locator page.
+          </p>
+        </article>
+        <article class="flavor">
+          <div class="flavor-num">iv.</div>
+          <h3>Structured</h3>
+          <p>
+            Field-by-field ("road = X, city = Y, country = Z") → best
+            match. Used when the upstream system already separates
+            components — payment forms, CRM imports, government records.
+          </p>
+        </article>
+        <article class="flavor">
+          <div class="flavor-num">v.</div>
+          <h3>Parsing</h3>
+          <p>
+            Free-text address → structured components
+            (<code>house_number</code>, <code>road</code>,
+            <code>postcode</code>, <code>city</code>). Pre-step for
+            normalization, deduplication, validation.
+          </p>
+        </article>
+      </div>
+
+      <p>
+        Sounds boring. Powers everything from Uber's pickup field to a
+        national census's address index. A geocoder that's slow, wrong,
+        or unavailable is a geocoder that quietly costs the rest of the
+        product roadmap.
+      </p>
+    </section>
+
+    <!-- ── 2. WHY IT MATTERS ─────────────────────────────────────── -->
+    <section class="geo-section" id="why">
+      <div class="geo-section-num">02</div>
+      <h2>Why it matters — by industry</h2>
+      <p class="section-lede">
+        Geocoding is invisible until it isn't. These are the moments
+        where the choice between "send the address to Google" and "run
+        the geocoder we own" stops being a tooling preference and starts
+        being a strategic decision.
+      </p>
+
+      <div class="geo-industries">
+        <article class="industry">
+          <div class="industry-icon" aria-hidden="true">📦</div>
+          <h3>Logistics &amp; delivery</h3>
+          <p>
+            Last-mile cost is dominated by stop-density × per-stop time.
+            A geocoder that returns the wrong rooftop or the closest
+            crossroads instead of the building entrance burns minutes
+            per stop and fuels customer-support tickets. At fleet scale,
+            <strong>10 ms × 200 K calls/day = 33 minutes</strong> of
+            hot-path latency per dispatcher.
+          </p>
+        </article>
+
+        <article class="industry">
+          <div class="industry-icon" aria-hidden="true">🏛️</div>
+          <h3>Public sector &amp; emergency dispatch</h3>
+          <p>
+            911 / 112 dispatch needs a reverse geocode in under a
+            second on a constrained network, against a vetted
+            authoritative dataset (national address registry, not
+            "whatever Google has"). Air-gapped or sovereignty-bounded
+            networks can't call the public cloud. <strong>Cairn ships a
+            single static binary that runs on the dispatch box.</strong>
+          </p>
+        </article>
+
+        <article class="industry">
+          <div class="industry-icon" aria-hidden="true">🏥</div>
+          <h3>Healthcare &amp; insurance</h3>
+          <p>
+            Patient addresses, claim locations, provider directories —
+            all subject to data-residency rules (HIPAA, GDPR,
+            schrems II, sectoral). Sending an address to a US-hosted
+            API for resolution can be the breach event. Self-hosted
+            geocoding keeps PHI on-premise.
+          </p>
+        </article>
+
+        <article class="industry">
+          <div class="industry-icon" aria-hidden="true">🏗️</div>
+          <h3>Real estate &amp; property tech</h3>
+          <p>
+            Listings, comparables, parcel boundaries, school catchments,
+            flood zones. Every overlay needs a coordinate. Pricing
+            models depend on consistent geocoding across millions of
+            historical records — outsourced APIs change ranking and
+            coverage without notice, breaking time-series analysis.
+          </p>
+        </article>
+
+        <article class="industry">
+          <div class="industry-icon" aria-hidden="true">🛰️</div>
+          <h3>Telecom &amp; utilities</h3>
+          <p>
+            Coverage maps, outage notifications, service requests, smart
+            meter assignment. Operators run their own GIS — the
+            geocoder needs to integrate with internal datasets (cell
+            towers, fiber routes, substation polygons) that no public
+            API has ever heard of.
+          </p>
+        </article>
+
+        <article class="industry">
+          <div class="industry-icon" aria-hidden="true">🛒</div>
+          <h3>Retail &amp; storefront search</h3>
+          <p>
+            Store locators, BOPIS pickup, curbside delivery. Every
+            "find a store near me" is a forward + reverse geocode pair.
+            High-traffic days scale per-call billing into surprise
+            invoices that the CFO didn't sign off on.
+          </p>
+        </article>
+
+        <article class="industry">
+          <div class="industry-icon" aria-hidden="true">📊</div>
+          <h3>Banking &amp; risk</h3>
+          <p>
+            KYC address validation, AML location screening, fraud
+            scoring, branch routing, mortgage underwriting (flood / fire
+            / earthquake risk by parcel). Auditable, reproducible
+            geocoding is a regulatory requirement — auditors want to
+            know which version of which database returned which answer.
+          </p>
+        </article>
+
+        <article class="industry">
+          <div class="industry-icon" aria-hidden="true">🌍</div>
+          <h3>Aid &amp; humanitarian</h3>
+          <p>
+            Refugee camp logistics, disaster response, public-health
+            outreach. Often offline-first by necessity — bandwidth is
+            scarce, the cloud is down, OSM is the only ground truth.
+            <strong>A geocoder that runs on a rugged laptop in a
+            tent</strong> is the difference between a delivered shipment
+            and a stuck convoy.
+          </p>
+        </article>
+
+        <article class="industry">
+          <div class="industry-icon" aria-hidden="true">🔬</div>
+          <h3>Academia &amp; research</h3>
+          <p>
+            Reproducibility demands a frozen geocoder version. A paper
+            that says "we used Google's API in 2023" can't be replicated
+            in 2026 because Google's index moved on. A versioned,
+            content-hashed bundle pins the exact answers.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ── 3. THE HIDDEN COSTS ────────────────────────────────────── -->
+    <section class="geo-section geo-section-dark" id="costs">
+      <div class="geo-section-num">03</div>
+      <h2>The hidden costs of an incumbent.</h2>
+
+      <div class="cost-grid">
+        <article class="cost">
+          <h3>Per-call billing turns into surprise invoices.</h3>
+          <p>
+            Google's geocoding API is $5 / 1 000 calls. Mapbox is $0.75
+            / 1 000. Sounds small until autocomplete drives 200 calls
+            per filled form. A retail Black Friday spike, a viral
+            campaign, an integration bug, a misconfigured retry loop,
+            and the bill finds you.
+          </p>
+          <p class="cost-meta">
+            Cairn: zero per-call cost. The bill is the box you run it
+            on.
+          </p>
+        </article>
+
+        <article class="cost">
+          <h3>Vendor lock-in eats negotiating leverage.</h3>
+          <p>
+            Once a thousand integrations call <code>maps.googleapis.com</code>,
+            switching is a re-architecture. The vendor knows. Pricing
+            increases 30 % year-over-year and you have ninety days to
+            comply.
+          </p>
+          <p class="cost-meta">
+            Cairn: open-source MIT / Apache-2.0. Fork it. Ship it. Ten
+            years from now it still runs.
+          </p>
+        </article>
+
+        <article class="cost">
+          <h3>Data leaves the perimeter.</h3>
+          <p>
+            Every query — addresses of customers, patients, refugees,
+            voters, suspects — gets sent over TLS to a third-party log
+            you don't control. Subpoenas, breaches, government
+            requests, internal misuse. "Just metadata" is a useful
+            fiction until it isn't.
+          </p>
+          <p class="cost-meta">
+            Cairn: queries never leave the host. The geocoder runs in
+            your VPC, your cluster, your laptop.
+          </p>
+        </article>
+
+        <article class="cost">
+          <h3>Latency is a function of the WAN.</h3>
+          <p>
+            Even on a perfect day, a transatlantic round-trip is
+            ~120 ms before the API does any work. Inside a datacenter
+            with a local geocoder, p99 is microseconds. The difference
+            shows up in checkout abandonment, dispatcher reflex time,
+            and conversion funnels.
+          </p>
+          <p class="cost-meta">
+            Cairn: <code>p99 = 0.74 ms</code> on Switzerland-scale data
+            (<a href="../#benchmark">benchmark</a>).
+          </p>
+        </article>
+
+        <article class="cost">
+          <h3>Reproducibility is non-existent.</h3>
+          <p>
+            Hosted APIs ship continuous updates. The geocode you got
+            today is not necessarily the one you'll get in six months,
+            and the vendor offers no version pin. For audit trails,
+            scientific replication, and regulator submissions, that's
+            disqualifying.
+          </p>
+          <p class="cost-meta">
+            Cairn: every bundle ships with a blake3 manifest, an
+            ed25519 signature, and a CycloneDX SBOM.
+          </p>
+        </article>
+
+        <article class="cost">
+          <h3>The dataset doesn't fit your domain.</h3>
+          <p>
+            Google's index doesn't know about your internal sites,
+            non-public utility infrastructure, custom address aliases,
+            or yet-to-be-published street names. Adding them is
+            impossible.
+          </p>
+          <p class="cost-meta">
+            Cairn: bundle merges OSM + WhosOnFirst + OpenAddresses +
+            Geonames + <strong>your own CSV / PBF / WoF SPR</strong>.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ── 4. WHAT CAIRN OFFERS ───────────────────────────────────── -->
+    <section class="geo-section" id="offer">
+      <div class="geo-section-num">04</div>
+      <h2>What Cairn offers — operationally.</h2>
+
+      <div class="offer-grid">
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Single static binary</h3>
+          <p>
+            One file, one config flag, one bundle directory. Runs on a
+            Mac, a Hetzner box, an AWS Fargate task, a k3s pod, a
+            rugged ARM laptop. No Postgres, no Elasticsearch, no Java,
+            no Node.
+          </p>
+        </article>
+
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Airgap-first</h3>
+          <p>
+            The bundle is a directory you pre-build and copy in. No
+            outbound network calls at runtime. Required for sovereign
+            networks, classified environments, ships, embassies,
+            disaster zones.
+          </p>
+        </article>
+
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Sub-millisecond p99</h3>
+          <p>
+            Switzerland: <code>p99 = 0.74 ms</code>, peak
+            <code>57 554 RPS</code>, hot RSS <code>80 MB</code>. Every
+            query is mmap'd rkyv tile reads + tantivy term lookups —
+            no daemon round-trip, no DB query plan.
+          </p>
+        </article>
+
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Signed + auditable</h3>
+          <p>
+            Every bundle ships with a <code>manifest.toml</code>
+            carrying blake3 of every artifact, an ed25519 detached
+            signature, and a CycloneDX 1.5 SBOM. Pin a bundle ID in
+            your audit trail; reproduce the exact answer years later.
+          </p>
+        </article>
+
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Hot reload</h3>
+          <p>
+            <code>POST /admin/reload</code> swaps to a new bundle
+            without a process restart. Atomic ArcSwap-backed indices,
+            in-flight queries finish on the previous snapshot. K8s
+            rolling updates without rolling.
+          </p>
+        </article>
+
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Federation</h3>
+          <p>
+            <code>cairn-serve --bundles a/,b/,c/</code> shards a
+            planet across continents without standing up multiple
+            processes. Queries fan out, merge by score; PIP fans
+            out, merges finest-first.
+          </p>
+        </article>
+
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Custom data merge</h3>
+          <p>
+            Bundles ingest OSM + WhosOnFirst + OpenAddresses +
+            Geonames out of the box. Add your own CSV (internal
+            facilities, non-public infrastructure, custom aliases) and
+            re-build — it's one <code>cairn-build build</code> away.
+          </p>
+        </article>
+
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Time-aware queries</h3>
+          <p>
+            <code>?valid_at=YYYY</code> filters by OSM
+            <code>start_date</code> / <code>end_date</code>. Historical
+            geocoding for archives, journalism, longitudinal research.
+            No incumbent ships this.
+          </p>
+        </article>
+
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Pelias-compatible API</h3>
+          <p>
+            Drop-in shape for code that already calls Pelias —
+            <code>/v1/search</code>, <code>/v1/reverse</code>,
+            <code>/v1/structured</code>, <code>?text=</code>,
+            <code>?focus.point.lon</code>. Migration is usually a
+            DNS swap.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ── 5. WHO IT'S FOR ────────────────────────────────────────── -->
+    <section class="geo-section" id="audience">
+      <div class="geo-section-num">05</div>
+      <h2>Where Cairn fits.</h2>
+
+      <table class="geo-fit">
+        <thead>
+          <tr>
+            <th>If you are…</th>
+            <th>Cairn is the right fit when…</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Government / EU institution</th>
+            <td>Data sovereignty + air-gap + reproducibility +
+              auditable supply chain are non-negotiable.</td>
+          </tr>
+          <tr>
+            <th>Bank / insurer</th>
+            <td>KYC, AML, claims, and risk pipelines need on-premise
+              geocoding under regulatory audit (BCBS 239, Solvency II,
+              GDPR Art. 32).</td>
+          </tr>
+          <tr>
+            <th>Healthcare provider</th>
+            <td>PHI may not transit a third-party API; provider
+              directories + patient outreach need accurate, local-
+              authority geocodes.</td>
+          </tr>
+          <tr>
+            <th>Logistics / fleet operator</th>
+            <td>Per-call API costs are eating margin and you've
+              already maxed out caching.</td>
+          </tr>
+          <tr>
+            <th>Telecom / utility</th>
+            <td>Geocoder must merge with internal GIS (cell towers,
+              fiber, substations) that public APIs don't know about.</td>
+          </tr>
+          <tr>
+            <th>Aid / humanitarian org</th>
+            <td>Operating offline-first in disaster zones with OSM as
+              the ground truth.</td>
+          </tr>
+          <tr>
+            <th>Researcher</th>
+            <td>Need a frozen, cite-able geocoder version that returns
+              the same answer in five years.</td>
+          </tr>
+          <tr>
+            <th>SaaS engineering team</th>
+            <td>Auto-completion + checkout flow latency matters and
+              the API bill is climbing.</td>
+          </tr>
+          <tr>
+            <th>OSS / hobby / indie</th>
+            <td>Just want a good geocoder that runs on your laptop.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ── 6. GETTING STARTED ─────────────────────────────────────── -->
+    <section class="geo-section" id="start">
+      <div class="geo-section-num">06</div>
+      <h2>Where to start.</h2>
+
+      <div class="start-tiles">
+        <a class="start-tile" href="../#install">
+          <div class="start-num">i.</div>
+          <h3>Install</h3>
+          <p>
+            One <code>cargo build --release</code> or one
+            <code>docker run</code>. Country bundle ready in 30 s.
+          </p>
+          <span class="start-arrow">→ Quickstart</span>
+        </a>
+        <a class="start-tile" href="../algorithms/">
+          <div class="start-num">ii.</div>
+          <h3>Read the algorithms</h3>
+          <p>
+            How the build pipeline, search pipeline, reverse pipeline,
+            and bundle format actually work — for engineers evaluating
+            Cairn against Pelias / Photon / Nominatim.
+          </p>
+          <span class="start-arrow">→ Deep-dive</span>
+        </a>
+        <a class="start-tile" href="../comparison/">
+          <div class="start-num">iii.</div>
+          <h3>Compare</h3>
+          <p>
+            Architecture, runtime deps, on-disk format, license,
+            measured query latency. Honest read on trade-offs.
+          </p>
+          <span class="start-arrow">→ Comparison matrix</span>
+        </a>
+        <a class="start-tile" href="../demo/">
+          <div class="start-num">iv.</div>
+          <h3>Try the live demo</h3>
+          <p>
+            Real <code>cairn-serve</code> on Hetzner k3s. Liechtenstein
+            bundle. Click through the preset queries or compose your
+            own.
+          </p>
+          <span class="start-arrow">→ cairn.kaldera.dev</span>
+        </a>
+        <a class="start-tile" href="https://github.com/cairn-geocoder/cairn">
+          <div class="start-num">v.</div>
+          <h3>Read the source</h3>
+          <p>
+            11-crate Rust workspace. Dual MIT / Apache-2.0. Issues +
+            PRs welcome.
+          </p>
+          <span class="start-arrow">→ GitHub</span>
+        </a>
+        <a class="start-tile" href="https://github.com/cairn-geocoder/cairn-cloud">
+          <div class="start-num">vi.</div>
+          <h3>Deploy</h3>
+          <p>
+            Helm chart, Kustomize overlays, Terraform modules for AWS /
+            GCP / Nomad. Grafana dashboards + Prometheus alerts.
+          </p>
+          <span class="start-arrow">→ cairn-cloud</span>
+        </a>
+      </div>
+    </section>
+
+    <footer class="geo-foot">
+      <div class="geo-foot-inner">
+        <div>
+          <strong>Cairn</strong> — offline geocoder, MIT / Apache-2.0,
+          dual-licensed.
+        </div>
+        <div class="foot-links">
+          <a href="../">Docs home</a>
+          <a href="../algorithms/">Algorithms</a>
+          <a href="../comparison/">Comparison</a>
+          <a href="https://github.com/cairn-geocoder/cairn">GitHub</a>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+</body>
+</html>
