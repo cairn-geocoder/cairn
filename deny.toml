@@ -18,7 +18,19 @@ version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
 yanked = "warn"
-ignore = []
+ignore = [
+    # GHSA-rhfx-m35p-ff5j — `lru` crate's `IterMut` violates Stacked
+    # Borrows by invalidating an internal pointer. Severity LOW.
+    # We pull `lru 0.12.5` transitively via `tantivy 0.22.1`, which
+    # has not yet released a version compatible with `lru >= 0.16.3`.
+    # Tantivy 0.26 ships with breaking API changes that require a
+    # coordinated refactor of cairn-text; tracked separately as a
+    # follow-up. Our direct `lru` dep (cairn-spatial's tile cache)
+    # is already on 0.16.4, outside the vulnerable range. Cairn does
+    # not call `IterMut` on the transitive lru instance — tantivy
+    # uses lru only inside its query cache, which is read-mostly.
+    "GHSA-rhfx-m35p-ff5j",
+]
 
 [licenses]
 version = 2

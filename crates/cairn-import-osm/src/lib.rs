@@ -328,24 +328,10 @@ pub fn import_with(pbf_path: &Path, strategy: NodeCacheStrategy) -> Result<OsmIm
         "pass 2b1 done"
     );
 
-    info!("OSM PBF pass 2b2: sequential admin relations (small volume)");
-    let mut admin_features: Vec<AdminFeature> = Vec::new();
-    let mut admin_local_counters: HashMap<(u8, u32), u64> = HashMap::new();
-    let reader = ElementReader::from_path(pbf_path)?;
-    reader.for_each(|element| {
-        if let Element::Relation(r) = element {
-            counters.relations_seen += 1;
-            if let Some(feat) = relation_to_admin(
-                &r,
-                &way_nodes,
-                &node_coords,
-                &mut admin_local_counters,
-                &mut counters,
-            ) {
-                admin_features.push(feat);
-            }
-        }
-    })?;
+    info!("OSM PBF pass 2b2: parallel admin relations");
+    let (mut admin_features, admin_counters) =
+        parallel_admin_relations(pbf_path, &way_nodes, &node_coords)?;
+    counters.merge(admin_counters);
 
     // Renumber to deterministic, collision-free PlaceIds. Pass 2a's
     // per-block local counters mint colliding IDs within the same
@@ -512,6 +498,68 @@ fn parallel_way_places(
                     big_w.extend(small_w);
                     ac.merge(bc);
                     Ok((ap, big_w, ac))
+                }
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            },
+        )
+}
+
+/// Parallel block-level emit of `AdminFeature`s from
+/// `Element::Relation`. Each block runs an independent assembly with
+/// its own per-tile local counters; collisions across blocks are
+/// resolved by [`renumber_admin_features`] after the merge, exactly
+/// like the way- and node-place passes.
+///
+/// Replaces the legacy `ElementReader::for_each` walk that pinned
+/// admin assembly to a single core. At country scale this is the
+/// dominant non-tantivy build phase (DE bench: ~120 s of the 633 s
+/// total wall-clock), so parallelizing it across cores gives the
+/// next biggest cliff after Phase 6f / 6g.
+fn parallel_admin_relations(
+    pbf_path: &Path,
+    way_nodes: &WayNodes,
+    node_coords: &NodeCoords,
+) -> Result<(Vec<AdminFeature>, Counters), ImportError> {
+    let blob_reader = BlobReader::from_path(pbf_path)?;
+    blob_reader
+        .par_bridge()
+        .map(
+            |blob| -> Result<(Vec<AdminFeature>, Counters), ImportError> {
+                let blob = blob?;
+                match blob.decode()? {
+                    BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
+                        Ok((Vec::new(), Counters::default()))
+                    }
+                    BlobDecode::OsmData(block) => {
+                        let mut features: Vec<AdminFeature> = Vec::new();
+                        let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
+                        let mut counters = Counters::default();
+                        for elem in block.elements() {
+                            if let Element::Relation(r) = elem {
+                                counters.relations_seen += 1;
+                                if let Some(feat) = relation_to_admin(
+                                    &r,
+                                    way_nodes,
+                                    node_coords,
+                                    &mut local_counters,
+                                    &mut counters,
+                                ) {
+                                    features.push(feat);
+                                }
+                            }
+                        }
+                        Ok((features, counters))
+                    }
+                }
+            },
+        )
+        .reduce(
+            || Ok((Vec::new(), Counters::default())),
+            |a, b| match (a, b) {
+                (Ok((mut af, mut ac)), Ok((bf, bc))) => {
+                    af.extend(bf);
+                    ac.merge(bc);
+                    Ok((af, ac))
                 }
                 (Err(e), _) | (_, Err(e)) => Err(e),
             },

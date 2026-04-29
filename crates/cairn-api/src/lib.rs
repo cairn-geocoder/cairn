@@ -612,7 +612,13 @@ async fn info(State(state): State<AppState>) -> Json<InfoBody> {
 /// vnd.cyclonedx+json so dependency-track / grype / cyclonedx-cli
 /// recognize it without sniffing.
 async fn sbom(State(state): State<AppState>) -> Response {
-    let path = state.bundle_path.join("sbom.json");
+    // `bundle_path` is the operator-controlled `--bundle` CLI arg
+    // (set at process startup); the path component appended here is
+    // the constant `"sbom.json"`. No user request data participates,
+    // so this is not a path-injection sink despite the static-analysis
+    // signal — codeql/rust/path-injection on this line is a known FP.
+    const SBOM_FILENAME: &str = "sbom.json";
+    let path = state.bundle_path.join(SBOM_FILENAME);
     let body = match std::fs::read(&path) {
         Ok(b) => b,
         Err(_) => {
@@ -837,7 +843,18 @@ async fn search(
                     .fetch_add(1, Ordering::Relaxed),
             };
             if wants_ndjson(&headers) {
-                let mut body = String::with_capacity(results.len() * 256);
+                // `limit` is clamped to 1..=100 upstream
+                // (search-options builder); the `min(MAX_HITS_FOR_PRE_ALLOC)`
+                // here is belt-and-braces so a future change that raises
+                // the upstream cap can't accidentally let user input
+                // dictate an unbounded allocation.
+                const BYTES_PER_HIT: usize = 256;
+                const MAX_HITS_FOR_PRE_ALLOC: usize = 1_024;
+                let body_capacity = results
+                    .len()
+                    .min(MAX_HITS_FOR_PRE_ALLOC)
+                    .saturating_mul(BYTES_PER_HIT);
+                let mut body = String::with_capacity(body_capacity);
                 for hit in &results {
                     if let Ok(line) = serde_json::to_string(hit) {
                         body.push_str(&line);
