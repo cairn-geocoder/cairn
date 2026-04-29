@@ -18,7 +18,9 @@ pub mod stopwords;
 pub mod trigram;
 use std::path::Path;
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, FuzzyTermQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::query::{
+    BooleanQuery, FuzzyTermQuery, Occur, Query, QueryParser, RangeQuery, TermQuery,
+};
 use tantivy::schema::{
     Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, FAST, INDEXED, STORED,
     STRING, TEXT,
@@ -231,6 +233,12 @@ pub struct SearchOptions {
     /// ranked here". Tiny per-hit cost; off by default to keep the
     /// JSON payload small.
     pub explain: bool,
+    /// Phase 7a-Q — temporal validity filter. When `Some(year)`, only
+    /// places whose `start_year ≤ year ≤ end_year` window covers the
+    /// requested year are returned. Places without OSM date tags
+    /// have sentinel bounds (`i64::MIN`..=`i64::MAX`) and match every
+    /// `valid_at`. Use `0` to disable.
+    pub valid_at: Option<i64>,
 }
 
 /// Axis-aligned bounding box, lon/lat degrees. Inclusive on all sides.
@@ -263,6 +271,7 @@ impl Default for SearchOptions {
             phonetic: false,
             semantic: false,
             explain: false,
+            valid_at: None,
         }
     }
 }
@@ -297,6 +306,13 @@ struct TextSchema {
     /// `Müller` ↔ `Mueller`, `Smith` ↔ `Smyth`, `Catherine` ↔
     /// `Katherine` would otherwise miss.
     name_phonetic: Field,
+    /// Phase 7a-Q — temporal validity start year (i64). Indexed as
+    /// FAST + INDEXED for RangeQuery filtering on `?valid_at=YYYY`.
+    /// Sentinel `i64::MIN` means "always-before" (open-ended).
+    start_year: Field,
+    /// Phase 7a-Q — temporal validity end year (i64). Sentinel
+    /// `i64::MAX` means "always-after" (still valid today).
+    end_year: Field,
     /// Phase 7a — character-trigram pre-filter for fuzzy matching.
     /// STRING multi-value field (one term per distinct boundary-padded
     /// trigram of every name variant). Used as a `Should`-OR clause
@@ -349,6 +365,10 @@ impl TextSchema {
         // need to echo encoded codes back; only used as a query
         // pivot. Indexed to support TermQuery lookups.
         let name_phonetic = sb.add_text_field("name_phonetic", STRING);
+        // Phase 7a-Q — temporal validity bounds. FAST + INDEXED so
+        // RangeQuery can filter at search time.
+        let start_year = sb.add_i64_field("start_year", FAST | INDEXED);
+        let end_year = sb.add_i64_field("end_year", FAST | INDEXED);
         // Phase 7a — char-trigram pre-filter. STRING (whole-token,
         // no analyzer); the indexer feeds pre-extracted trigrams.
         let name_trigrams = sb.add_text_field("name_trigrams", STRING);
@@ -377,6 +397,8 @@ impl TextSchema {
             lang_codes,
             categories,
             name_phonetic,
+            start_year,
+            end_year,
             name_trigrams,
             name_vec,
         }
@@ -555,6 +577,41 @@ where
             })
             .unwrap_or(0);
         doc.add_u64(schema.population, population);
+
+        // Phase 7a-Q — extract `start_date` / `end_date` from OSM
+        // tags. Year-only parse (we don't try to be ISO-8601-strict;
+        // OSM's date tags are notoriously inconsistent — "1939",
+        // "1939-09-01", "1234 BC", "before 1989" all show up). The
+        // sentinels (i64::MIN / i64::MAX) get indexed when no parse
+        // succeeds, so RangeQuery on `valid_at` matches the place
+        // unconditionally — same semantics as "always valid".
+        let start_year = place
+            .tags
+            .iter()
+            .find_map(|(k, v)| {
+                if k == "start_date" {
+                    Some(v.as_str())
+                } else {
+                    None
+                }
+            })
+            .and_then(parse_year_loose)
+            .unwrap_or(i64::MIN);
+        let end_year = place
+            .tags
+            .iter()
+            .find_map(|(k, v)| {
+                if k == "end_date" {
+                    Some(v.as_str())
+                } else {
+                    None
+                }
+            })
+            .and_then(parse_year_loose)
+            .unwrap_or(i64::MAX);
+        doc.add_i64(schema.start_year, start_year);
+        doc.add_i64(schema.end_year, end_year);
+
         writer.add_document(doc)?;
         doc_count += 1;
     }
@@ -620,6 +677,7 @@ impl TextIndex {
         let text_q = self.apply_phonetic_orclause(text_q, trimmed, opts);
         let combined = self.apply_layer_filter(text_q, &opts.layers);
         let combined = self.apply_categories_filter(combined, &opts.categories);
+        let combined = self.apply_valid_at_filter(combined, opts.valid_at);
 
         // Always over-fetch when we'll re-rank — focus, exact-name, or
         // both — so the BM25 top-N doesn't truncate matches the rerank
@@ -960,6 +1018,39 @@ impl TextIndex {
         ]))
     }
 
+    /// Phase 7a-Q — temporal validity filter. Adds two `Must` range
+    /// clauses requiring `start_year <= valid_at <= end_year`. Places
+    /// without OSM date tags carry sentinel bounds (`i64::MIN`..=
+    /// `i64::MAX`) and pass every range, so this filter is opt-in
+    /// per-query and never excludes rows that simply lack date tags.
+    fn apply_valid_at_filter(
+        &self,
+        text_q: Box<dyn Query>,
+        valid_at: Option<i64>,
+    ) -> Box<dyn Query> {
+        let year = match valid_at {
+            Some(y) => y,
+            None => return text_q,
+        };
+        let start_term_lo = Term::from_field_i64(self.schema.start_year, i64::MIN);
+        let start_term_hi = Term::from_field_i64(self.schema.start_year, year);
+        let start_q: Box<dyn Query> = Box::new(RangeQuery::new(
+            std::ops::Bound::Included(start_term_lo),
+            std::ops::Bound::Included(start_term_hi),
+        ));
+        let end_term_lo = Term::from_field_i64(self.schema.end_year, year);
+        let end_term_hi = Term::from_field_i64(self.schema.end_year, i64::MAX);
+        let end_q: Box<dyn Query> = Box::new(RangeQuery::new(
+            std::ops::Bound::Included(end_term_lo),
+            std::ops::Bound::Included(end_term_hi),
+        ));
+        Box::new(BooleanQuery::new(vec![
+            (Occur::Must, text_q),
+            (Occur::Must, start_q),
+            (Occur::Must, end_q),
+        ]))
+    }
+
     /// OR-of-categories filter, AND-joined with the rest of the
     /// query. Categories are case-insensitive on the lookup side
     /// (lowercased to match indexed form). Empty `categories` skips
@@ -1131,6 +1222,45 @@ fn apply_lang_preference_boost(hits: &mut [Hit], lang: &str) {
     }
 }
 
+/// Phase 7a-Q — loose year parser for OSM `start_date` / `end_date`
+/// tag values. Handles plain years (`"1939"`), ISO dates
+/// (`"1939-09-01"`), BC dates (`"1234 BC"`), and "before/after Y"
+/// prefixes. Returns `None` for unparseable input — caller falls
+/// back to the sentinel bounds so the place still matches every
+/// `valid_at` filter.
+pub fn parse_year_loose(raw: &str) -> Option<i64> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // BC suffix → negate.
+    let lower = s.to_ascii_lowercase();
+    let (digits, sign) = if let Some(stripped) = lower
+        .strip_suffix(" bc")
+        .or_else(|| lower.strip_suffix("bc"))
+    {
+        (stripped.trim().to_string(), -1i64)
+    } else {
+        (lower, 1i64)
+    };
+    // Strip "before " / "after " / "circa " / "ca." prefixes; these
+    // give an approximate bound, we ignore the qualifier.
+    let cleaned = digits
+        .trim_start_matches("before ")
+        .trim_start_matches("after ")
+        .trim_start_matches("circa ")
+        .trim_start_matches("ca. ")
+        .trim_start_matches("ca.")
+        .trim_start_matches("c. ")
+        .trim();
+    // ISO date: take the leading 4-digit year.
+    let leading: String = cleaned.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if leading.is_empty() {
+        return None;
+    }
+    leading.parse::<i64>().ok().map(|y| y * sign)
+}
+
 fn fold_for_compare(s: &str) -> String {
     deunicode::deunicode(s).trim().to_lowercase()
 }
@@ -1244,6 +1374,41 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 mod tests {
     use super::*;
     use cairn_place::{Coord, LocalizedName, PlaceId};
+
+    // ── Phase 7a-Q: parse_year_loose tests ────────────────────────
+
+    #[test]
+    fn parse_year_plain_digits() {
+        assert_eq!(parse_year_loose("1939"), Some(1939));
+        assert_eq!(parse_year_loose("  2024  "), Some(2024));
+    }
+
+    #[test]
+    fn parse_year_iso_date() {
+        assert_eq!(parse_year_loose("1939-09-01"), Some(1939));
+        assert_eq!(parse_year_loose("2024-01-15"), Some(2024));
+    }
+
+    #[test]
+    fn parse_year_bc_negation() {
+        assert_eq!(parse_year_loose("44 BC"), Some(-44));
+        assert_eq!(parse_year_loose("753bc"), Some(-753));
+    }
+
+    #[test]
+    fn parse_year_qualifier_prefixes() {
+        assert_eq!(parse_year_loose("before 1989"), Some(1989));
+        assert_eq!(parse_year_loose("circa 1850"), Some(1850));
+        assert_eq!(parse_year_loose("ca. 1700"), Some(1700));
+        assert_eq!(parse_year_loose("c. 1500"), Some(1500));
+    }
+
+    #[test]
+    fn parse_year_unparseable_returns_none() {
+        assert_eq!(parse_year_loose(""), None);
+        assert_eq!(parse_year_loose("yesterday"), None);
+        assert_eq!(parse_year_loose("Q1 2024"), None); // letter at start
+    }
 
     fn vaduz() -> Place {
         Place {

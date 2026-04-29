@@ -704,6 +704,14 @@ pub struct SearchQuery {
     /// ranked here".
     #[serde(default)]
     pub explain: Option<bool>,
+    /// Phase 7a-Q — temporal validity filter. `?valid_at=YYYY` (also
+    /// negative for BC) returns only places whose
+    /// `start_date`..=`end_date` window covers the given year. Places
+    /// without OSM date tags pass every filter. No incumbent
+    /// geocoder ships this today — surfaces historical names like
+    /// `Königsberg` (1939) → Kaliningrad (modern).
+    #[serde(default)]
+    pub valid_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -820,6 +828,7 @@ async fn search(
         phonetic: params.phonetic.unwrap_or(false),
         semantic: params.semantic.unwrap_or(false),
         explain: params.explain.unwrap_or(false),
+        valid_at: params.valid_at,
     };
 
     let text = match state.text.as_ref() {
@@ -1328,6 +1337,7 @@ async fn structured(
         phonetic: false,
         semantic: false,
         explain: false,
+        valid_at: None,
     };
 
     let text = match state.text.as_ref() {
@@ -1665,6 +1675,7 @@ async fn pelias_search_impl(
         phonetic: params.phonetic.unwrap_or(false),
         semantic: params.semantic.unwrap_or(false),
         explain: false,
+        valid_at: None,
     };
     let text_idx = state
         .text
