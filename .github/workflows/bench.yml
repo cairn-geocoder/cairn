@@ -1,0 +1,178 @@
+name: bench
+
+# x86_64 Linux reproduction of the Switzerland benchmark.
+# Defuses "arm64 made Nominatim slow" by running the same harness on
+# the GitHub Actions ubuntu-latest runner (Intel x86_64). Cairn-only
+# numbers run on every push to main; the full multi-engine matrix is
+# manual-dispatch only because Pelias / Nominatim / Photon take
+# multiple hours.
+
+on:
+  workflow_dispatch:
+    inputs:
+      country:
+        description: "Country slug (Geofabrik path under europe/)"
+        required: true
+        default: switzerland
+        type: choice
+        options:
+          - switzerland
+          - liechtenstein
+          - germany
+          - france
+      include_incumbents:
+        description: "Run Pelias / Nominatim / Photon too (multi-hour)"
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches: [main]
+    paths:
+      - "benchmarks/**"
+      - "crates/cairn-*/**"
+      - "bins/cairn-*/**"
+      - ".github/workflows/bench.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cairn-x86_64:
+    name: Cairn (x86_64 Linux, ${{ github.event.inputs.country || 'switzerland' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-x86_64
+
+      - name: Install ab + tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq apache2-utils unzip jq python3
+
+      - name: Build cairn-build + cairn-serve (release)
+        run: cargo build --release -p cairn-build -p cairn-serve
+
+      - name: Download dataset
+        run: |
+          set -eu
+          slug="${{ github.event.inputs.country || 'switzerland' }}"
+          cd benchmarks/data
+          # Geofabrik path differs per region; switzerland +
+          # liechtenstein + germany + france all sit under /europe/.
+          curl -fSL --retry 3 -o "${slug}-latest.osm.pbf" \
+            "https://download.geofabrik.de/europe/${slug}-latest.osm.pbf"
+          # Postcodes for the same country, when Geonames hosts them.
+          cc=$(echo "$slug" | head -c2 | tr 'a-z' 'A-Z')
+          case "$slug" in
+            switzerland) cc=CH ;;
+            liechtenstein) cc=LI ;;
+            germany) cc=DE ;;
+            france) cc=FR ;;
+          esac
+          if curl -fsSL "https://download.geonames.org/export/zip/${cc}.zip" -o "${cc}.zip"; then
+            unzip -p "${cc}.zip" "${cc}.txt" > "${cc}.txt" || true
+          fi
+          # cities1000 is needed by queries/build.sh for any country.
+          curl -fSL --retry 3 -o cities1000.zip \
+            https://download.geonames.org/export/dump/cities1000.zip
+          unzip -p cities1000.zip cities1000.txt > cities1000.txt
+          ls -lh
+
+      - name: Build query set (country-aware)
+        env:
+          COUNTRY: ${{ github.event.inputs.country || 'switzerland' }}
+        run: |
+          set -eu
+          cd benchmarks
+          slug="$COUNTRY"
+          cc=CH
+          case "$slug" in
+            switzerland) cc=CH ;;
+            liechtenstein) cc=LI ;;
+            germany) cc=DE ;;
+            france) cc=FR ;;
+          esac
+          # Country-aware query builder: pull cities + postcodes for
+          # whichever country slug we picked.
+          mkdir -p queries
+          awk -F'\t' -v cc="$cc" '$9==cc {print $2}' data/cities1000.txt \
+            | sort -u | head -5000 > queries/_cities.txt
+          if [ -f "data/${cc}.txt" ]; then
+            awk -F'\t' '$2!="" {print $2}' "data/${cc}.txt" \
+              | sort -u | head -2500 > queries/_postcodes.txt
+            awk -F'\t' '$2!="" && $3!="" {print $2 " " $3}' "data/${cc}.txt" \
+              | sort -u | head -2500 > queries/_composite.txt
+          else
+            : > queries/_postcodes.txt
+            : > queries/_composite.txt
+          fi
+          cat queries/_cities.txt queries/_postcodes.txt queries/_composite.txt \
+            | shuf --random-source=<(yes 42) > queries/swiss-10k.txt
+          rm -f queries/_*.txt
+          wc -l queries/swiss-10k.txt
+
+      - name: Cairn build (timed)
+        env:
+          COUNTRY: ${{ github.event.inputs.country || 'switzerland' }}
+        run: |
+          set -eu
+          cc=CH
+          case "$COUNTRY" in
+            switzerland) cc=CH ;;
+            liechtenstein) cc=LI ;;
+            germany) cc=DE ;;
+            france) cc=FR ;;
+          esac
+          mkdir -p benchmarks/cairn benchmarks/results
+          start=$(date +%s)
+          /usr/bin/time -v ./target/release/cairn-build build \
+            --osm "benchmarks/data/${COUNTRY}-latest.osm.pbf" \
+            $( [ -f "benchmarks/data/${cc}.txt" ] && echo "--postcodes benchmarks/data/${cc}.txt" ) \
+            --out benchmarks/cairn/bundle \
+            --bundle-id "${COUNTRY}-bench-x86_64" \
+            --simplify-meters 100 \
+            2> benchmarks/results/cairn-build.time.txt
+          end=$(date +%s)
+          peak=$(awk '/Maximum resident set size/ {print $6 * 1024}' benchmarks/results/cairn-build.time.txt)
+          disk=$(du -sk benchmarks/cairn/bundle | awk '{print $1*1024}')
+          jq -n --arg country "$COUNTRY" --arg arch x86_64 \
+            --argjson build_seconds "$((end-start))" \
+            --argjson peak_rss_bytes "${peak:-0}" \
+            --argjson disk_bytes "$disk" \
+            '{engine:"cairn",arch:$arch,country:$country,build_seconds:$build_seconds,peak_rss_bytes:$peak_rss_bytes,bundle_disk_bytes:$disk_bytes}' \
+            > benchmarks/results/cairn-build-x86_64.json
+          cat benchmarks/results/cairn-build-x86_64.json
+
+      - name: Cairn serve + bench
+        run: |
+          set -eu
+          ./target/release/cairn-serve \
+            --bundle benchmarks/cairn/bundle \
+            --bind 127.0.0.1:7100 \
+            > /tmp/cairn-serve.log 2>&1 &
+          echo $! > /tmp/cairn.pid
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:7100/healthz >/dev/null && break
+            sleep 0.5
+          done
+          chmod +x benchmarks/run.sh benchmarks/run-rps.sh
+          benchmarks/run.sh cairn || true
+          benchmarks/run-rps.sh cairn || true
+          kill "$(cat /tmp/cairn.pid)" || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cairn-bench-x86_64-${{ github.event.inputs.country || 'switzerland' }}
+          path: |
+            benchmarks/results/cairn*.json
+            benchmarks/results/cairn*.txt
+            benchmarks/results/cairn-rps.txt
+          if-no-files-found: warn
