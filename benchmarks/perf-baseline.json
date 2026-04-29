@@ -1,0 +1,173 @@
+{
+  "criterion/autocomplete_3char_5k": {
+    "mean_ns": 33851.8
+  },
+  "criterion/fuzzy_typo_5k": {
+    "mean_ns": 100044.4
+  },
+  "criterion/geo_contains_in": {
+    "mean_ns": 126.0
+  },
+  "criterion/geo_contains_out": {
+    "mean_ns": 141.5
+  },
+  "criterion/nearest_k=10_4096pts": {
+    "mean_ns": 374870.1
+  },
+  "criterion/pip_archived_in": {
+    "mean_ns": 94.3
+  },
+  "criterion/pip_archived_out": {
+    "mean_ns": 1.5
+  },
+  "criterion/pip_archived_ref_in": {
+    "mean_ns": 98.6
+  },
+  "criterion/pip_archived_ref_out": {
+    "mean_ns": 1.5
+  },
+  "criterion/pip_eager_1024": {
+    "mean_ns": 17.0
+  },
+  "criterion/search_exact_5k": {
+    "mean_ns": 3904.4
+  },
+  "edit_distance/0": {
+    "mean_ns": 125.6
+  },
+  "edit_distance/1": {
+    "mean_ns": 124.9
+  },
+  "edit_distance/2": {
+    "mean_ns": 127.5
+  },
+  "edit_distance/3": {
+    "mean_ns": 97.7
+  },
+  "edit_distance/4": {
+    "mean_ns": 128.8
+  },
+  "edit_distance/5": {
+    "mean_ns": 137.6
+  },
+  "edit_distance/6": {
+    "mean_ns": 133.0
+  },
+  "edit_distance/7": {
+    "mean_ns": 230.1
+  },
+  "edit_distance/8": {
+    "mean_ns": 239.5
+  },
+  "edit_distance/9": {
+    "mean_ns": 811.3
+  },
+  "myers/0": {
+    "mean_ns": 131.2
+  },
+  "myers/1": {
+    "mean_ns": 127.6
+  },
+  "myers/2": {
+    "mean_ns": 128.3
+  },
+  "myers/3": {
+    "mean_ns": 97.2
+  },
+  "myers/4": {
+    "mean_ns": 127.3
+  },
+  "myers/5": {
+    "mean_ns": 134.2
+  },
+  "myers/6": {
+    "mean_ns": 131.8
+  },
+  "myers/7": {
+    "mean_ns": 231.1
+  },
+  "myers/8": {
+    "mean_ns": 239.3
+  },
+  "myers/9": {
+    "mean_ns": 831.9
+  },
+  "trigram_indexed/0": {
+    "mean_ns": 659.4
+  },
+  "trigram_indexed/1": {
+    "mean_ns": 727.5
+  },
+  "trigram_indexed/2": {
+    "mean_ns": 1523.6
+  },
+  "trigram_indexed/3": {
+    "mean_ns": 2345.1
+  },
+  "trigram_indexed/4": {
+    "mean_ns": 3961.6
+  },
+  "trigram_indexed/5": {
+    "mean_ns": 373.3
+  },
+  "trigram_indexed/6": {
+    "mean_ns": 848.4
+  },
+  "trigram_indexed/7": {
+    "mean_ns": 5861.9
+  },
+  "trigram_query/0": {
+    "mean_ns": 606.9
+  },
+  "trigram_query/1": {
+    "mean_ns": 691.4
+  },
+  "trigram_query/2": {
+    "mean_ns": 1467.3
+  },
+  "trigram_query/3": {
+    "mean_ns": 2261.7
+  },
+  "trigram_query/4": {
+    "mean_ns": 3807.8
+  },
+  "trigram_query/5": {
+    "mean_ns": 377.0
+  },
+  "trigram_query/6": {
+    "mean_ns": 829.2
+  },
+  "trigram_query/7": {
+    "mean_ns": 5800.9
+  },
+  "wagner_fischer/0": {
+    "mean_ns": 155.2
+  },
+  "wagner_fischer/1": {
+    "mean_ns": 156.9
+  },
+  "wagner_fischer/2": {
+    "mean_ns": 154.1
+  },
+  "wagner_fischer/3": {
+    "mean_ns": 121.8
+  },
+  "wagner_fischer/4": {
+    "mean_ns": 150.7
+  },
+  "wagner_fischer/5": {
+    "mean_ns": 162.6
+  },
+  "wagner_fischer/6": {
+    "mean_ns": 154.6
+  },
+  "wagner_fischer/7": {
+    "mean_ns": 323.4
+  },
+  "wagner_fischer/8": {
+    "mean_ns": 322.3
+  },
+  "wagner_fischer/9": {
+    "mean_ns": 4748.1
+  }
+}

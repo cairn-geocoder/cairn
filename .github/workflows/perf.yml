@@ -1,0 +1,50 @@
+name: perf
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'bins/**'
+      - 'benchmarks/perf-baseline.json'
+      - 'benchmarks/perf-check.py'
+      - '.github/workflows/perf.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Tighten when CI runner noise stabilizes; 15 % is loose enough
+  # for shared GitHub-hosted runners while still flagging real
+  # regressions like accidentally falling out of the Myers fast
+  # path or losing trigram-prefilter doc-set pruning.
+  PERF_THRESHOLD_PCT: '15'
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Cache criterion's previous-run baselines too so back-to-
+          # back PRs don't re-pay the cold warmup.
+          cache-targets: 'true'
+          cache-on-failure: 'true'
+      - name: Run criterion benches
+        run: |
+          cargo bench -p cairn-text -p cairn-spatial --no-fail-fast \
+            --bench search --bench edit --bench trigram --bench pip
+      - name: Gate on baseline
+        run: python3 benchmarks/perf-check.py --threshold-pct "${{ env.PERF_THRESHOLD_PCT }}"
+      - name: Upload criterion HTML reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-reports
+          path: target/criterion/
+          if-no-files-found: ignore

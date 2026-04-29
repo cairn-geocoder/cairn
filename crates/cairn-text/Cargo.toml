@@ -41,3 +41,11 @@ criterion = { workspace = true }
 [[bench]]
 name = "search"
 harness = false
+
+[[bench]]
+name = "edit"
+harness = false
+
+[[bench]]
+name = "trigram"
+harness = false
