@@ -17,7 +17,7 @@
 //! References:
 //! - E. Myers, "A Fast Bit-Vector Algorithm for Approximate String
 //!   Matching Based on Dynamic Programming", J. ACM 46(3) 1999.
-//! - https://www.cse.unsw.edu.au/~lambert/papers/myers.pdf
+//! - <https://www.cse.unsw.edu.au/~lambert/papers/myers.pdf>
 
 const MAX_PATTERN_BITS: usize = 64;
 
