@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.2-alpha"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT OR Apache-2.0"
@@ -28,16 +28,16 @@ authors = ["Cairn contributors"]
 
 [workspace.dependencies]
 # Internal crates
-cairn-place = { version = "0.0.2-alpha", path = "crates/cairn-place" }
-cairn-tile = { version = "0.0.2-alpha", path = "crates/cairn-tile" }
-cairn-text = { version = "0.0.2-alpha", path = "crates/cairn-text" }
-cairn-spatial = { version = "0.0.2-alpha", path = "crates/cairn-spatial" }
-cairn-parse = { version = "0.0.2-alpha", path = "crates/cairn-parse" }
-cairn-api = { version = "0.0.2-alpha", path = "crates/cairn-api" }
-cairn-import-osm = { version = "0.0.2-alpha", path = "crates/cairn-import-osm" }
-cairn-import-wof = { version = "0.0.2-alpha", path = "crates/cairn-import-wof" }
-cairn-import-oa = { version = "0.0.2-alpha", path = "crates/cairn-import-oa" }
-cairn-import-geonames = { version = "0.0.2-alpha", path = "crates/cairn-import-geonames" }
+cairn-place = { version = "0.1.0", path = "crates/cairn-place" }
+cairn-tile = { version = "0.1.0", path = "crates/cairn-tile" }
+cairn-text = { version = "0.1.0", path = "crates/cairn-text" }
+cairn-spatial = { version = "0.1.0", path = "crates/cairn-spatial" }
+cairn-parse = { version = "0.1.0", path = "crates/cairn-parse" }
+cairn-api = { version = "0.1.0", path = "crates/cairn-api" }
+cairn-import-osm = { version = "0.1.0", path = "crates/cairn-import-osm" }
+cairn-import-wof = { version = "0.1.0", path = "crates/cairn-import-wof" }
+cairn-import-oa = { version = "0.1.0", path = "crates/cairn-import-oa" }
+cairn-import-geonames = { version = "0.1.0", path = "crates/cairn-import-geonames" }
 
 # Core
 serde = { version = "1", features = ["derive"] }
