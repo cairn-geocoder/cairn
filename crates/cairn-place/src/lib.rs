@@ -127,6 +127,16 @@ pub enum SourceKind {
     Wof,
     OpenAddresses,
     Geonames,
+    /// Phase 7b lane M — operator-supplied CSV / GeoJSON ingest. No
+    /// upstream provenance constraint; license is whatever the
+    /// operator declares at build time.
+    Generic,
+    /// Phase 7b lane K — Overture Maps Foundation drops. Mixed
+    /// CDLA-Permissive 2.0 + ODbL depending on the source dataset
+    /// (places vs addresses vs admins). Operators must surface
+    /// attribution downstream; cairn-build records it in the
+    /// per-bundle SBOM.
+    Overture,
     Unknown,
 }
 
@@ -139,6 +149,8 @@ impl SourceKind {
             "wof" | "whosonfirst" => Some(Self::Wof),
             "oa" | "openaddresses" => Some(Self::OpenAddresses),
             "gn" | "geonames" => Some(Self::Geonames),
+            "generic" | "csv" | "geojson" => Some(Self::Generic),
+            "overture" => Some(Self::Overture),
             _ => None,
         }
     }
@@ -149,6 +161,8 @@ impl SourceKind {
             Self::Wof => "wof",
             Self::OpenAddresses => "oa",
             Self::Geonames => "geonames",
+            Self::Generic => "generic",
+            Self::Overture => "overture",
             Self::Unknown => "unknown",
         }
     }

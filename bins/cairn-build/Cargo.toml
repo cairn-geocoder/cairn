@@ -22,6 +22,7 @@ cairn-import-osm = { workspace = true }
 cairn-import-wof = { workspace = true }
 cairn-import-oa = { workspace = true }
 cairn-import-geonames = { workspace = true }
+cairn-import-generic = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

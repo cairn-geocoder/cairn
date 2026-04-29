@@ -1,0 +1,26 @@
+[package]
+name = "cairn-import-generic"
+description = "Generic CSV + GeoJSON importer for operator-supplied Cairn places."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["geocoding", "geocoder", "csv", "geojson", "import"]
+categories = ["science::geo", "parser-implementations"]
+
+[dependencies]
+cairn-place = { workspace = true }
+cairn-tile = { workspace = true }
+csv = { workspace = true }
+geojson = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

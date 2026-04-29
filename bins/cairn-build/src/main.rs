@@ -106,6 +106,19 @@ enum Command {
         /// `?categories=postal` can filter to postcodes.
         #[arg(long)]
         postcodes: Option<PathBuf>,
+        /// Phase 7b lane M — operator-supplied generic CSV files. Each
+        /// path is read as a separate file; columns `lon,lat,name` are
+        /// the minimum schema (alternates `longitude/latitude`, `lng`,
+        /// `x/y`). Optional columns: `kind`, `population`, `lang`.
+        /// Other columns become tags. Pass repeatedly for batch ingest.
+        #[arg(long)]
+        csv: Vec<PathBuf>,
+        /// Phase 7b lane M — operator-supplied GeoJSON files. Standard
+        /// `FeatureCollection`. `Point` geometries are preferred;
+        /// polygon centroids fall back to the first vertex of the
+        /// first outer ring.
+        #[arg(long)]
+        geojson: Vec<PathBuf>,
         #[arg(long)]
         out: PathBuf,
         #[arg(long, default_value = "alpha-bundle")]
@@ -308,6 +321,8 @@ fn main() -> Result<()> {
             oa,
             geonames,
             postcodes,
+            csv,
+            geojson,
             out,
             bundle_id,
             no_zstd,
@@ -321,6 +336,8 @@ fn main() -> Result<()> {
             oa,
             geonames,
             postcodes,
+            csv,
+            geojson,
             out,
             bundle_id,
             source_priority: parse_source_priority(&source_priority)?,
@@ -757,6 +774,8 @@ struct BuildArgs {
     oa: Option<PathBuf>,
     geonames: Option<PathBuf>,
     postcodes: Option<PathBuf>,
+    csv: Vec<PathBuf>,
+    geojson: Vec<PathBuf>,
     out: PathBuf,
     bundle_id: String,
     compression: TileCompression,
@@ -928,6 +947,52 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             name: "geonames-postcodes".into(),
             version: postcodes_path.display().to_string(),
             blake3: hash_file(postcodes_path)?,
+        });
+    }
+
+    // Phase 7b lane M — operator-supplied generic CSV / GeoJSON.
+    for path in &args.csv {
+        tracing::info!(path = %path.display(), "ingesting generic CSV");
+        let (imported, counters) = cairn_import_generic::import_csv(path)
+            .with_context(|| format!("generic CSV import failed: {}", path.display()))?;
+        tracing::info!(
+            count = imported.len(),
+            rows_seen = counters.rows_seen,
+            skipped_no_coords = counters.skipped_no_coords,
+            skipped_no_name = counters.skipped_no_name,
+            "generic CSV places imported"
+        );
+        places.extend(
+            imported
+                .into_iter()
+                .map(|p| (p, cairn_place::SourceKind::Generic)),
+        );
+        sources.push(SourceVersion {
+            name: format!("generic-csv:{}", path.display()),
+            version: path.display().to_string(),
+            blake3: hash_file(path)?,
+        });
+    }
+    for path in &args.geojson {
+        tracing::info!(path = %path.display(), "ingesting generic GeoJSON");
+        let (imported, counters) = cairn_import_generic::import_geojson(path)
+            .with_context(|| format!("generic GeoJSON import failed: {}", path.display()))?;
+        tracing::info!(
+            count = imported.len(),
+            rows_seen = counters.rows_seen,
+            skipped_unsupported = counters.skipped_unsupported_geometry,
+            skipped_no_name = counters.skipped_no_name,
+            "generic GeoJSON places imported"
+        );
+        places.extend(
+            imported
+                .into_iter()
+                .map(|p| (p, cairn_place::SourceKind::Generic)),
+        );
+        sources.push(SourceVersion {
+            name: format!("generic-geojson:{}", path.display()),
+            version: path.display().to_string(),
+            blake3: hash_file(path)?,
         });
     }
 

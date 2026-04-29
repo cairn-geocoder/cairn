@@ -539,6 +539,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "cairn-import-generic",
  "cairn-import-geonames",
  "cairn-import-oa",
  "cairn-import-osm",
@@ -572,6 +573,21 @@ dependencies = [
  "cairn-spatial",
  "cairn-text",
  "cairn-tile",
+]
+
+[[package]]
+name = "cairn-import-generic"
+version = "0.1.0"
+dependencies = [
+ "cairn-place",
+ "cairn-tile",
+ "csv",
+ "geojson",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
