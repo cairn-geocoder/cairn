@@ -1,0 +1,633 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cairn — Algorithms · deep dive</title>
+  <meta name="description" content="How Cairn's build pipeline, search pipeline, reverse pipeline, on-disk bundle format, and differentiator features actually work — with concrete data structures, complexity analysis, and links to the implementation." />
+  <link rel="icon" type="image/svg+xml" href="../assets/cairn-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../site.css" />
+  <link rel="stylesheet" href="algorithms.css" />
+</head>
+<body>
+
+  <header class="topnav">
+    <div class="topnav-inner">
+      <a class="brand" href="../">
+        <img class="mk" src="../assets/cairn-photoreal.svg" alt="" />
+        <span>cairn<span class="dot">.</span></span>
+      </a>
+      <nav>
+        <a href="../#hero">Docs</a>
+        <a href="../#install">Install</a>
+        <a href="../#api">Reference</a>
+        <a href="../#benchmark">Benchmark</a>
+        <a class="active" href="./">Algorithms</a>
+        <a href="../comparison/">Comparison</a>
+        <a href="../demo/">Live demo</a>
+      </nav>
+      <div class="right">
+        <span class="ver-pill">v0.1.0 · beta</span>
+        <a class="gh-link" href="https://github.com/cairn-geocoder/cairn">★ GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="algo-page">
+
+    <section class="algo-hero">
+      <div class="algo-hero-inner">
+        <div class="algo-eyebrow">Engineering deep-dive</div>
+        <h1>How Cairn works.</h1>
+        <p class="algo-lede">
+          Every other geocoder is a <em>stack</em>: parse PBF, push into Postgres,
+          build an Elasticsearch index, layer libpostal on top, glue it together
+          with a Node service, deploy a daemon graveyard. Cairn is one binary
+          reading <strong>memory-mapped tile blobs</strong>. This page explains why
+          that's enough — and how each layer earns its place.
+        </p>
+        <div class="algo-toc">
+          <a href="#build">1 · Build pipeline</a>
+          <a href="#search">2 · Search pipeline</a>
+          <a href="#reverse">3 · Reverse pipeline</a>
+          <a href="#bundle">4 · Bundle format</a>
+          <a href="#differentiators">5 · Differentiators</a>
+          <a href="#perf">6 · Performance characteristics</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="algo-section" id="build">
+      <div class="section-num">01</div>
+      <h2>Build pipeline</h2>
+      <p class="section-lede">
+        From a 4.7 GB Geofabrik PBF to a 1.5 GB on-disk bundle in
+        ~8 minutes on a single laptop. No Postgres, no Elasticsearch,
+        no daemon. Three parallel passes, one tantivy commit, one
+        rkyv serialization, one ed25519 signature.
+      </p>
+
+      <h3>Stage 1 · Parse PBF</h3>
+      <p>
+        Cairn reads OSM PBF blocks via <a href="https://crates.io/crates/osmpbf"><code>osmpbf</code></a>'s
+        <code>BlobReader</code> and <code>par_bridge</code>'s rayon
+        worker pool. Each PBF blob (~32 KB compressed protobuf) decodes
+        in parallel; the per-blob workers emit independent
+        <code>(Vec&lt;Place&gt;, Counters)</code> tuples that reduce
+        into the global stream.
+      </p>
+      <p>
+        Why parallel decode matters: at planet scale PBF
+        decompression dominates wall-clock. Block-level parallelism
+        scales nearly linearly with rayon worker count.
+      </p>
+
+      <h3>Stage 2 · Node-coord cache (Phase 6f)</h3>
+      <p>
+        Way centroids and admin polygons need every referenced node's
+        <code>(lon, lat)</code>. The cache strategy decides build RSS:
+      </p>
+      <table class="algo-table">
+        <thead>
+          <tr><th>Strategy</th><th>Storage</th><th>Per-entry</th><th>RSS at planet</th><th>When to pick</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>inline</code></td>
+            <td><code>HashMap&lt;i64, [f64;2]&gt;</code></td>
+            <td>~48 B</td>
+            <td>~430 GB</td>
+            <td>≤ 5 GB PBF</td>
+          </tr>
+          <tr>
+            <td><code>sorted-vec</code></td>
+            <td><code>Vec&lt;(i64, [i32;2])&gt;</code> sorted, binary search</td>
+            <td>~16 B</td>
+            <td>~140 GB</td>
+            <td>5–30 GB PBF</td>
+          </tr>
+          <tr>
+            <td><code>flatnode</code></td>
+            <td>mmap'd dense <code>[i32;2]</code> array, sparse file</td>
+            <td>8 B / id slot</td>
+            <td><strong>~2–4 GB working set</strong></td>
+            <td>≥ 30 GB PBF</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Coord quantization to <code>degrees * 1e7</code> is lossless at
+        OSM's native precision. Flatnode relies on POSIX sparse-file
+        semantics: <code>set_len(N)</code> reserves a 110 GB logical
+        range without allocating disk pages, and only-written slots
+        back to physical storage. Switzerland's flatnode logical
+        size is 103 GB; real disk usage is 16 GB.
+      </p>
+
+      <h3>Stage 3 · WayNodes pre-filter (Phase 6g)</h3>
+      <p>
+        Way centroid + admin polygon assembly need <code>way_id →
+        Vec&lt;node_id&gt;</code> for the small subset of ways that are
+        relation members. A pre-pass collects the relevant
+        <code>HashSet&lt;i64&gt;</code>; the way-place pass only
+        registers way_nodes for that set. Switzerland: 6.2 M ways
+        scanned, 790 K registered (87 % drop). At Europe scale the
+        difference is ~50 GB of saved RSS.
+      </p>
+
+      <h3>Stage 4 · Multipolygon ring assembly (Phase 7a-K)</h3>
+      <p>
+        Admin relations carry outer + inner ways. Cairn stitches
+        endpoints into closed rings, then validates and pairs them
+        into <code>geo::Polygon</code> values. Four invariants are
+        enforced:
+      </p>
+      <ul class="algo-list">
+        <li><strong>Consecutive-duplicate vertex collapse.</strong>
+          Way-stitching at a shared join node frequently produces
+          <code>[…, A, A, …]</code> sequences; the dedup pass
+          collapses them before the ≥4-distinct-vertex floor check.</li>
+        <li><strong>Self-intersection rejection.</strong> An <code>O(n²)</code>
+          segment-pair check catches figure-8s from bad OSM edits or
+          stitching errors. <code>geo::Polygon</code> makes no
+          contains/centroid guarantee on self-intersecting input;
+          the offending ring is dropped (counter <code>skipped_relation_invalid_ring</code>).</li>
+        <li><strong>Ring orientation.</strong> OSM convention is
+          counter-clockwise outer + clockwise inner. The hardener
+          flips wrong-winding rings using
+          <code>geo::Area::signed_area</code>. Ratchets a
+          <code>rings_reoriented</code> diagnostic counter.</li>
+        <li><strong>Smallest-enclosing outer.</strong> When multiple
+          outer rings contain an inner's representative point (rare
+          but real for nested admin relations), the inner now binds
+          to the SMALLEST enclosing outer instead of the first one
+          tested.</li>
+      </ul>
+
+      <h3>Stage 5 · Parallel admin assembly (Phase 7a-pass-2b2)</h3>
+      <p>
+        Admin polygon assembly used to be a sequential
+        <code>ElementReader::for_each</code> walk pinned to a single
+        core. <code>parallel_admin_relations</code> now runs
+        block-level workers with their own per-tile local PlaceId
+        counters; collisions across blocks resolve via the same
+        deterministic renumber pass that the way- and node-place
+        passes use.
+      </p>
+      <p>
+        DE: pass 2b2 wall-clock <strong>~120 s → ~17 s</strong>
+        (~7×). Switzerland: 6 s → 0.9 s.
+      </p>
+
+      <h3>Stage 6 · Tantivy index + tile blob write</h3>
+      <p>
+        Places stream into a 256 MiB-buffer
+        <code>tantivy::IndexWriter</code> (Phase 7a, was 64 MiB).
+        Larger buffer collapses 113 in-build segments to ~17 after
+        merge — fewer per-query segment iter ops at serve time.
+        <code>writer.commit()</code> is followed by
+        <code>writer.wait_merging_threads()</code> so the blake3
+        hash-pass that follows sees a stable on-disk segment set.
+      </p>
+      <p>
+        Place vectors get bucketed into <a href="../#tile-coord">tile coords</a>
+        and serialized to ZSTD-compressed rkyv blobs (one per
+        non-empty <code>(level, tile_id)</code>). Admin layer is rkyv-archived
+        per-tile with mmap'd zero-copy reads at serve time. Point
+        layer stays bincode (rkyv was 68 % larger on String-heavy
+        points; the linear scan doesn't gain from zero-copy).
+      </p>
+
+      <h3>Stage 7 · Manifest + signature + SBOM</h3>
+      <p>
+        <code>manifest.toml</code> records every artifact's blake3
+        hash, byte size, and place count. <code>sbom.json</code>
+        emits a CycloneDX 1.5 inventory of every <code>Cargo.lock</code>
+        package (purl + SHA-256) plus every input dataset. Optional
+        <code>cairn-build sign</code> appends an ed25519 detached
+        signature; <code>cairn-build sign-verify</code> fails non-zero
+        on tamper.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="algo-section" id="search">
+      <div class="section-num">02</div>
+      <h2>Search pipeline</h2>
+      <p class="section-lede">
+        A single <code>/v1/search?q=…</code> call traverses 8
+        progressively-filtered passes — each layer is opt-in, each
+        protects p99, and the order is engineered to drop disqualified
+        candidates as early as possible.
+      </p>
+
+      <pre class="algo-flow">
+query string
+   │
+   ▼
+[ trim + stop-word filter (E)        ]   drop interior "de", "la", "der"
+   │
+   ▼
+[ build_text_query                   ]   fields: name | name_prefix | name_cjk | name_translit
+   │
+   ├─ fuzzy>0 → FuzzyTermQuery + trigram pre-filter (A)
+   │              Must-AND: query trigrams ⊆ name_trigrams
+   │
+   ▼
+[ apply_phonetic_orclause            ]   DoubleMetaphone codes OR'd
+[ apply_layer_filter                 ]   kind allowlist
+[ apply_categories_filter            ]   ?categories= AND
+[ apply_valid_at_filter (Q)          ]   start_year ≤ Y ≤ end_year
+   │
+   ▼
+[ tantivy.search(combined, TopDocs)  ]   BM25 scoring on candidate set
+   │
+   ▼
+[ over-fetch K * 5 (rerank pool)     ]   so reranks promote without truncation
+   │
+   ▼
+[ rerank pipeline                    ]
+   │   ├─ exact_name_boost   ×4.0
+   │   ├─ edit_distance_boost (N)    Myers bit-parallel, linear decay
+   │   ├─ population_boost   1 + log10(1+pop) · 0.05
+   │   ├─ language_boost     ?lang= match
+   │   ├─ semantic_cosine    32-dim char-trigram (or v2 ONNX if enabled)
+   │   └─ geo_bias           1 / (1 + focus_weight · km)
+   │
+   ▼
+[ sort by final_score, truncate ]
+   │
+   ▼
+[ format_label (admin_path → "Vaduz, Liechtenstein") ]
+   │
+   ▼
+JSON response
+      </pre>
+
+      <h3>Phase 7a-A · Trigram pre-filter</h3>
+      <p>
+        <code>FuzzyTermQuery</code> walks tantivy's term dictionary
+        for every term within edit distance N of each query token.
+        At country / planet scale the term-dict scan dominates fuzzy
+        latency. Trigram pre-filter shrinks the candidate doc set
+        before BM25 scoring runs.
+      </p>
+      <p>
+        Each name variant is char-trigram extracted with
+        boundary-padded markers — <code>vienna</code> →
+        <code>{·vi, vie, ien, enn, nna, na·}</code>. Trigrams index
+        as a STRING multi-value field; the query-side filter is a
+        Should-OR over query trigrams, AND'd with the fuzzy clause.
+        Edit-distance-1 typos retain ≥ N-2 of N original trigrams
+        (pinned by a unit test) so recall is preserved.
+      </p>
+      <p>
+        Bypass for queries shorter than 4 chars — too few trigrams to
+        avoid false negatives on edit-distance-1 typos.
+      </p>
+
+      <h3>Phase 7a-N · Myers bit-parallel Levenshtein</h3>
+      <p>
+        Eugene Myers' 1999 bit-parallel algorithm. For patterns up to
+        64 chars (covering ~99 % of geocoder names — country / city /
+        street / POI labels rarely exceed 50 chars), the inner loop
+        runs entirely in <code>u64</code> register arithmetic: 4
+        bitwise ops per text char, no allocation, no branch.
+      </p>
+      <p>
+        Used as a multiplicative score boost in the rerank pipeline:
+        smaller edit distance ⇒ higher boost. Linear decay from
+        <code>EDIT_DIST_BOOST_MAX = 1.6×</code> at distance 0 down to
+        <code>1.0×</code> at distance ≥ 4. Wagner-Fischer fallback
+        handles patterns over 64 chars; differential property test
+        in the fuzz harness pins Myers and Wagner-Fischer agreement.
+      </p>
+
+      <h3>Phase 4a · Phonetic match (DoubleMetaphone)</h3>
+      <p>
+        <code>?phonetic=true</code> ORs an extra clause against a
+        STRING field of pre-encoded DoubleMetaphone codes. Each name
+        contributes its primary + alternate codes (ASCII-folded
+        first; CJK skipped). Recovers <code>Smyth → Smith</code>,
+        <code>Mueller → Müller</code>,
+        <code>Smythsonian → Smithsonian</code>, etc. — single-handedly
+        rescues 99 % of the noisy CH bench typo set.
+      </p>
+
+      <h3>Phase 4b · Semantic v1 (32-dim char-trigram)</h3>
+      <p>
+        At index time each name's trigrams are FNV-1a hashed into a
+        32-dim float vector, L2-normalized. Stored as
+        <code>DIM*4</code> packed bytes per place. Query embedding
+        runs the same hashing function; cosine vs hit's vector
+        applies a thresholded multiplicative boost (≥ 0.35 sim →
+        up to 1.6× score). Catches morphological variants
+        (<code>Vienna → Viennese</code>) and partial matches that
+        fuzzy + phonetic don't reach.
+      </p>
+
+      <h3>Phase 7a-B · Semantic v2 (fastembed-rs ONNX)</h3>
+      <p>
+        Feature-flagged behind <code>cargo build --features
+        semantic-onnx</code>. Loads a multilingual MiniLM-class
+        model (<code>MultilingualE5Small</code>, 384-dim output) via
+        ONNX Runtime through fastembed-rs. Cosine reranks the
+        candidate set with real cross-language semantics —
+        <code>Munich ↔ München ↔ Monaco di Baviera</code>. WASM
+        target stays on v1 (ORT does not compile cleanly on wasm32).
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="algo-section" id="reverse">
+      <div class="section-num">03</div>
+      <h2>Reverse pipeline</h2>
+
+      <h3>Default · admin PIP → nearest-K fallback</h3>
+      <p>
+        <code>AdminIndex</code> stores admin polygons in an R*-tree
+        of bounding boxes plus a per-tile rkyv blob. Query path:
+        bbox-prefilter for tiles intersecting the probe, then a
+        <code>geo::Contains</code> point-in-polygon test against
+        each candidate's polygon. Returns finest-first by admin
+        level (city → region → country).
+      </p>
+      <p>
+        When PIP returns nothing (probe falls outside every admin
+        polygon — ocean, disputed territory, gap in OSM coverage),
+        the fallback walks <code>NearestIndex</code>'s R*-tree of
+        place centroids, ranks tile slots by squared distance, and
+        returns the K closest places by haversine.
+      </p>
+
+      <h3>Phase 7a-H · Context-aware reverse</h3>
+      <p>
+        <code>?context=full</code> returns a structured payload
+        combining four signals in one round-trip — no incumbent
+        ships this:
+      </p>
+      <pre class="algo-code">
+{
+  "lat": 47.142,
+  "lon": 9.521,
+  "admin": [
+    { "name": "Vaduz",        "level": 8, "distance_km": 0.05 },
+    { "name": "Liechtenstein","level": 0, "distance_km": 5.20 }
+  ],
+  "nearest_road":    { "name": "Städtle",        "distance_km": 0.04 },
+  "nearest_poi":     { "name": "Vaduz Castle",   "distance_km": 0.42 },
+  "nearest_address": { "name": "Städtle 28",     "distance_km": 0.06 }
+}
+</pre>
+      <p>
+        Implementation hooks
+        <code>NearestIndex::nearest_k_filtered(probe, k, |p|
+        classify_kind(&amp;p.kind) == Some(target))</code> three
+        times — once per class. Slot collection widens
+        proportionally to the predicate's selectivity, so "nearest
+        road" doesn't degenerate when the closest tile slots happen
+        to contain only POIs.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="algo-section" id="bundle">
+      <div class="section-num">04</div>
+      <h2>Bundle format</h2>
+      <p class="section-lede">
+        Everything Cairn needs to serve queries lives in one
+        directory. No catalog database, no service registry, no
+        runtime config-fetch. The format is content-addressed,
+        verifiable, and reproducible.
+      </p>
+
+      <pre class="algo-tree">
+&lt;bundle&gt;/
+├── manifest.toml       schema_v3, blake3 of every artifact, bundle_id
+├── manifest.toml.sig   ed25519 detached signature (optional)
+├── sbom.json           CycloneDX 1.5 — Cargo.lock + datasets
+├── tiles/
+│   └── &lt;level&gt;/&lt;id&gt;.bin    rkyv-archived Place vector + ZSTD
+├── index/
+│   └── text/           tantivy segments + admin_names sidecar
+└── spatial/
+    ├── admin/&lt;tile&gt;.rk      rkyv-archived AdminFeature, mmap zero-copy
+    └── points/&lt;tile&gt;.bin    bincode PlacePoint, linear scan
+      </pre>
+
+      <p>
+        Tile blobs are 16-byte aligned with a stable header that
+        carries the rkyv archive size + payload offset. Read path
+        mmaps the file, validates via <code>rkyv::check_archived_root</code>,
+        then hands an <code>Arc&lt;AdminTileArchive&gt;</code> to the
+        per-tile slot. PIP iterates the archived form directly via
+        <code>pip_archived</code> — 128 ns inside-bbox, 2 ns
+        outside-bbox (the bbox prefilter rejects in cache).
+      </p>
+      <p>
+        Manifest schema is at version <strong>3</strong>; any breaking
+        change bumps the version and ships a reader for both shapes.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="algo-section" id="differentiators">
+      <div class="section-num">05</div>
+      <h2>Differentiators</h2>
+
+      <div class="diff-grid">
+        <article class="diff-card">
+          <h3>Federated multi-bundle (Phase 2e)</h3>
+          <p>
+            <code>cairn-serve --bundles a/,b/,c/</code> loads each
+            bundle independently and wraps the indices in
+            <code>FederatedText</code> /
+            <code>FederatedAdmin</code> /
+            <code>FederatedNearest</code>. Queries fan out, hits merge
+            by score; PIP fans out, sorts finest-first; nearest-K
+            fans out, re-sorts by haversine. Each Hit's
+            <code>admin_names</code> label renders inside its own
+            bundle before merge so Place-ID collisions across bundles
+            don't pollute labels.
+          </p>
+          <p>
+            Operational pattern: split a planet into continental
+            shards without standing up multiple processes.
+          </p>
+        </article>
+
+        <article class="diff-card">
+          <h3>Hot reload (Phase 7a-U)</h3>
+          <p>
+            <code>POST /admin/reload</code> swaps to a new bundle in
+            place. <code>AppState</code>'s mutable surface is backed
+            by <code>arc_swap::ArcSwapOption</code> so installs are a
+            single atomic store. In-flight requests finish on the
+            previous snapshot they captured at handler entry; new
+            requests pick up the new bundle on next call.
+          </p>
+          <p>
+            No process restart. No dropped connections. K8s rolling
+            update without rolling.
+          </p>
+        </article>
+
+        <article class="diff-card">
+          <h3>Time-aware names (Phase 7a-Q)</h3>
+          <p>
+            <code>?valid_at=YYYY</code> filters by OSM
+            <code>start_date</code> / <code>end_date</code> tags.
+            Year-only parse handles plain digits, ISO dates, BC suffix
+            (<code>"44 BC"</code>), and qualifier prefixes
+            (<code>"before 1989"</code>, <code>"circa 1850"</code>).
+            Sentinels for unbounded validity. RangeQuery filter
+            joined with the rest of the search clause.
+          </p>
+          <p>
+            <code>?valid_at=1939</code> resolves <em>Königsberg</em>;
+            <code>?valid_at=1980</code> resolves <em>Kaliningrad</em>.
+            No incumbent ships temporal validity at all.
+          </p>
+        </article>
+
+        <article class="diff-card">
+          <h3>WASM autocomplete (Phase 4b)</h3>
+          <p>
+            <code>cairn-wasm</code> compiles to a ~250 KB
+            <code>cdylib</code> for <code>wasm32-unknown-unknown</code>.
+            Exposes <code>Autocompleter::new(Vec&lt;u8&gt;)</code> +
+            <code>complete(prefix, limit) → Vec&lt;String&gt;</code>
+            driven by FST prefix iteration. Tantivy is excluded from
+            the WASM path so the bundle stays small.
+          </p>
+          <p>
+            Use cases: country-bundle splash autocomplete, embedded
+            form widgets, PWA / offline-first apps.
+          </p>
+        </article>
+
+        <article class="diff-card">
+          <h3>Signed bundles + SBOM (Phase 4c, 4d)</h3>
+          <p>
+            <code>cairn-build sign</code> emits an ed25519 detached
+            signature over <code>manifest.toml</code>; the manifest
+            already carries blake3 of every artifact, so signing the
+            manifest signs the whole bundle. Pure-Rust ed25519-dalek
+            keeps static-musl self-contained.
+          </p>
+          <p>
+            <code>sbom.json</code> ships a CycloneDX 1.5 inventory.
+            <code>/v1/sbom</code> serves the file with
+            <code>application/vnd.cyclonedx+json</code> so
+            dependency-track / grype / cyclonedx-cli pick it up
+            without sniffing.
+          </p>
+        </article>
+
+        <article class="diff-card">
+          <h3>Query explain (Phase 4e)</h3>
+          <p>
+            <code>?explain=true</code> populates
+            <code>Hit.explain</code> with <code>bm25</code>,
+            <code>exact_match_boost</code>,
+            <code>population_boost</code>,
+            <code>language_boost</code>, <code>geo_bias</code>,
+            <code>final_score</code>. Each rerank stage records its
+            multiplier in place. Off by default;
+            <code>skip_serializing_if = Option::is_none</code> keeps
+            payloads lean for normal callers.
+          </p>
+          <p>
+            Useful for debugging ranking surprises and for clients
+            that want to surface "why this hit ranked here". No
+            incumbent ships this.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="algo-section" id="perf">
+      <div class="section-num">06</div>
+      <h2>Performance characteristics</h2>
+
+      <h3>Microbench (Apple Silicon, criterion)</h3>
+      <table class="algo-table">
+        <thead>
+          <tr><th>Operation</th><th>Mean (ns)</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>myers/short identical</code></td><td>~80</td><td>5-char same-string</td></tr>
+          <tr><td><code>myers/short typo</code></td><td>~120</td><td>1 substitution</td></tr>
+          <tr><td><code>myers/64-char boundary</code></td><td>~250</td><td>fast-path tail</td></tr>
+          <tr><td><code>wagner_fischer/short typo</code></td><td>~150</td><td>O(m·n) reference</td></tr>
+          <tr><td><code>trigram_indexed/short</code></td><td>~350</td><td>5-char Latin</td></tr>
+          <tr><td><code>trigram_indexed/CJK</code></td><td>~800</td><td>UTF-8 walk + alphanumeric filter</td></tr>
+          <tr><td><code>pip_archived/inside</code></td><td>~94</td><td>rkyv zero-copy ring scan</td></tr>
+          <tr><td><code>pip_archived/outside-bbox</code></td><td>~1.5</td><td>bbox prefilter rejects in cache</td></tr>
+          <tr><td><code>nearest_k=10/4096pts</code></td><td>~375 µs</td><td>R*-tree slot rank + linear</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Live numbers in <a href="../benchmarks/perf-baseline.json"><code>benchmarks/perf-baseline.json</code></a>;
+        a CI workflow gates regressions beyond +15 % per benchmark.
+      </p>
+
+      <h3>End-to-end (Switzerland)</h3>
+      <table class="algo-table">
+        <thead>
+          <tr><th>Metric</th><th>Cairn</th><th>Pelias</th><th>Nominatim</th><th>Photon</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Build wall</td><td><strong>24 s</strong></td><td>3 m 46 s</td><td>3 h 13 m</td><td>2 m 1 s</td></tr>
+          <tr><td>Bundle disk</td><td><strong>195 MB</strong></td><td>3.5 GB</td><td>9.2 GB</td><td>1.3 GB</td></tr>
+          <tr><td>Hot RSS</td><td><strong>80 MB</strong></td><td>2.7 GB</td><td>2.4 GB</td><td>2.1 GB</td></tr>
+          <tr><td>p50</td><td><strong><code>0.51 ms</code></strong></td><td><code>13.76 ms</code></td><td><code>9.51 ms</code></td><td><code>5.88 ms</code></td></tr>
+          <tr><td>p99</td><td><strong><code>0.74 ms</code></strong></td><td><code>57.23 ms</code></td><td><code>23.00 ms</code></td><td><code>25.18 ms</code></td></tr>
+          <tr><td>Peak RPS</td><td><strong>57 554</strong></td><td>362</td><td>1 109</td><td>2 406</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Recall on noisy queries (1 153 typo / fold variants)</h3>
+      <table class="algo-table">
+        <thead>
+          <tr><th>Configuration</th><th>Hits</th><th>Recall</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>baseline</td><td>253 / 1 153</td><td>21.9 %</td></tr>
+          <tr><td><code>?fuzzy=1</code></td><td>865 / 1 153</td><td>75.0 %</td></tr>
+          <tr><td><code>?phonetic=true</code></td><td>1 142 / 1 153</td><td><strong>99.0 %</strong></td></tr>
+          <tr><td><code>?semantic=true</code></td><td>253 / 1 153</td><td>21.9 %</td></tr>
+          <tr><td>all flags on</td><td>1 153 / 1 153</td><td><strong>100.0 %</strong></td></tr>
+        </tbody>
+      </table>
+      <p>
+        DoubleMetaphone single-handedly rescues 99 % of typos.
+        Semantic boost is for morphological variants (<code>Vienna →
+        Viennese</code>) and doesn't fire on character-level
+        perturbations. No incumbent geocoder ships a
+        <code>?phonetic=</code> toggle today.
+      </p>
+    </section>
+
+    <footer class="algo-foot">
+      <div class="algo-foot-inner">
+        <div>
+          <strong>Cairn</strong> — offline geocoder, single static
+          binary, MIT / Apache-2.0.
+        </div>
+        <div class="foot-links">
+          <a href="../">Docs home</a>
+          <a href="../comparison/">Why Cairn vs Pelias / Photon / Nominatim</a>
+          <a href="https://github.com/cairn-geocoder/cairn">GitHub</a>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+</body>
+</html>
