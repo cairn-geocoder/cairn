@@ -9,7 +9,19 @@ The bundle on-disk layout is governed by `Manifest.schema_version`
 (currently `3`); any breaking change to that schema is called out
 below.
 
-## Unreleased
+## 0.1.0 — 2026-04-29
+
+First public beta. Pelias drop-in parity (Tier 1) + quality lead
+(Tier 2) + ops polish (Tier 3) + differentiators (Tier 4) all
+shipped. Reproducible Switzerland + Germany benchmarks land Cairn
+**6–43× faster at p99**, **4–81× higher peak RPS**, and
+**5–27× smaller hot RSS** than every incumbent on the same input.
+Bundle on-disk schema is `Manifest.schema_version = 3`.
+
+Companion [`cairn-cloud`](https://github.com/cairn-geocoder/cairn-cloud)
+repo ships Helm chart, Kustomize overlays, Terraform modules
+(AWS / GCP / Nomad), Grafana dashboard, and Prometheus alerting
+rules at chart version `0.1.0`.
 
 ### Added — Tier 1 parity batch (Pelias drop-in)
 - `?categories=` filter on `/v1/search` and Pelias `/search`. Pelias-
