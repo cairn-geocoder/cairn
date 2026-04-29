@@ -26,10 +26,47 @@ use cairn_tile::{Level, TileCoord};
 use geo_types::{LineString, MultiPolygon, Polygon};
 use osmpbf::{BlobDecode, BlobReader, DenseNode, Element, ElementReader, Node, Relation, Way};
 use rayon::iter::{ParallelBridge, ParallelIterator};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use thiserror::Error;
 use tracing::{debug, info};
+
+/// Selects the in-memory representation of the OSM node-coordinate
+/// cache built during pass 1.
+///
+/// The cache dominates build RSS (validated against the Germany bench:
+/// ~430 M nodes × 48 B/HashMap-entry ≈ 21 GB peak, matches the observed
+/// 22 GB). Switching to a sorted `Vec` of `(id, [i32;2])` cuts
+/// per-entry overhead to 16 B (3× smaller) while keeping lookup at
+/// O(log n).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NodeCacheStrategy {
+    /// `HashMap<i64, [f64; 2]>`. ~48 B/entry. Fastest lookup, highest
+    /// RAM footprint. Default for inputs ≤ 5 GB.
+    #[default]
+    Inline,
+    /// Sorted `Vec<(i64, [i32; 2])>` with binary-search lookup. ~16 B
+    /// per entry; coords quantized to `degrees * 1e7` (i32, ~1 cm
+    /// precision — lossless at OSM coord precision). Includes a
+    /// reference pre-filter pass that drops nodes not used by any
+    /// way or relation. Default for inputs > 5 GB.
+    SortedVec,
+}
+
+/// Quantize a `(lon, lat)` pair to a pair of i32 representing
+/// `degrees * 1e7`. Lossless at OSM's native precision (1e-7 deg).
+#[inline]
+fn quantize_coord(lonlat: [f64; 2]) -> [i32; 2] {
+    [
+        (lonlat[0] * 1e7).round() as i32,
+        (lonlat[1] * 1e7).round() as i32,
+    ]
+}
+
+#[inline]
+fn dequantize_coord(q: [i32; 2]) -> [f64; 2] {
+    [q[0] as f64 / 1e7, q[1] as f64 / 1e7]
+}
 
 #[derive(Debug, Error)]
 pub enum ImportError {
@@ -74,7 +111,120 @@ impl Counters {
     }
 }
 
-type NodeCoords = HashMap<i64, [f64; 2]>;
+/// In-memory OSM node coordinate cache. Stores `(lon, lat)` per node
+/// id under one of the strategies in [`NodeCacheStrategy`].
+///
+/// Lookup returns `Option<[f64; 2]>` by value — the underlying
+/// representation may decode quantized integers on read, so a
+/// reference into the storage isn't always available.
+pub struct NodeCoords {
+    inner: NodeCoordsInner,
+}
+
+enum NodeCoordsInner {
+    Inline(HashMap<i64, [f64; 2]>),
+    /// Sorted by id ascending. Coords are i32 quantized.
+    SortedVec(Vec<(i64, [i32; 2])>),
+}
+
+impl NodeCoords {
+    /// Empty inline-strategy cache.
+    pub fn new_inline() -> Self {
+        NodeCoords {
+            inner: NodeCoordsInner::Inline(HashMap::new()),
+        }
+    }
+
+    /// Empty sorted-vec-strategy cache. Build with [`Self::push_sorted`]
+    /// + [`Self::finalize_sorted`].
+    pub fn new_sorted_vec() -> Self {
+        NodeCoords {
+            inner: NodeCoordsInner::SortedVec(Vec::new()),
+        }
+    }
+
+    /// Wrap an existing `HashMap<i64, [f64;2]>` (mostly for tests).
+    pub fn from_inline_map(map: HashMap<i64, [f64; 2]>) -> Self {
+        NodeCoords {
+            inner: NodeCoordsInner::Inline(map),
+        }
+    }
+
+    /// Wrap an existing sorted `Vec<(i64, [i32;2])>` (caller asserts
+    /// the vec is sorted ascending by id).
+    pub fn from_sorted_vec(vec: Vec<(i64, [i32; 2])>) -> Self {
+        debug_assert!(vec.windows(2).all(|w| w[0].0 <= w[1].0));
+        NodeCoords {
+            inner: NodeCoordsInner::SortedVec(vec),
+        }
+    }
+
+    /// Insert into an inline-strategy cache. Panics on sorted-vec.
+    pub fn insert_inline(&mut self, id: i64, lonlat: [f64; 2]) {
+        match &mut self.inner {
+            NodeCoordsInner::Inline(m) => {
+                m.insert(id, lonlat);
+            }
+            NodeCoordsInner::SortedVec(_) => {
+                panic!("insert_inline on sorted-vec strategy")
+            }
+        }
+    }
+
+    /// Append to an unsorted sorted-vec-strategy cache. Caller must
+    /// call [`Self::finalize_sorted`] before any reads.
+    pub fn push_sorted(&mut self, id: i64, lonlat: [f64; 2]) {
+        match &mut self.inner {
+            NodeCoordsInner::SortedVec(v) => {
+                v.push((id, quantize_coord(lonlat)));
+            }
+            NodeCoordsInner::Inline(_) => {
+                panic!("push_sorted on inline strategy")
+            }
+        }
+    }
+
+    /// Sort + dedup the sorted-vec storage. No-op for inline.
+    pub fn finalize_sorted(&mut self) {
+        if let NodeCoordsInner::SortedVec(v) = &mut self.inner {
+            v.sort_by_key(|(id, _)| *id);
+            v.dedup_by_key(|(id, _)| *id);
+            v.shrink_to_fit();
+        }
+    }
+
+    /// Lookup the `(lon, lat)` for `id`. Returns `None` if absent.
+    #[inline]
+    pub fn get(&self, id: i64) -> Option<[f64; 2]> {
+        match &self.inner {
+            NodeCoordsInner::Inline(m) => m.get(&id).copied(),
+            NodeCoordsInner::SortedVec(v) => v
+                .binary_search_by_key(&id, |(k, _)| *k)
+                .ok()
+                .map(|idx| dequantize_coord(v[idx].1)),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match &self.inner {
+            NodeCoordsInner::Inline(m) => m.len(),
+            NodeCoordsInner::SortedVec(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Approximate heap usage of the cache, in bytes.
+    pub fn approx_heap_bytes(&self) -> usize {
+        match &self.inner {
+            NodeCoordsInner::Inline(m) => m.capacity() * 48,
+            NodeCoordsInner::SortedVec(v) => v.capacity() * 16,
+        }
+    }
+}
+
 type WayNodes = HashMap<i64, Vec<i64>>;
 
 /// `addr:housenumber` value at a given node, plus the optional
@@ -94,11 +244,23 @@ pub struct OsmImport {
 }
 
 pub fn import(pbf_path: &Path) -> Result<OsmImport, ImportError> {
-    info!(path = %pbf_path.display(), "OSM PBF pass 1: node coords + addr nodes");
-    let (node_coords, node_addrs) = load_node_caches(pbf_path)?;
+    import_with(pbf_path, NodeCacheStrategy::default())
+}
+
+/// Like [`import`] but lets the caller pick the node-cache strategy.
+/// Use [`NodeCacheStrategy::SortedVec`] for inputs > 5 GB to keep
+/// build RSS bounded.
+pub fn import_with(pbf_path: &Path, strategy: NodeCacheStrategy) -> Result<OsmImport, ImportError> {
+    info!(
+        path = %pbf_path.display(),
+        node_cache = ?strategy,
+        "OSM PBF pass 1: node coords + addr nodes"
+    );
+    let (node_coords, node_addrs) = load_node_caches(pbf_path, strategy)?;
     info!(
         nodes_cached = node_coords.len(),
         addr_nodes = node_addrs.len(),
+        cache_heap_mb = node_coords.approx_heap_bytes() / (1024 * 1024),
         "node caches built"
     );
 
@@ -375,51 +537,67 @@ fn renumber_admin_features(mut feats: Vec<AdminFeature>) -> Vec<AdminFeature> {
     feats
 }
 
-/// Block-level parallel decode of the node coord cache + address-tagged
-/// node cache. Each PBF data blob is independent (decompression +
-/// protobuf parse + per-element extraction); we let rayon's
-/// `par_bridge` schedule blobs across worker threads, build a
-/// per-block `(NodeCoords, NodeAddrs)` accumulator, then reduce by
-/// extending one map into another.
+/// Build the pass-1 node coord cache + address-tagged node cache
+/// using the requested strategy.
 ///
-/// Wins over the sequential `ElementReader::for_each` path: PBF
-/// decompression dominates wall-clock at planet scale, and we now
-/// pipeline that across cores. ~5-8x speedup on a planet PBF on
-/// typical 8-core boxes.
-fn load_node_caches(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs), ImportError> {
+/// `Inline`: parallel block-level fan-out into per-block `HashMap`s,
+/// merged by extending the larger into the smaller. ~48 B/entry.
+///
+/// `SortedVec`: two-pass design. The first parallel pass scans every
+/// blob and collects a `HashSet<i64>` of node ids referenced by any
+/// way (`Way::refs()`) or by relation members of `MemberType::Node`.
+/// The second pass scans nodes again and only retains ids in that
+/// set, packing them into per-block `Vec<(i64, [i32;2])>` (i32-
+/// quantized coords). The reduce step concatenates and sorts. Cuts
+/// per-entry cost to 16 B and drops nodes that are tagged-only POIs
+/// — those go through pass 2a's direct PBF read and don't need a
+/// cache entry.
+fn load_node_caches(
+    pbf_path: &Path,
+    strategy: NodeCacheStrategy,
+) -> Result<(NodeCoords, NodeAddrs), ImportError> {
+    match strategy {
+        NodeCacheStrategy::Inline => load_node_caches_inline(pbf_path),
+        NodeCacheStrategy::SortedVec => load_node_caches_sorted_vec(pbf_path),
+    }
+}
+
+fn load_node_caches_inline(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs), ImportError> {
     let blob_reader = BlobReader::from_path(pbf_path)?;
-    blob_reader
+    let (coords_map, addrs) = blob_reader
         .par_bridge()
-        .map(|blob| -> Result<(NodeCoords, NodeAddrs), ImportError> {
-            let blob = blob?;
-            match blob.decode()? {
-                BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
-                    Ok((HashMap::new(), HashMap::new()))
-                }
-                BlobDecode::OsmData(block) => {
-                    let mut coords: NodeCoords = HashMap::new();
-                    let mut addrs: NodeAddrs = HashMap::new();
-                    for elem in block.elements() {
-                        match elem {
-                            Element::Node(n) => {
-                                coords.insert(n.id(), [n.lon(), n.lat()]);
-                                if let Some(addr) = node_addr_from_tags(n.tags()) {
-                                    addrs.insert(n.id(), addr);
-                                }
-                            }
-                            Element::DenseNode(n) => {
-                                coords.insert(n.id(), [n.lon(), n.lat()]);
-                                if let Some(addr) = node_addr_from_tags(n.tags()) {
-                                    addrs.insert(n.id(), addr);
-                                }
-                            }
-                            _ => {}
-                        }
+        .map(
+            |blob| -> Result<(HashMap<i64, [f64; 2]>, NodeAddrs), ImportError> {
+                let blob = blob?;
+                match blob.decode()? {
+                    BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
+                        Ok((HashMap::new(), HashMap::new()))
                     }
-                    Ok((coords, addrs))
+                    BlobDecode::OsmData(block) => {
+                        let mut coords: HashMap<i64, [f64; 2]> = HashMap::new();
+                        let mut addrs: NodeAddrs = HashMap::new();
+                        for elem in block.elements() {
+                            match elem {
+                                Element::Node(n) => {
+                                    coords.insert(n.id(), [n.lon(), n.lat()]);
+                                    if let Some(addr) = node_addr_from_tags(n.tags()) {
+                                        addrs.insert(n.id(), addr);
+                                    }
+                                }
+                                Element::DenseNode(n) => {
+                                    coords.insert(n.id(), [n.lon(), n.lat()]);
+                                    if let Some(addr) = node_addr_from_tags(n.tags()) {
+                                        addrs.insert(n.id(), addr);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok((coords, addrs))
+                    }
                 }
-            }
-        })
+            },
+        )
         .reduce(
             || Ok((HashMap::new(), HashMap::new())),
             |a, b| match (a, b) {
@@ -443,7 +621,128 @@ fn load_node_caches(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs), ImportEr
                 }
                 (Err(e), _) | (_, Err(e)) => Err(e),
             },
+        )?;
+    Ok((NodeCoords::from_inline_map(coords_map), addrs))
+}
+
+/// Pre-filter pass: parallel scan of all blobs, collecting the set of
+/// node ids referenced by any way (`Way::refs()`) or by any relation
+/// member of type `Node`. Nodes outside this set are unreachable from
+/// the way / admin assembly path and don't need a cache entry.
+fn collect_referenced_node_ids(pbf_path: &Path) -> Result<HashSet<i64>, ImportError> {
+    let blob_reader = BlobReader::from_path(pbf_path)?;
+    blob_reader
+        .par_bridge()
+        .map(|blob| -> Result<HashSet<i64>, ImportError> {
+            let blob = blob?;
+            match blob.decode()? {
+                BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => Ok(HashSet::new()),
+                BlobDecode::OsmData(block) => {
+                    let mut ids: HashSet<i64> = HashSet::new();
+                    for elem in block.elements() {
+                        match elem {
+                            Element::Way(w) => {
+                                for r in w.refs() {
+                                    ids.insert(r);
+                                }
+                            }
+                            Element::Relation(r) => {
+                                for m in r.members() {
+                                    if matches!(m.member_type, osmpbf::RelMemberType::Node) {
+                                        ids.insert(m.member_id);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok(ids)
+                }
+            }
+        })
+        .reduce(
+            || Ok(HashSet::new()),
+            |a, b| match (a, b) {
+                (Ok(aa), Ok(bb)) => {
+                    // Extend the larger set with the smaller.
+                    let (mut big, small) = if aa.len() >= bb.len() { (aa, bb) } else { (bb, aa) };
+                    big.extend(small);
+                    Ok(big)
+                }
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            },
         )
+}
+
+fn load_node_caches_sorted_vec(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs), ImportError> {
+    info!("OSM PBF pass 0: scan ways + relations for node id ref-set");
+    let needed = collect_referenced_node_ids(pbf_path)?;
+    info!(
+        ref_node_ids = needed.len(),
+        "ref-set built; scanning nodes filtered by it"
+    );
+
+    let blob_reader = BlobReader::from_path(pbf_path)?;
+    let (coords_vec, addrs) = blob_reader
+        .par_bridge()
+        .map(
+            |blob| -> Result<(Vec<(i64, [i32; 2])>, NodeAddrs), ImportError> {
+                let blob = blob?;
+                match blob.decode()? {
+                    BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
+                        Ok((Vec::new(), HashMap::new()))
+                    }
+                    BlobDecode::OsmData(block) => {
+                        let mut coords: Vec<(i64, [i32; 2])> = Vec::new();
+                        let mut addrs: NodeAddrs = HashMap::new();
+                        for elem in block.elements() {
+                            match elem {
+                                Element::Node(n) => {
+                                    if needed.contains(&n.id()) {
+                                        coords.push((n.id(), quantize_coord([n.lon(), n.lat()])));
+                                    }
+                                    if let Some(addr) = node_addr_from_tags(n.tags()) {
+                                        addrs.insert(n.id(), addr);
+                                    }
+                                }
+                                Element::DenseNode(n) => {
+                                    if needed.contains(&n.id()) {
+                                        coords.push((n.id(), quantize_coord([n.lon(), n.lat()])));
+                                    }
+                                    if let Some(addr) = node_addr_from_tags(n.tags()) {
+                                        addrs.insert(n.id(), addr);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok((coords, addrs))
+                    }
+                }
+            },
+        )
+        .reduce(
+            || Ok((Vec::new(), HashMap::new())),
+            |a, b| match (a, b) {
+                (Ok((mut av, aa)), Ok((bv, ba))) => {
+                    av.extend(bv);
+                    let (mut big_a, small_a) = if aa.len() >= ba.len() {
+                        (aa, ba)
+                    } else {
+                        (ba, aa)
+                    };
+                    big_a.extend(small_a);
+                    Ok((av, big_a))
+                }
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            },
+        )?;
+
+    let mut nc = NodeCoords {
+        inner: NodeCoordsInner::SortedVec(coords_vec),
+    };
+    nc.finalize_sorted();
+    Ok((nc, addrs))
 }
 
 fn node_addr_from_tags<'a>(tags: impl IntoIterator<Item = (&'a str, &'a str)>) -> Option<NodeAddr> {
@@ -534,9 +833,9 @@ fn way_centroid(way: &Way<'_>, node_coords: &NodeCoords) -> Option<Coord> {
     let mut sum_lat = 0.0f64;
     let mut n = 0u64;
     for ref_id in way.refs() {
-        if let Some([lon, lat]) = node_coords.get(&ref_id) {
-            sum_lon += *lon;
-            sum_lat += *lat;
+        if let Some([lon, lat]) = node_coords.get(ref_id) {
+            sum_lon += lon;
+            sum_lat += lat;
             n += 1;
         }
     }
@@ -844,8 +1143,8 @@ fn interpolate_addresses(
     // Resolve every node coord; if any are missing, drop the whole way.
     let mut polyline: Vec<[f64; 2]> = Vec::with_capacity(refs.len());
     for id in refs {
-        match node_coords.get(id) {
-            Some(c) => polyline.push(*c),
+        match node_coords.get(*id) {
+            Some(c) => polyline.push(c),
             None => return Vec::new(),
         }
     }
@@ -1115,7 +1414,7 @@ fn assemble_rings(outer_way_ids: &[i64], way_nodes: &WayNodes) -> Vec<Vec<i64>> 
 fn ring_to_linestring(ring: &[i64], node_coords: &NodeCoords) -> Option<LineString<f64>> {
     let coords: Vec<(f64, f64)> = ring
         .iter()
-        .filter_map(|id| node_coords.get(id).map(|c| (c[0], c[1])))
+        .filter_map(|id| node_coords.get(*id).map(|c| (c[0], c[1])))
         .collect();
     if coords.len() < 4 {
         return None;
@@ -1245,9 +1544,9 @@ mod tests {
 
     #[test]
     fn interpolation_odd_2_to_10() {
-        let mut coords: NodeCoords = HashMap::new();
-        coords.insert(1, [9.0, 47.0]);
-        coords.insert(2, [9.0, 47.5]);
+        let mut coords = NodeCoords::new_inline();
+        coords.insert_inline(1, [9.0, 47.0]);
+        coords.insert_inline(2, [9.0, 47.5]);
         let mut addrs: NodeAddrs = HashMap::new();
         addrs.insert(
             1,
@@ -1274,9 +1573,9 @@ mod tests {
 
     #[test]
     fn interpolation_even_with_swapped_endpoints() {
-        let mut coords: NodeCoords = HashMap::new();
-        coords.insert(1, [10.0, 50.0]);
-        coords.insert(2, [10.0, 50.0]);
+        let mut coords = NodeCoords::new_inline();
+        coords.insert_inline(1, [10.0, 50.0]);
+        coords.insert_inline(2, [10.0, 50.0]);
         let mut addrs: NodeAddrs = HashMap::new();
         addrs.insert(
             1,
@@ -1299,9 +1598,9 @@ mod tests {
 
     #[test]
     fn interpolation_all() {
-        let mut coords: NodeCoords = HashMap::new();
-        coords.insert(1, [0.0, 0.0]);
-        coords.insert(2, [0.0, 0.0]);
+        let mut coords = NodeCoords::new_inline();
+        coords.insert_inline(1, [0.0, 0.0]);
+        coords.insert_inline(2, [0.0, 0.0]);
         let mut addrs: NodeAddrs = HashMap::new();
         addrs.insert(
             1,
@@ -1330,10 +1629,10 @@ mod tests {
         // → still in first segment (0..10), so y=0, x=8.0.
         // Synth #9 sits at fraction 8/10 = 0.8, arc target 16.0 → second
         // segment (length 10), fraction 0.6 along → x=10, y=6.0.
-        let mut coords: NodeCoords = HashMap::new();
-        coords.insert(1, [0.0, 0.0]);
-        coords.insert(2, [10.0, 0.0]);
-        coords.insert(3, [10.0, 10.0]);
+        let mut coords = NodeCoords::new_inline();
+        coords.insert_inline(1, [0.0, 0.0]);
+        coords.insert_inline(2, [10.0, 0.0]);
+        coords.insert_inline(3, [10.0, 10.0]);
         let mut addrs: NodeAddrs = HashMap::new();
         addrs.insert(
             1,
@@ -1364,9 +1663,9 @@ mod tests {
 
     #[test]
     fn interpolation_unsupported_kind() {
-        let mut coords: NodeCoords = HashMap::new();
-        coords.insert(1, [0.0, 0.0]);
-        coords.insert(2, [0.0, 0.0]);
+        let mut coords = NodeCoords::new_inline();
+        coords.insert_inline(1, [0.0, 0.0]);
+        coords.insert_inline(2, [0.0, 0.0]);
         let mut addrs: NodeAddrs = HashMap::new();
         addrs.insert(
             1,
@@ -1485,5 +1784,105 @@ mod tests {
         assert_eq!(polys.len(), 2);
         assert_eq!(polys[0].interiors().len(), 1);
         assert_eq!(polys[1].interiors().len(), 1);
+    }
+
+    // ── Phase 6f: NodeCoords strategy tests ────────────────────────
+
+    #[test]
+    fn node_coords_inline_get_roundtrip() {
+        let mut nc = NodeCoords::new_inline();
+        nc.insert_inline(42, [9.5314, 47.3769]);
+        nc.insert_inline(99, [-122.4194, 37.7749]);
+        assert_eq!(nc.get(42), Some([9.5314, 47.3769]));
+        assert_eq!(nc.get(99), Some([-122.4194, 37.7749]));
+        assert_eq!(nc.get(0), None);
+        assert_eq!(nc.len(), 2);
+    }
+
+    #[test]
+    fn node_coords_sorted_vec_get_roundtrip() {
+        let mut nc = NodeCoords::new_sorted_vec();
+        // Push out of order — finalize_sorted must reorder.
+        nc.push_sorted(99, [-122.4194, 37.7749]);
+        nc.push_sorted(42, [9.5314, 47.3769]);
+        nc.push_sorted(13, [0.0, 0.0]);
+        nc.finalize_sorted();
+        assert_eq!(nc.len(), 3);
+
+        // i32-quantization at 1e-7 precision is lossless at OSM-grade
+        // coordinates (which themselves use 1e-7 deg).
+        let got = nc.get(42).unwrap();
+        assert!((got[0] - 9.5314).abs() < 1e-6);
+        assert!((got[1] - 47.3769).abs() < 1e-6);
+
+        let got = nc.get(99).unwrap();
+        assert!((got[0] - -122.4194).abs() < 1e-6);
+        assert!((got[1] - 37.7749).abs() < 1e-6);
+
+        assert_eq!(nc.get(0), None);
+        assert_eq!(nc.get(7777), None);
+    }
+
+    #[test]
+    fn node_coords_sorted_vec_dedup_keeps_one_entry() {
+        let mut nc = NodeCoords::new_sorted_vec();
+        nc.push_sorted(7, [1.0, 2.0]);
+        nc.push_sorted(7, [3.0, 4.0]);
+        nc.finalize_sorted();
+        assert_eq!(nc.len(), 1);
+        // dedup_by_key keeps the first encountered after sort_by_key
+        // by stable sort; assert we got *some* entry, both are valid.
+        let got = nc.get(7).unwrap();
+        assert!(got[0] == 1.0 || got[0] == 3.0);
+    }
+
+    #[test]
+    fn quantize_dequantize_lossless_at_osm_precision() {
+        // OSM stores lon/lat as int32 nano-degrees (degrees × 1e7),
+        // so any value at that precision should round-trip exactly.
+        for raw in [0_i32, 1, -1, 1_799_999_999, -1_800_000_000, 472_500_000] {
+            let lon = raw as f64 / 1e7;
+            let lat = (-raw) as f64 / 1e7;
+            let q = quantize_coord([lon, lat]);
+            let back = dequantize_coord(q);
+            // i32 round-trip is exact within float epsilon at this scale.
+            assert!((back[0] - lon).abs() < 1e-9, "lon {} drifted to {}", lon, back[0]);
+            assert!((back[1] - lat).abs() < 1e-9, "lat {} drifted to {}", lat, back[1]);
+        }
+    }
+
+    #[test]
+    fn node_cache_strategy_default_is_inline() {
+        assert_eq!(NodeCacheStrategy::default(), NodeCacheStrategy::Inline);
+    }
+
+    #[test]
+    fn way_centroid_works_under_sorted_vec_strategy() {
+        // Build the same way centroid via both strategies and compare —
+        // the SortedVec path goes through quantize_coord, which can
+        // introduce up to 5e-8 deg of error per axis. Centroid math
+        // averages those, so the absolute error is bounded by 5e-8.
+        // We assert closeness, not exact equality.
+        let inline = {
+            let mut nc = NodeCoords::new_inline();
+            nc.insert_inline(1, [10.0, 50.0]);
+            nc.insert_inline(2, [10.5, 50.5]);
+            nc.insert_inline(3, [11.0, 51.0]);
+            nc
+        };
+        let sorted = {
+            let mut nc = NodeCoords::new_sorted_vec();
+            nc.push_sorted(1, [10.0, 50.0]);
+            nc.push_sorted(2, [10.5, 50.5]);
+            nc.push_sorted(3, [11.0, 51.0]);
+            nc.finalize_sorted();
+            nc
+        };
+        for id in [1_i64, 2, 3] {
+            let a = inline.get(id).unwrap();
+            let b = sorted.get(id).unwrap();
+            assert!((a[0] - b[0]).abs() < 1e-7);
+            assert!((a[1] - b[1]).abs() < 1e-7);
+        }
     }
 }

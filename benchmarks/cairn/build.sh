@@ -2,20 +2,29 @@
 # Build a Cairn bundle for a given country. Times the build, captures
 # size + memory usage, writes to results/cairn-build-<country>.json.
 #
-# usage: ./cairn/build.sh [country] (default: switzerland)
+# usage: ./cairn/build.sh [country] [node-cache-strategy]
+#   country: switzerland (default), germany, france, italy, austria,
+#            united-kingdom, spain, netherlands, brazil, ...
+#   node-cache: auto (default) | inline | sorted-vec
+#               'auto' picks inline for ≤ 5 GB PBF, sorted-vec above.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 
 COUNTRY="${1:-switzerland}"
+NODE_CACHE="${2:-auto}"
 case "$COUNTRY" in
-  switzerland)   CC=CH ;;
-  liechtenstein) CC=LI ;;
-  germany)       CC=DE ;;
-  france)        CC=FR ;;
-  italy)         CC=IT ;;
-  austria)       CC=AT ;;
-  *)             CC=$(printf '%s' "$COUNTRY" | head -c2 | tr 'a-z' 'A-Z') ;;
+  switzerland)    CC=CH ;;
+  liechtenstein)  CC=LI ;;
+  germany)        CC=DE ;;
+  france)         CC=FR ;;
+  italy)          CC=IT ;;
+  austria)        CC=AT ;;
+  united-kingdom) CC=GB ;;
+  spain)          CC=ES ;;
+  netherlands)    CC=NL ;;
+  brazil)         CC=BR ;;
+  *)              CC=$(printf '%s' "$COUNTRY" | head -c2 | tr 'a-z' 'A-Z') ;;
 esac
 
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -42,7 +51,7 @@ POSTCODES_ARG=""
 [ -f "$DATA/${CC}.txt" ] && POSTCODES_ARG="--postcodes $DATA/${CC}.txt"
 
 rm -rf "$BUNDLE"
-echo ">> cairn-build build ($COUNTRY, postcodes=${CC})"
+echo ">> cairn-build build ($COUNTRY, postcodes=${CC}, node-cache=${NODE_CACHE})"
 START=$(date +%s)
 /usr/bin/time -l "$CAIRN_BUILD" build \
   --osm  "$PBF" \
@@ -50,6 +59,7 @@ START=$(date +%s)
   --out  "$BUNDLE" \
   --bundle-id "${COUNTRY}-bench" \
   --simplify-meters 100 \
+  --node-cache "$NODE_CACHE" \
   2> "$RESULTS/cairn-build-${COUNTRY}.time.txt" \
   || { echo "build failed"; cat "$RESULTS/cairn-build-${COUNTRY}.time.txt"; exit 1; }
 BUILD_S=$(( $(date +%s) - START ))
@@ -71,7 +81,8 @@ cat > "$RESULTS/cairn-build-${COUNTRY}.json" <<JSON
   "bundle_disk_bytes": $DISK_BYTES,
   "bundle_disk_mb": $DISK_MB,
   "bundle_id": "${COUNTRY}-bench",
-  "input_pbf_bytes": $(stat -f%z "$PBF" 2>/dev/null || stat -c%s "$PBF")
+  "input_pbf_bytes": $(stat -f%z "$PBF" 2>/dev/null || stat -c%s "$PBF"),
+  "node_cache": "${NODE_CACHE}"
 }
 JSON
 

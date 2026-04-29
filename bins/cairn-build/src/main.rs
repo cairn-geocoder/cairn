@@ -15,10 +15,43 @@ use cairn_tile::{
     bbox_intersects, bucket_places, read_manifest, verify_bundle, write_manifest, write_tile,
     Level, Manifest, SourceVersion, TileCompression, TileCoord, TileEntry,
 };
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+/// Phase 6f: pluggable OSM node-coord cache strategies. Surfaced as
+/// `cairn-build build --node-cache <…>`. `auto` resolves to a concrete
+/// strategy at run time based on PBF size.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum NodeCacheArg {
+    Auto,
+    Inline,
+    #[value(name = "sorted-vec")]
+    SortedVec,
+}
+
+impl NodeCacheArg {
+    /// Resolve `Auto` against the PBF size on disk. ≤ 5 GB uses
+    /// inline; larger inputs use sorted-vec.
+    fn resolve(self, pbf_path: &Path) -> cairn_import_osm::NodeCacheStrategy {
+        match self {
+            NodeCacheArg::Inline => cairn_import_osm::NodeCacheStrategy::Inline,
+            NodeCacheArg::SortedVec => cairn_import_osm::NodeCacheStrategy::SortedVec,
+            NodeCacheArg::Auto => {
+                let size = std::fs::metadata(pbf_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                const THRESHOLD: u64 = 5 * 1024 * 1024 * 1024;
+                if size > THRESHOLD {
+                    cairn_import_osm::NodeCacheStrategy::SortedVec
+                } else {
+                    cairn_import_osm::NodeCacheStrategy::Inline
+                }
+            }
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "cairn-build", version, about = "Build Cairn geocoder bundles")]
@@ -71,6 +104,15 @@ enum Command {
         /// boundaries. Default 0 (off).
         #[arg(long, default_value_t = 0.0)]
         simplify_meters: f64,
+        /// OSM node-coord cache strategy. `auto` (default) picks
+        /// `inline` for inputs ≤ 5 GB and `sorted-vec` for larger
+        /// inputs. `inline` keeps the legacy HashMap (fastest lookup,
+        /// ~48 B/entry). `sorted-vec` runs a pre-filter pass over
+        /// ways + relations and packs only referenced nodes into a
+        /// sorted Vec of i32-quantized coords (~16 B/entry, 3× less
+        /// RAM, lossless at OSM coord precision).
+        #[arg(long, default_value = "auto")]
+        node_cache: NodeCacheArg,
     },
     /// Extract a regional bundle from an existing planet bundle.
     Extract {
@@ -235,6 +277,7 @@ fn main() -> Result<()> {
             no_zstd,
             source_priority,
             simplify_meters,
+            node_cache,
         } => cmd_build(BuildArgs {
             osm,
             wof,
@@ -251,6 +294,7 @@ fn main() -> Result<()> {
             } else {
                 TileCompression::Zstd
             },
+            node_cache,
         }),
         Command::Extract {
             bundle,
@@ -680,6 +724,7 @@ struct BuildArgs {
     compression: TileCompression,
     source_priority: Vec<cairn_place::SourceKind>,
     simplify_tolerance_deg: f64,
+    node_cache: NodeCacheArg,
 }
 
 /// Convert a simplification tolerance from meters into degrees of
@@ -727,8 +772,13 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     let mut sources: Vec<SourceVersion> = Vec::new();
 
     if let Some(osm_path) = args.osm.as_ref() {
-        tracing::info!(path = %osm_path.display(), "ingesting OSM PBF");
-        let imported = cairn_import_osm::import(osm_path)
+        let node_cache_strategy = args.node_cache.resolve(osm_path);
+        tracing::info!(
+            path = %osm_path.display(),
+            node_cache = ?node_cache_strategy,
+            "ingesting OSM PBF"
+        );
+        let imported = cairn_import_osm::import_with(osm_path, node_cache_strategy)
             .with_context(|| format!("OSM import failed: {}", osm_path.display()))?;
         tracing::info!(
             places = imported.places.len(),
