@@ -44,6 +44,12 @@ allow = [
     # (transitive via rphonetic). Effectively public-domain equivalent —
     # even more permissive than MIT; OSI-approved.
     "0BSD",
+    # NCSA — University of Illinois/NCSA Open Source License. OSI-approved;
+    # functionally equivalent to BSD-3-Clause. Pulled in transitively by
+    # libfuzzer-sys (optional via fastembed → rav1e behind the
+    # `semantic-onnx` feature). Not enabled in default builds, but Cargo
+    # still locks the resolution so cargo-deny scans it.
+    "NCSA",
 ]
 confidence-threshold = 0.93
 

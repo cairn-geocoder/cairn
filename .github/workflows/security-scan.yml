@@ -125,11 +125,34 @@ jobs:
           fi
           git config user.name  "cairn-security-bot"
           git config user.email "cairn-security-bot@users.noreply.github.com"
-          git add security/cves.json
-          git commit -m "chore(security): refresh cves.json [skip ci]"
-          # Pull-with-rebase in case main moved during the scan.
-          git pull --rebase --autostash origin main
-          git push origin HEAD:main
+
+          # Race-safe push. The scan output lives in a tmp file so we
+          # can rebase on top of fresh main without a merge conflict
+          # against a concurrent run that touched the same file.
+          # Each iteration re-applies our scan on top of whatever
+          # main is right now.
+          NEW=$(mktemp)
+          cp security/cves.json "$NEW"
+
+          for try in 1 2 3 4 5; do
+            git fetch --quiet origin main
+            git reset --hard origin/main
+            cp "$NEW" security/cves.json
+            if git diff --quiet security/cves.json; then
+              echo "main already has identical content"
+              exit 0
+            fi
+            git add security/cves.json
+            git commit -m "chore(security): refresh cves.json [skip ci]"
+            if git push origin HEAD:main; then
+              echo "pushed on attempt $try"
+              exit 0
+            fi
+            echo "push rejected on attempt $try; retrying"
+            sleep 2
+          done
+          echo "could not push after 5 attempts" >&2
+          exit 1
 
       - name: Attach summary to job log
         if: always()
