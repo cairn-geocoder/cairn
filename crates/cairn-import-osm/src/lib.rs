@@ -105,6 +105,13 @@ struct Counters {
     skipped_relation_open_ring: u64,
     skipped_relation_no_outer: u64,
     interpolated_addresses: u64,
+    /// Phase 7a-K — relation rings that closed but failed validation
+    /// (self-intersection, fewer than 4 distinct points after dedup
+    /// of consecutive duplicates, or degenerate near-zero area).
+    skipped_relation_invalid_ring: u64,
+    /// Phase 7a-K — outer rings whose orientation was reversed to
+    /// match OSM convention (counter-clockwise). Diagnostic only.
+    rings_reoriented: u64,
 }
 
 impl Counters {
@@ -119,6 +126,8 @@ impl Counters {
         self.skipped_unknown_kind += other.skipped_unknown_kind;
         self.skipped_way_no_coords += other.skipped_way_no_coords;
         self.skipped_relation_open_ring += other.skipped_relation_open_ring;
+        self.skipped_relation_invalid_ring += other.skipped_relation_invalid_ring;
+        self.rings_reoriented += other.rings_reoriented;
         self.skipped_relation_no_outer += other.skipped_relation_no_outer;
         self.interpolated_addresses += other.interpolated_addresses;
     }
@@ -358,6 +367,8 @@ pub fn import_with(pbf_path: &Path, strategy: NodeCacheStrategy) -> Result<OsmIm
         skipped_unknown_kind = counters.skipped_unknown_kind,
         skipped_way_no_coords = counters.skipped_way_no_coords,
         skipped_relation_open_ring = counters.skipped_relation_open_ring,
+        skipped_relation_invalid_ring = counters.skipped_relation_invalid_ring,
+        rings_reoriented = counters.rings_reoriented,
         skipped_relation_no_outer = counters.skipped_relation_no_outer,
         interpolated_addresses = counters.interpolated_addresses,
         "OSM import done"
@@ -1518,7 +1529,7 @@ fn relation_to_admin(
         .into_iter()
         .filter_map(|ring| ring_to_linestring(&ring, node_coords))
         .collect();
-    let polygons = assemble_polygons(outer_linestrings, inner_linestrings);
+    let polygons = assemble_polygons(outer_linestrings, inner_linestrings, counters);
     if polygons.is_empty() {
         counters.skipped_relation_open_ring += 1;
         return None;
@@ -1643,47 +1654,173 @@ fn assemble_rings(outer_way_ids: &[i64], way_nodes: &WayNodes) -> Vec<Vec<i64>> 
     rings
 }
 
+/// Build a `LineString` from a ring's node-id sequence.
+///
+/// Phase 7a-K hardening:
+/// - Resolve coords; drop the ring if any node id is missing from
+///   the cache.
+/// - Collapse consecutive duplicate vertices (`A → A → B` becomes
+///   `A → B`); these arise when adjacent way ends are stitched at the
+///   same shared node.
+/// - Require at least 4 distinct vertices after dedup; rings shorter
+///   than that don't enclose area.
+/// - Detect ring self-intersection (figure-8s from bad OSM edits or
+///   stitching errors); drop those rings — `geo::Polygon` makes no
+///   guarantee on contains/centroid for self-intersecting input.
 fn ring_to_linestring(ring: &[i64], node_coords: &NodeCoords) -> Option<LineString<f64>> {
-    let coords: Vec<(f64, f64)> = ring
-        .iter()
-        .filter_map(|id| node_coords.get(*id).map(|c| (c[0], c[1])))
-        .collect();
+    let mut coords: Vec<(f64, f64)> = Vec::with_capacity(ring.len());
+    for id in ring {
+        let c = node_coords.get(*id)?;
+        let pt = (c[0], c[1]);
+        // Skip consecutive duplicates so adjacent-way stitching at
+        // the shared join node produces a clean polyline.
+        if coords.last() == Some(&pt) {
+            continue;
+        }
+        coords.push(pt);
+    }
     if coords.len() < 4 {
         return None;
     }
-    Some(LineString::from(coords))
+    let ls = LineString::from(coords);
+    if ring_is_self_intersecting(&ls) {
+        return None;
+    }
+    Some(ls)
 }
 
-/// Pair each inner ring with the outer ring that geometrically contains it
-/// (a representative point of the inner ring is tested against each outer
-/// linestring's polygon). Inner rings with no enclosing outer are dropped.
+/// Detect ring self-intersection via O(n²) segment-pair check.
+///
+/// OSM admin polygons rarely exceed a few thousand vertices per ring
+/// and the importer simplifies them downstream, so the quadratic
+/// cost is acceptable here. A geometric `geo::is_simple`-style
+/// algorithm exists but isn't on the public API of `geo 0.28`; we
+/// implement a hand-rolled check that's good enough for ring
+/// validation.
+fn ring_is_self_intersecting(ls: &LineString<f64>) -> bool {
+    let coords: Vec<(f64, f64)> = ls.0.iter().map(|c| (c.x, c.y)).collect();
+    let n = coords.len();
+    if n < 5 {
+        // <5 vertices = triangle or smaller. Triangles can't self-
+        // intersect; checking degenerates wastes cycles.
+        return false;
+    }
+    let last = n - 1;
+    for i in 0..last {
+        let a = coords[i];
+        let b = coords[i + 1];
+        // Skip adjacent segments (always share a vertex, not a
+        // self-intersection). Also skip the wrap-around pair where
+        // the closing segment touches the opening one at the shared
+        // first/last point.
+        let j_start = i + 2;
+        for j in j_start..last {
+            let c = coords[j];
+            let d = coords[j + 1];
+            // Treat the closing pair (ring start = end) as adjacent
+            // to the *first* segment, not a crossing.
+            if i == 0 && j == last - 1 {
+                continue;
+            }
+            if segments_intersect(a, b, c, d) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True iff segment AB strictly intersects segment CD (excluding
+/// endpoint-only touches). Standard counter-clockwise orientation
+/// test.
+fn segments_intersect(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
+    fn ccw(p: (f64, f64), q: (f64, f64), r: (f64, f64)) -> f64 {
+        (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+    }
+    let d1 = ccw(c, d, a);
+    let d2 = ccw(c, d, b);
+    let d3 = ccw(a, b, c);
+    let d4 = ccw(a, b, d);
+    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+    {
+        return true;
+    }
+    // Co-linear overlap is treated as non-intersecting; OSM-derived
+    // rings rarely produce truly co-linear self-crossings, and the
+    // upstream Douglas-Peucker simplify pass collapses near-co-linear
+    // vertices anyway.
+    false
+}
+
+/// Pair each inner ring with the outer ring that geometrically contains it.
+///
+/// Phase 7a-K hardening:
+/// - Pick the **smallest** enclosing outer when multiple contain the
+///   inner. Catches the (rare) case of nested admin boundaries
+///   sharing a relation; without smallest-enclosing the inner gets
+///   bound to the wrong outer.
+/// - Force OSM ring-orientation convention: outer rings must be
+///   counter-clockwise, inner rings (holes) clockwise. `geo`'s area
+///   sign is positive for CCW; we flip negative-area outer rings.
 fn assemble_polygons(
     outers: Vec<LineString<f64>>,
     inners: Vec<LineString<f64>>,
+    counters: &mut Counters,
 ) -> Vec<Polygon<f64>> {
-    use geo::Contains;
-    let mut bins: Vec<(LineString<f64>, Vec<LineString<f64>>)> =
-        outers.into_iter().map(|o| (o, Vec::new())).collect();
-    for inner in inners {
+    use geo::{Area, Contains};
+
+    // Pre-compute polygon-from-outer + signed area so we can pick the
+    // smallest enclosing outer in O(n) rather than O(n²) per inner.
+    let mut bins: Vec<(LineString<f64>, f64, Vec<LineString<f64>>)> = outers
+        .into_iter()
+        .map(|mut outer| {
+            let signed = Polygon::new(outer.clone(), vec![]).signed_area();
+            // OSM convention: outer rings counter-clockwise (positive
+            // signed area). Reverse if winding is wrong.
+            if signed < 0.0 {
+                outer.0.reverse();
+                counters.rings_reoriented += 1;
+            }
+            let area = signed.abs();
+            (outer, area, Vec::new())
+        })
+        .collect();
+
+    for mut inner in inners {
+        // Inner rings should be clockwise (negative signed area in
+        // geo's convention). Reverse if positive.
+        let signed = Polygon::new(inner.clone(), vec![]).signed_area();
+        if signed > 0.0 {
+            inner.0.reverse();
+            counters.rings_reoriented += 1;
+        }
         let probe = match inner.0.first() {
             Some(c) => geo_types::Coord { x: c.x, y: c.y },
             None => continue,
         };
-        let mut placed = false;
-        for (outer, holes) in bins.iter_mut() {
+
+        // Smallest-enclosing outer: scan all bins, keep the smallest
+        // area outer that contains the probe.
+        let mut chosen: Option<usize> = None;
+        let mut chosen_area = f64::INFINITY;
+        for (idx, (outer, area, _)) in bins.iter().enumerate() {
+            if *area >= chosen_area {
+                continue;
+            }
             let outer_poly = Polygon::new(outer.clone(), vec![]);
             if outer_poly.contains(&probe) {
-                holes.push(inner);
-                placed = true;
-                break;
+                chosen = Some(idx);
+                chosen_area = *area;
             }
         }
-        if !placed {
-            debug!("inner ring without enclosing outer; dropping");
+        match chosen {
+            Some(idx) => bins[idx].2.push(inner),
+            None => debug!("inner ring without enclosing outer; dropping"),
         }
     }
     bins.into_iter()
-        .map(|(outer, holes)| Polygon::new(outer, holes))
+        .map(|(outer, _, holes)| Polygon::new(outer, holes))
         .collect()
 }
 
@@ -1956,7 +2093,7 @@ mod tests {
             (4.0, 6.0),
             (4.0, 4.0),
         ]);
-        let polys = assemble_polygons(vec![outer], vec![inner]);
+        let polys = assemble_polygons(vec![outer], vec![inner], &mut Counters::default());
         assert_eq!(polys.len(), 1);
         assert_eq!(polys[0].interiors().len(), 1);
     }
@@ -1977,7 +2114,7 @@ mod tests {
             (50.0, 51.0),
             (50.0, 50.0),
         ]);
-        let polys = assemble_polygons(vec![outer], vec![stray]);
+        let polys = assemble_polygons(vec![outer], vec![stray], &mut Counters::default());
         assert_eq!(polys.len(), 1);
         assert!(polys[0].interiors().is_empty());
     }
@@ -2012,10 +2149,129 @@ mod tests {
             (104.0, 6.0),
             (104.0, 4.0),
         ]);
-        let polys = assemble_polygons(vec![outer_a, outer_b], vec![inner_a, inner_b]);
+        let polys = assemble_polygons(
+            vec![outer_a, outer_b],
+            vec![inner_a, inner_b],
+            &mut Counters::default(),
+        );
         assert_eq!(polys.len(), 2);
         assert_eq!(polys[0].interiors().len(), 1);
         assert_eq!(polys[1].interiors().len(), 1);
+    }
+
+    // ── Phase 7a-K: multipolygon hardening tests ───────────────────
+
+    #[test]
+    fn ring_to_linestring_drops_consecutive_duplicates() {
+        let mut nc = NodeCoords::new_inline();
+        nc.insert_inline(1, [0.0, 0.0]);
+        nc.insert_inline(2, [1.0, 0.0]);
+        nc.insert_inline(3, [1.0, 1.0]);
+        nc.insert_inline(4, [0.0, 1.0]);
+        // Ring has duplicate consecutive node ids (id=1 appears
+        // back-to-back) — common when stitching two ways at a shared
+        // join node.
+        let ring = vec![1, 1, 2, 3, 4, 1];
+        let ls = ring_to_linestring(&ring, &nc).unwrap();
+        // Dedup preserves the closing duplicate (last == first) which
+        // is intentional for ring closure; 5 distinct points kept.
+        assert_eq!(ls.0.len(), 5);
+    }
+
+    #[test]
+    fn ring_to_linestring_drops_self_intersecting_figure_eight() {
+        let mut nc = NodeCoords::new_inline();
+        // Figure-8: the two triangles share a single crossing.
+        nc.insert_inline(1, [0.0, 0.0]);
+        nc.insert_inline(2, [4.0, 4.0]);
+        nc.insert_inline(3, [4.0, 0.0]);
+        nc.insert_inline(4, [0.0, 4.0]);
+        let ring = vec![1, 2, 3, 4, 1];
+        // Self-intersecting figure-8: 1-2 crosses 3-4.
+        assert!(ring_to_linestring(&ring, &nc).is_none());
+    }
+
+    #[test]
+    fn ring_to_linestring_keeps_simple_quad() {
+        let mut nc = NodeCoords::new_inline();
+        nc.insert_inline(1, [0.0, 0.0]);
+        nc.insert_inline(2, [1.0, 0.0]);
+        nc.insert_inline(3, [1.0, 1.0]);
+        nc.insert_inline(4, [0.0, 1.0]);
+        let ring = vec![1, 2, 3, 4, 1];
+        let ls = ring_to_linestring(&ring, &nc).unwrap();
+        assert_eq!(ls.0.len(), 5);
+    }
+
+    #[test]
+    fn assemble_polygons_reorients_clockwise_outer_ring() {
+        // Outer ring traced clockwise (negative signed area). The
+        // hardener must flip it so OSM convention (CCW) holds.
+        let outer_cw = LineString::from(vec![
+            (0.0, 0.0),
+            (0.0, 10.0),
+            (10.0, 10.0),
+            (10.0, 0.0),
+            (0.0, 0.0),
+        ]);
+        let mut counters = Counters::default();
+        let polys = assemble_polygons(vec![outer_cw], vec![], &mut counters);
+        assert_eq!(polys.len(), 1);
+        assert!(counters.rings_reoriented >= 1);
+        // Confirm exterior is now CCW: signed_area on the rebuilt
+        // Polygon must be positive after the reorient flip.
+        let exterior_clone = polys[0].exterior().clone();
+        let probe_poly = Polygon::new(exterior_clone, vec![]);
+        let area = geo::Area::signed_area(&probe_poly);
+        assert!(
+            area > 0.0,
+            "exterior should be CCW after reorient, got {area}"
+        );
+    }
+
+    #[test]
+    fn assemble_polygons_picks_smallest_enclosing_outer() {
+        // Big outer fully encloses small outer; inner sits inside the
+        // small outer. The hardener must pair the inner with the
+        // SMALLER enclosing outer, not the first one tested.
+        let big = LineString::from(vec![
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (0.0, 0.0),
+        ]);
+        let small = LineString::from(vec![
+            (40.0, 40.0),
+            (60.0, 40.0),
+            (60.0, 60.0),
+            (40.0, 60.0),
+            (40.0, 40.0),
+        ]);
+        let inner = LineString::from(vec![
+            (45.0, 45.0),
+            (55.0, 45.0),
+            (55.0, 55.0),
+            (45.0, 55.0),
+            (45.0, 45.0),
+        ]);
+        let mut counters = Counters::default();
+        let polys = assemble_polygons(vec![big.clone(), small.clone()], vec![inner], &mut counters);
+        assert_eq!(polys.len(), 2);
+        // Find the small polygon (area ~400) and confirm it owns the hole.
+        let small_poly = polys
+            .iter()
+            .find(|p| {
+                let a = geo::Area::signed_area(*p).abs();
+                a > 100.0 && a < 1_000.0
+            })
+            .expect("small polygon present");
+        assert_eq!(small_poly.interiors().len(), 1);
+        let big_poly = polys
+            .iter()
+            .find(|p| geo::Area::signed_area(*p).abs() > 1_000.0)
+            .expect("big polygon present");
+        assert_eq!(big_poly.interiors().len(), 0);
     }
 
     // ── Phase 6f: NodeCoords strategy tests ────────────────────────

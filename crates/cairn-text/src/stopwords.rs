@@ -35,10 +35,10 @@ const STOP_WORDS: &[&str] = &[
     "am", "an", "auf", "aus", "bei", "das", "dem", "den", "der", "des", "die", "ein", "eine", "im",
     "in", "mit", "und", "von", "vom", "zum", "zur", // French
     "à", "au", "aux", "de", "des", "du", "en", "et", "la", "le", "les", "sur", // Italian
-    "al", "alla", "alle", "alto", "ai", "del", "della", "delle", "di", "il", "la", "le", "lo", "su",
-    "sul", "sulla", // Spanish / Portuguese
-    "a", "al", "da", "das", "de", "del", "do", "dos", "el", "en", "la", "las", "los", "para", "por",
-    // Dutch
+    "al", "alla", "alle", "alto", "ai", "del", "della", "delle", "di", "il", "la", "le", "lo",
+    "su", "sul", "sulla", // Spanish / Portuguese
+    "a", "al", "da", "das", "de", "del", "do", "dos", "el", "en", "la", "las", "los", "para",
+    "por", // Dutch
     "aan", "bij", "de", "der", "het", "in", "naar", "op", "te", "tot", "van", "voor",
 ];
 
