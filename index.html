@@ -24,6 +24,7 @@
         <a class="active" href="#hero">Docs</a>
         <a href="#install">Install</a>
         <a href="#quickstart">Quickstart</a>
+        <a href="#deploy">Deploy</a>
         <a href="#api">Reference</a>
         <a href="#benchmark">Benchmark</a>
         <a href="comparison/">Comparison</a>
@@ -47,7 +48,8 @@
           <li><a class="active" href="#hero"><span class="num">01</span> Introduction</a></li>
           <li><a href="#install"><span class="num">02</span> Install</a></li>
           <li><a href="#quickstart"><span class="num">03</span> Quickstart</a></li>
-          <li><a href="#concepts"><span class="num">04</span> Core concepts</a></li>
+          <li><a href="#deploy"><span class="num">04</span> Deploy <span class="sb-tag new">NEW</span></a></li>
+          <li><a href="#concepts"><span class="num">05</span> Core concepts</a></li>
         </ul>
       </div>
       <div class="sb-group">
@@ -185,6 +187,61 @@
 }
 </code></pre>
           </div>
+        </div>
+      </section>
+
+      <!-- ── DEPLOY ────────────────────────────────────────────── -->
+      <section class="section" id="deploy">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">03 — Deploy</div>
+            <h2>Production-ready, on the platform you already use.</h2>
+            <p>Cloud deployment artifacts live in
+              <a href="https://github.com/cairn-geocoder/cairn-cloud"><code>cairn-geocoder/cairn-cloud</code></a>.
+              Helm chart published to OCI; Kustomize base + dev/prod overlays;
+              Terraform modules for AWS Fargate, GCP Cloud Run, and Nomad +
+              Consul; Grafana dashboard + Prometheus alerting rules wired to
+              Cairn's <code>/metrics</code> output.</p>
+          </div>
+          <div class="r"><a href="https://github.com/cairn-geocoder/cairn-cloud">cairn-cloud →</a></div>
+        </div>
+        <div class="tiles">
+          <a class="tile" href="https://github.com/cairn-geocoder/cairn-cloud/tree/main/helm/cairn">
+            <span class="lbl">Kubernetes · Helm</span>
+            <h4>helm install — OCI</h4>
+            <p><code>helm install cairn oci://ghcr.io/cairn-geocoder/charts/cairn --version 0.1.0</code>. Three bundle sources (image / http / pvc), optional ed25519 signature verify, ServiceMonitor, HPA, PDB.</p>
+            <span class="arrow">Read →</span>
+          </a>
+          <a class="tile" href="https://github.com/cairn-geocoder/cairn-cloud/tree/main/kustomize">
+            <span class="lbl">Kubernetes · Kustomize</span>
+            <h4>kubectl apply -k</h4>
+            <p>Flat manifests with dev (NodePort, single replica) + prod overlays (3 replicas, HPA, PDB, Ingress, NetworkPolicy egress lockdown). For operators who don't want Helm.</p>
+            <span class="arrow">Read →</span>
+          </a>
+          <a class="tile" href="https://github.com/cairn-geocoder/cairn-cloud/tree/main/terraform/modules/cairn-aws">
+            <span class="lbl">AWS · Terraform</span>
+            <h4>ECS Fargate + ALB</h4>
+            <p>Single-region module: cluster, service, task def with bundle-fetch init, ALB on /healthz, App Auto Scaling on CPU 70%, CloudWatch logs, IAM scoped to task.</p>
+            <span class="arrow">Read →</span>
+          </a>
+          <a class="tile" href="https://github.com/cairn-geocoder/cairn-cloud/tree/main/terraform/modules/cairn-gcp">
+            <span class="lbl">GCP · Terraform</span>
+            <h4>Cloud Run + GCS</h4>
+            <p>Cloud Run v2 service with min/max scaling, startup + liveness probes, GCS-backed bundle pull on cold start via metadata-server token. Public or internal-LB ingress.</p>
+            <span class="arrow">Read →</span>
+          </a>
+          <a class="tile" href="https://github.com/cairn-geocoder/cairn-cloud/tree/main/terraform/modules/cairn-bare">
+            <span class="lbl">Nomad · Terraform</span>
+            <h4>Nomad + Consul</h4>
+            <p>Nomad service job with prestart bundle-fetch task, Docker driver for cairn-serve, Consul service registration with /healthz + /readyz HTTP checks. Kubernetes-free path.</p>
+            <span class="arrow">Read →</span>
+          </a>
+          <a class="tile" href="https://github.com/cairn-geocoder/cairn-cloud/tree/main/observability">
+            <span class="lbl">Observability</span>
+            <h4>Grafana + Prometheus</h4>
+            <p>Drop-in dashboard JSON (8 panels covering uptime, RPS by endpoint, error rate, reverse-outcome split) plus 7 alerting rules wired to <code>cairn_requests_total</code> + <code>cairn_uptime_seconds</code>.</p>
+            <span class="arrow">Read →</span>
+          </a>
         </div>
       </section>
 
@@ -552,6 +609,9 @@
         <li><a href="#install">Install</a></li>
         <li class="indent"><a href="#install">Cargo, Docker, binary</a></li>
         <li><a href="#quickstart">30-second quickstart</a></li>
+        <li><a href="#deploy">Deploy</a></li>
+        <li class="indent"><a href="#deploy">Helm / Kustomize</a></li>
+        <li class="indent"><a href="#deploy">Terraform (AWS / GCP / Nomad)</a></li>
         <li><a href="#concepts">Core concepts</a></li>
         <li class="indent"><a href="#concepts">rkyv tile blobs</a></li>
         <li class="indent"><a href="#concepts">Phonetic + semantic</a></li>
