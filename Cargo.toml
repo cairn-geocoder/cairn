@@ -63,7 +63,7 @@ blake3 = "1"
 zstd = "0.13"
 
 # Text + spatial
-tantivy = "0.22"
+tantivy = "0.26"
 fst = "0.4"
 geo = "0.28"
 geo-types = { version = "0.7", features = ["serde"] }

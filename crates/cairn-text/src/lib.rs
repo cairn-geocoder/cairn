@@ -503,7 +503,9 @@ where
             .unwrap_or("");
         if !primary.is_empty() {
             let v = semantic::embed(primary);
-            doc.add_bytes(schema.name_vec, semantic::pack(&v));
+            // tantivy 0.26 add_bytes takes &[u8] (was Vec<u8> in 0.22).
+            let packed = semantic::pack(&v);
+            doc.add_bytes(schema.name_vec, &packed);
         }
         doc.add_u64(schema.place_id, place.id.0);
         doc.add_u64(schema.level, place.id.level() as u64);
@@ -600,7 +602,10 @@ impl TextIndex {
         };
 
         let searcher = self.reader.searcher();
-        let raw = searcher.search(&combined, &TopDocs::with_limit(candidate_limit))?;
+        let raw = searcher.search(
+            &combined,
+            &TopDocs::with_limit(candidate_limit).order_by_score(),
+        )?;
 
         let mut hits: Vec<Hit> = Vec::with_capacity(raw.len());
         for (score, addr) in raw {
@@ -697,7 +702,7 @@ impl TextIndex {
         for &id in ids {
             let term = tantivy::Term::from_field_u64(self.schema.place_id, id);
             let q: Box<dyn Query> = Box::new(TermQuery::new(term, IndexRecordOption::Basic));
-            let raw = searcher.search(&q, &TopDocs::with_limit(1))?;
+            let raw = searcher.search(&q, &TopDocs::with_limit(1).order_by_score())?;
             if let Some((score, addr)) = raw.into_iter().next() {
                 let doc: TantivyDocument = searcher.doc(addr)?;
                 hits_by_id.insert(id, self.hit_from_doc(score, &doc));
@@ -806,7 +811,7 @@ impl TextIndex {
             let term = Term::from_field_u64(self.schema.place_id, id);
             let q: Box<dyn Query> = Box::new(TermQuery::new(term, IndexRecordOption::Basic));
             if let Some((_, addr)) = searcher
-                .search(&q, &TopDocs::with_limit(1))?
+                .search(&q, &TopDocs::with_limit(1).order_by_score())?
                 .into_iter()
                 .next()
             {
