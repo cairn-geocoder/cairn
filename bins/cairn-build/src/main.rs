@@ -7,6 +7,8 @@
 use anyhow::{Context, Result};
 mod osc;
 mod replication;
+mod sbom;
+mod sign;
 use cairn_place::Place;
 use cairn_spatial::{PlacePoint, PointLayer};
 use cairn_tile::{
@@ -186,6 +188,30 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Generate a fresh ed25519 signing keypair into `<dir>/cairn.key`
+    /// (secret, mode 0600) + `<dir>/cairn.pub` (public). Refuses to
+    /// overwrite an existing key.
+    Keygen {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Sign `<bundle>/manifest.toml` with the secret key. Writes the
+    /// detached signature to `<bundle>/manifest.toml.sig`.
+    Sign {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+    },
+    /// Verify `<bundle>/manifest.toml` against
+    /// `<bundle>/manifest.toml.sig` using the public key. Exits
+    /// non-zero on failure.
+    SignVerify {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long, name = "pubkey")]
+        pubkey: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -258,6 +284,9 @@ fn main() -> Result<()> {
             max,
             dry_run,
         } => cmd_replicate_apply(&bundle, max, dry_run),
+        Command::Keygen { out } => sign::cmd_keygen(&out),
+        Command::Sign { bundle, key } => sign::cmd_sign(&bundle, &key).map(|_| ()),
+        Command::SignVerify { bundle, pubkey } => sign::cmd_verify(&bundle, &pubkey),
     }
 }
 
@@ -1124,6 +1153,18 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         tiles = manifest.tiles.len(),
         "manifest written"
     );
+
+    // CycloneDX SBOM: lists every Cargo.lock entry plus every input
+    // dataset (with BLAKE3 hashes carried over from `sources`). Lets
+    // operators audit "what code + what data made this bundle".
+    match sbom::write_sbom(&args.out, &manifest.bundle_id, &manifest.sources) {
+        Ok(libs) => tracing::info!(
+            libraries = libs,
+            datasets = manifest.sources.len(),
+            "sbom.json written"
+        ),
+        Err(err) => tracing::warn!(?err, "skipping sbom.json (non-fatal)"),
+    }
 
     Ok(())
 }

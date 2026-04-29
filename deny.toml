@@ -40,6 +40,10 @@ allow = [
     # restrictions only apply to redistributing the *data* if modified.
     # OK for our binary linking against it.
     "CDLA-Permissive-2.0",
+    # 0BSD ("BSD Zero Clause") used by enum-iterator + enum-iterator-derive
+    # (transitive via rphonetic). Effectively public-domain equivalent —
+    # even more permissive than MIT; OSI-approved.
+    "0BSD",
 ]
 confidence-threshold = 0.93
 

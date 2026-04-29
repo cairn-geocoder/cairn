@@ -312,6 +312,35 @@ async fn federated_search_merges_hits_across_bundles() {
 }
 
 #[tokio::test]
+async fn sbom_endpoint_serves_cyclonedx_when_present() {
+    let state = build_test_state();
+    let path = state.bundle_path.join("sbom.json");
+    let body = serde_json::json!({
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "components": [],
+    });
+    std::fs::write(&path, body.to_string()).unwrap();
+
+    let req = Request::get("/v1/sbom").body(Body::empty()).unwrap();
+    let resp = router(state).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(ct.contains("cyclonedx"), "wrong content-type: {ct}");
+}
+
+#[tokio::test]
+async fn sbom_endpoint_404_when_missing() {
+    let (status, body) = get_json(build_test_state(), "/v1/sbom").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "sbom_not_found");
+}
+
+#[tokio::test]
 async fn info_reports_single_bundle_id_in_array_form() {
     let (status, body) = get_json(build_test_state(), "/v1/info").await;
     assert_eq!(status, StatusCode::OK);

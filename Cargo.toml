@@ -72,6 +72,8 @@ bincode = "1"
 tar = "0.4"
 flate2 = "1"
 quick-xml = "0.36"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
 lru = "0.16"
 criterion = "0.5"
 rayon = "1"

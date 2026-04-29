@@ -35,3 +35,5 @@ serde_json = { workspace = true }
 rayon = { workspace = true }
 ureq = { workspace = true }
 quick-xml = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }

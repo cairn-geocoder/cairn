@@ -386,13 +386,14 @@ pub fn router(state: AppState) -> Router {
             require_api_key,
         ));
 
-    // Open routes (health / metrics / spec / info) bypass auth.
+    // Open routes (health / metrics / spec / info / sbom) bypass auth.
     let open = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi_spec))
-        .route("/v1/info", get(info));
+        .route("/v1/info", get(info))
+        .route("/v1/sbom", get(sbom));
 
     open.merge(v1).with_state(state).layer(
         TraceLayer::new_for_http()
@@ -603,6 +604,34 @@ async fn info(State(state): State<AppState>) -> Json<InfoBody> {
         auth_required: state.api_key.is_some(),
         rate_limited: state.rate_limit.is_some(),
     })
+}
+
+/// `/v1/sbom` — serve the bundle's CycloneDX 1.5 SBOM (written by
+/// `cairn-build` at bundle creation time). Returns 404 when the
+/// bundle predates the SBOM emitter; payload is application/
+/// vnd.cyclonedx+json so dependency-track / grype / cyclonedx-cli
+/// recognize it without sniffing.
+async fn sbom(State(state): State<AppState>) -> Response {
+    let path = state.bundle_path.join("sbom.json");
+    let body = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "sbom_not_found",
+                    "hint": "rebuild bundle with a recent cairn-build to populate sbom.json"
+                })),
+            )
+                .into_response();
+        }
+    };
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/vnd.cyclonedx+json")
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| {
+            Json(serde_json::json!({"error": "sbom_response_build_failed"})).into_response()
+        })
 }
 
 #[derive(Deserialize, Default)]
