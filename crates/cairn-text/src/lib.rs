@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod edit;
 pub mod semantic;
+#[cfg(feature = "semantic-onnx")]
+pub mod semantic_v2;
 pub mod stopwords;
 pub mod trigram;
 use std::path::Path;

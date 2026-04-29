@@ -12,6 +12,17 @@ readme = "../../README.md"
 keywords = ["geocoding", "geocoder", "tantivy", "autocomplete", "fulltext"]
 categories = ["science::geo", "text-processing"]
 
+[features]
+default = []
+# Phase 7a-B — opt-in fastembed-rs (multilingual MiniLM ONNX) for
+# transformer-based semantic rerank. Adds ort + tokenizers + the
+# model file at runtime; per-place embedding storage grows from
+# 32 dims (128 B) to 384 dims (1.5 KB).
+# WASM target is excluded — ORT does not compile cleanly on wasm32.
+# Operators flip on `cargo build --features semantic-onnx` and pass
+# `--semantic-model <onnx-path>` to cairn-build / cairn-serve.
+semantic-onnx = ["dep:fastembed"]
+
 [dependencies]
 cairn-place = { workspace = true }
 tantivy = { workspace = true }
@@ -22,6 +33,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 deunicode = "1"
 rphonetic = "3"
+fastembed = { version = "5", optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
