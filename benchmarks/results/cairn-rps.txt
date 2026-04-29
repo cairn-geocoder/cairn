@@ -1,32 +1,32 @@
 === cairn c=1 ===
 Failed requests:        0
-Requests per second:    6916.35 [#/sec] (mean)
-Time per request:       0.145 [ms] (mean)
-Time per request:       0.145 [ms] (mean, across all concurrent requests)
+Requests per second:    18834.24 [#/sec] (mean)
+Time per request:       0.053 [ms] (mean)
+Time per request:       0.053 [ms] (mean, across all concurrent requests)
   95%      0
   99%      0
 
 === cairn c=8 ===
 Failed requests:        0
-Requests per second:    23476.71 [#/sec] (mean)
-Time per request:       0.341 [ms] (mean)
-Time per request:       0.043 [ms] (mean, across all concurrent requests)
-  95%      1
-  99%      1
+Requests per second:    55908.09 [#/sec] (mean)
+Time per request:       0.143 [ms] (mean)
+Time per request:       0.018 [ms] (mean, across all concurrent requests)
+  95%      0
+  99%      0
 
 === cairn c=32 ===
 Failed requests:        0
-Requests per second:    29341.52 [#/sec] (mean)
-Time per request:       1.091 [ms] (mean)
-Time per request:       0.034 [ms] (mean, across all concurrent requests)
-  95%      2
-  99%      2
+Requests per second:    57553.63 [#/sec] (mean)
+Time per request:       0.556 [ms] (mean)
+Time per request:       0.017 [ms] (mean, across all concurrent requests)
+  95%      1
+  99%      1
 
 === cairn c=64 ===
 Failed requests:        0
-Requests per second:    26516.69 [#/sec] (mean)
-Time per request:       2.414 [ms] (mean)
-Time per request:       0.038 [ms] (mean, across all concurrent requests)
-  95%      4
-  99%      5
+Requests per second:    53879.02 [#/sec] (mean)
+Time per request:       1.188 [ms] (mean)
+Time per request:       0.019 [ms] (mean, across all concurrent requests)
+  95%      2
+  99%      3
 

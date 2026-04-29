@@ -31,7 +31,7 @@ ASCII folds) for the recall A/B.
 
 | Engine | Build wall-clock | Disk | Cold RSS | Hot RSS | p50 | p95 | p99 | max | RPS peak | Errors |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Cairn** | **27 s** | **212 MB** | **38 MB** | **102 MB** | **0.68 ms** | **1.08 ms** | **1.32 ms** | 6.6 ms | **29 342** | **0** |
+| **Cairn** | **24 s** | **195 MB** | **25 MB** | **80 MB** | **0.51 ms** | **0.63 ms** | **0.74 ms** | 4.9 ms | **57 554** | **0** |
 | Pelias | 3 m 46 s | 3.5 GB | 2.7 GB | 2.7 GB | 13.76 ms | 34.41 ms | 57.23 ms | 162.1 ms | 362 | 0 |
 | Nominatim | 3 h 13 m | 9.2 GB pg + 103 GB sparse | 2.4 GB | 2.4 GB | 9.51 ms | 15.15 ms | 23.00 ms | 71.7 ms | 1 109 | 0 |
 | Photon | 2 m 1 s | 1.3 GB | 2.1 GB | 2.1 GB | 5.88 ms | 15.26 ms | 25.18 ms | 76.5 ms | 2 406 | 0 |
@@ -44,23 +44,23 @@ varies per engine.)
 
 | Metric | Cairn → Pelias | Cairn → Nominatim | Cairn → Photon |
 |---|---:|---:|---:|
-| p99 latency | **43× faster** | **17× faster** | **19× faster** |
-| Peak RPS | **81× higher** | **26× higher** | **12× higher** |
-| Hot RSS | **27× smaller** | **24× smaller** | **21× smaller** |
-| Disk | **17× smaller** | **44× smaller (postgres only)** | **6× smaller** |
-| Build wall-clock | **8× faster** | **430× faster** | **4.5× faster** |
+| p99 latency | **77× faster** | **31× faster** | **34× faster** |
+| Peak RPS | **159× higher** | **52× higher** | **24× higher** |
+| Hot RSS | **34× smaller** | **30× smaller** | **26× smaller** |
+| Disk | **18× smaller** | **48× smaller (postgres only)** | **6.7× smaller** |
+| Build wall-clock | **9× faster** | **483× faster** | **5× faster** |
 
 ## Recall on noisy queries (Cairn-only flags A/B)
 
 | Variant | Hits | Recall |
 |---|---:|---:|
-| baseline (no flags) | 257 / 1 153 | 22.3 % |
+| baseline (no flags) | 253 / 1 153 | 21.9 % |
 | `?fuzzy=1` | 865 / 1 153 | 75.0 % |
-| `?phonetic=true` | 1 147 / 1 153 | **99.5 %** |
-| `?semantic=true` | 257 / 1 153 | 22.3 % |
+| `?phonetic=true` | 1 142 / 1 153 | **99.0 %** |
+| `?semantic=true` | 253 / 1 153 | 21.9 % |
 | all flags on | 1 153 / 1 153 | **100.0 %** |
 
-DoubleMetaphone phonetic single-handedly rescues 99.5 % of
+DoubleMetaphone phonetic single-handedly rescues 99.0 % of
 typos. Semantic boost is for morphological variants (`Vienna →
 Viennese`); doesn't fire on character-level perturbations. No
 incumbent geocoder ships a `?phonetic=` toggle today.
@@ -71,8 +71,8 @@ incumbent geocoder ships a `?phonetic=` toggle today.
 
 - One static binary (`cairn-serve`) reading mmap'd rkyv tile blobs.
 - 520 470 places + 3 156 admin polygons indexed from a single
-  PBF in 27 s (single-pass, no Postgres, no ES).
-- Hot RSS settles at 102 MB after 6 408 queries — fits in cache
+  PBF in 24 s (single-pass, no Postgres, no ES).
+- Hot RSS settles at 80 MB after 6 408 queries — fits in cache
   on any laptop.
 - Default labels include multilingual variants (`Zurich, Visp,
   Valais/Wallis, Schweiz/Suisse/Svizzera/Svizra`) without WoF
@@ -132,14 +132,14 @@ larger input** (4.7 GB PBF, ~3 M places vs 506 MB / 520 k for CH).
 | Metric | Switzerland | Germany | Ratio |
 |---|---:|---:|---:|
 | Input PBF | 506 MB | **4.7 GB** | 8.6× |
-| Build wall-clock | 20 s | **487 s** (8 m 7 s) | 24× |
-| Peak build RSS | 8.0 GB | **22 GB** | 2.8× |
-| Bundle disk | 212 MB | **1.54 GB** | 7.4× |
-| Cold serve RSS | 38 MB | **74 MB** | 2.0× |
-| Hot serve RSS | 102 MB | **359 MB** | 3.5× |
-| p50 latency | 0.68 ms | **0.57 ms** | 0.84× |
-| p99 latency | 1.32 ms | **2.35 ms** | 1.8× |
-| Peak RPS (ab keepalive) | 23 477 | **39 664** (c=32) | 1.7× |
+| Build wall-clock | 24 s | **487 s** (8 m 7 s) | 20× |
+| Peak build RSS | 9.0 GB | **22 GB** | 2.4× |
+| Bundle disk | 195 MB | **1.54 GB** | 8.1× |
+| Cold serve RSS | 25 MB | **74 MB** | 3.0× |
+| Hot serve RSS | 80 MB | **359 MB** | 4.5× |
+| p50 latency | 0.51 ms | **0.57 ms** | 1.1× |
+| p99 latency | 0.74 ms | **2.35 ms** | 3.2× |
+| Peak RPS (ab keepalive) | 57 554 | **39 664** (c=32) | 0.69× |
 | Errors / 10 000 | 0 | **0** | — |
 
 Post Phase 6f / 6g + parallel admin assembly + tantivy buffer
