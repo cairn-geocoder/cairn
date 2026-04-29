@@ -180,10 +180,15 @@ bundle layout doesn't shift mid-effort.
 ### libpostal FFI (legacy entry — superseded by Phase 6e above)
 *(kept for reference; see Phase 6e for the current plan)*
 
-### Address interpolation
-- OSM `addr:interpolation` ways need endpoint nodes + step.
-- Generates synthetic Address places on the fly in the importer.
-- Useful for OA-sparse regions (most non-US territory).
+### Address interpolation — **shipped**
+- `interpolate_way_addresses` + `interpolate_addresses` in
+  `cairn-import-osm` synthesise `Place(kind=Address)` from
+  `addr:interpolation` ways. Cumulative-arc-length distribution
+  along the multi-segment polyline so synthetic addresses land at
+  the right fraction of the path. `odd`, `even`, `all`, `1` step
+  values supported; `alphabetic` skipped. Endpoint addrs come from
+  pass-1 `NodeAddrs` cache so no extra read pass is needed.
+  5 unit tests (`interpolation_*` in `cairn-import-osm`).
 
 ### OSM admin relations
 - `boundary=administrative` relations carry the canonical OSM admin
@@ -273,9 +278,13 @@ total: ~3 weeks focused work for full superiority claim.
   encoded query codes against the field. Recovers `Smyth → Smith`,
   `Mueller → Müller`, `Smythsonian → Smithsonian`. 3 unit tests in
   cairn-text.
-- **2b. Address interpolation** *(~2 days)* — OSM `addr:interpolation`
-  ways, synthetic Address places at import. Closes OA-sparse regions
-  (most non-US territory). **HIGH**
+- **2b. Address interpolation** — **SHIPPED.** OSM
+  `addr:interpolation` ways are expanded into `Place(kind=Address)`
+  by `interpolate_addresses` (cairn-import-osm). Cumulative-arc-length
+  distribution across multi-segment polylines, `odd|even|all|1` step
+  modes, `addr:street` resolved from way tag or endpoint nodes,
+  `source=osm-interpolation` tag stamped for downstream filtering.
+  Closes OA-sparse regions. 5 unit tests.
 - **2c. libpostal FFI live wiring** — **SHIPPED.** `cairn-parse` ships
   a heuristic parser by default + `libpostal` cargo feature gating
   `libpostal-sys` FFI bindings (CRF parser + multilingual normalizer,
