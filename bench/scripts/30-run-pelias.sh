@@ -27,6 +27,7 @@ cat > data/pelias/pelias.json <<'JSON'
     }
   },
   "imports": {
+    "adminLookup": { "enabled": false },
     "openstreetmap": {
       "leveldbpath": "/tmp",
       "datapath": "/data/openstreetmap",

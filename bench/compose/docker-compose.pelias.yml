@@ -6,7 +6,7 @@
 
 services:
   elasticsearch:
-    image: pelias/elasticsearch:7.16.0
+    image: pelias/elasticsearch:7.17.27
     container_name: pelias_elasticsearch
     user: "1000:1000"
     environment:
@@ -33,6 +33,8 @@ services:
     depends_on: [elasticsearch]
     volumes:
       - ${PELIAS_DATA:-./data/pelias}:/data
+    environment:
+      - PELIAS_CONFIG=/data/pelias.json
     command: ["./bin/create_index"]
 
   openstreetmap:
@@ -42,7 +44,7 @@ services:
     volumes:
       - ${PELIAS_DATA:-./data/pelias}:/data
     environment:
-      - PELIAS_CONFIG=/code/pelias.json
+      - PELIAS_CONFIG=/data/pelias.json
     command: ["./bin/start"]
 
   api:
@@ -55,3 +57,4 @@ services:
       - ${PELIAS_DATA:-./data/pelias}:/data
     environment:
       - PORT=4000
+      - PELIAS_CONFIG=/data/pelias.json

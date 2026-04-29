@@ -19,7 +19,11 @@ services:
       - POSTGRES_EFFECTIVE_CACHE_SIZE=8GB
       - POSTGRES_SYNCHRONOUS_COMMIT=off
     volumes:
-      - ../data:/nominatim/data:ro
+      # Bind only the single PBF rather than the whole bench/data dir
+      # — the Nominatim entrypoint recursively chowns its data mount
+      # at startup, which would touch every Cairn bundle file (and
+      # fails outright with `:ro`).
+      - ../data/switzerland-latest.osm.pbf:/nominatim/data/switzerland-latest.osm.pbf:ro
       - bench_nominatim_pgdata:/var/lib/postgresql/14/main
     shm_size: 1gb
 

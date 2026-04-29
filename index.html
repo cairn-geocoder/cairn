@@ -3,398 +3,575 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Cairn — offline geocoder in Rust</title>
+  <title>Cairn — offline geocoder · docs</title>
   <meta name="description" content="Cairn is an offline, airgap-ready geocoder written in Rust. Forward search, autocomplete, fuzzy matching, structured queries, and reverse geocoding from a single static binary." />
-  <link rel="stylesheet" href="site.css" />
   <link rel="icon" type="image/svg+xml" href="assets/cairn-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="site.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="container topbar-inner">
+
+  <!-- ── TOP NAV ─────────────────────────────────────────────────── -->
+  <header class="topnav">
+    <div class="topnav-inner">
       <a class="brand" href="./">
-        <img src="assets/cairn-mark.svg" alt="" width="28" height="28" class="brand-mark" />
-        <span>cairn</span>
+        <img class="mk" src="assets/cairn-photoreal.svg" alt="" />
+        <span>cairn<span class="dot">.</span></span>
       </a>
       <nav>
+        <a class="active" href="#hero">Docs</a>
         <a href="#install">Install</a>
-        <a href="#examples">Examples</a>
-        <a href="#api">API</a>
+        <a href="#quickstart">Quickstart</a>
+        <a href="#api">Reference</a>
         <a href="#benchmark">Benchmark</a>
-        <a href="demo/">Live demo</a>
         <a href="comparison/">Comparison</a>
-        <a href="#security">Security</a>
-        <a href="https://github.com/cairn-geocoder/cairn">GitHub</a>
+        <a href="demo/">Live demo</a>
       </nav>
+      <div class="right">
+        <span class="ver-pill">v0.0.2-alpha</span>
+        <a class="gh-link" href="https://github.com/cairn-geocoder/cairn">★ GitHub</a>
+      </div>
     </div>
   </header>
 
-  <section class="hero">
-    <div class="container hero-grid">
-      <div class="hero-text">
-        <p class="kicker">Geocoding</p>
-        <h1>Offline, airgap-ready geocoder.</h1>
-        <p class="lede">
-          Cairn turns OpenStreetMap and WhosOnFirst data into a single
-          on-disk bundle, then serves forward search, autocomplete,
-          fuzzy matching, structured queries, and reverse geocoding from
-          one static Rust binary. No cluster. No cloud. No daemon
-          dependencies.
-        </p>
-        <div class="hero-cta">
-          <a class="btn primary" href="#install">Get started</a>
-          <a class="btn ghost" href="demo/">Try it live</a>
-        </div>
+  <!-- ── 3-COL LAYOUT ─────────────────────────────────────────────── -->
+  <div class="layout">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div class="sb-group">
+        <div class="sb-title">Get Started</div>
+        <ul class="sb-list">
+          <li><a class="active" href="#hero"><span class="num">01</span> Introduction</a></li>
+          <li><a href="#install"><span class="num">02</span> Install</a></li>
+          <li><a href="#quickstart"><span class="num">03</span> Quickstart</a></li>
+          <li><a href="#concepts"><span class="num">04</span> Core concepts</a></li>
+        </ul>
       </div>
-      <pre class="hero-code"><code><span class="cmt"># 1. build a Liechtenstein bundle</span>
-<span class="cmd">$</span> cairn build \
+      <div class="sb-group">
+        <div class="sb-title">Examples</div>
+        <ul class="sb-list">
+          <li><a href="#examples">Forward search</a></li>
+          <li><a href="#examples">Autocomplete</a></li>
+          <li><a href="#examples">Fuzzy &amp; phonetic <span class="sb-tag new">NEW</span></a></li>
+          <li><a href="#examples">Reverse geocoding</a></li>
+          <li><a href="#examples">Structured search</a></li>
+          <li><a href="#examples">Address parsing</a></li>
+        </ul>
+      </div>
+      <div class="sb-group">
+        <div class="sb-title">Reference</div>
+        <ul class="sb-list">
+          <li><a href="#api">HTTP API</a></li>
+          <li><a href="#bundle">Bundle layout</a></li>
+          <li><a href="#data-sources">Build sources</a></li>
+        </ul>
+      </div>
+      <div class="sb-group">
+        <div class="sb-title">Operations</div>
+        <ul class="sb-list">
+          <li><a href="#benchmark">Benchmark</a></li>
+          <li><a href="#security">Security</a></li>
+          <li><a href="comparison/">Comparison</a></li>
+        </ul>
+      </div>
+      <div class="sb-group">
+        <div class="sb-title">Resources</div>
+        <ul class="sb-list">
+          <li><a href="https://github.com/cairn-geocoder/cairn/blob/main/CHANGELOG.md">Changelog</a></li>
+          <li><a href="https://github.com/cairn-geocoder/cairn/blob/main/ROADMAP.md">Roadmap</a></li>
+          <li><a href="https://github.com/cairn-geocoder/cairn/blob/main/CONTRIBUTING.md">Contributing</a></li>
+          <li><a href="https://github.com/cairn-geocoder/cairn/blob/main/LICENSE-MIT">License · MIT / Apache-2.0</a></li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- CONTENT -->
+    <main class="content">
+
+      <!-- ── HERO ──────────────────────────────────────────────── -->
+      <section class="hero" id="hero">
+        <div class="breadcrumb">
+          <span>Docs</span><span class="sep">/</span><span class="crumb-active">Introduction</span>
+        </div>
+        <div class="hero-grid">
+          <div>
+            <h1>Geocoding,<br/>without the <span class="non-italic">stack<span class="accent-dot">.</span></span></h1>
+            <p class="lede">
+              Cairn turns OpenStreetMap, WhosOnFirst, OpenAddresses, and
+              Geonames data into a single on-disk bundle, then serves
+              forward search, autocomplete, fuzzy matching, structured
+              queries, and reverse geocoding from one static Rust binary.
+              No cluster. No cloud. No daemon dependencies.
+            </p>
+            <div class="hero-cta">
+              <a class="btn primary" href="#install">Get started <span style="opacity:0.7">→</span></a>
+              <a class="btn secondary" href="#quickstart">Read the quickstart</a>
+              <a class="btn secondary" href="https://github.com/cairn-geocoder/cairn" style="border-color:var(--rule)">★ on GitHub</a>
+            </div>
+          </div>
+          <div class="hero-mark-frame">
+            <div class="inner"><img src="assets/cairn-photoreal.svg" alt="Cairn mark" /></div>
+            <div class="stamp">v0.0.2-alpha · MIT</div>
+            <div class="stamp-r">est. 2026</div>
+          </div>
+        </div>
+
+        <!-- Install row -->
+        <div class="install" id="install">
+          <a class="install-card" href="#install">
+            <div class="lang"><span>Cargo</span><span class="copy">build · run</span></div>
+            <div class="cmd"><span class="pr">$</span> cargo build --release</div>
+          </a>
+          <a class="install-card" href="https://github.com/cairn-geocoder/cairn/pkgs/container/cairn">
+            <div class="lang"><span>Docker</span><span class="copy">ghcr.io</span></div>
+            <div class="cmd"><span class="pr">$</span> docker run cairn:latest</div>
+          </a>
+          <a class="install-card" href="https://github.com/cairn-geocoder/cairn/releases">
+            <div class="lang"><span>Binary</span><span class="copy">x86_64 · arm64</span></div>
+            <div class="cmd"><span class="pr">$</span> tar xzf cairn-*-musl.tar.gz</div>
+          </a>
+          <a class="install-card" href="https://github.com/cairn-geocoder/cairn">
+            <div class="lang"><span>Source</span><span class="copy">git clone</span></div>
+            <div class="cmd"><span class="pr">$</span> gh repo clone cairn-geocoder/cairn</div>
+          </a>
+        </div>
+      </section>
+
+      <!-- ── QUICKSTART ────────────────────────────────────────── -->
+      <section class="section" id="quickstart">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">02 — Quickstart</div>
+            <h2>Stack your first cairn in 30 seconds.</h2>
+            <p>Build a country bundle from one OSM PBF, serve it, query it. No Postgres, no Elasticsearch, no Java. Pure Rust + mmap'd rkyv tile blobs.</p>
+          </div>
+          <div class="r"><a href="https://github.com/cairn-geocoder/cairn#quickstart">Full quickstart →</a></div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+          <div class="code">
+            <div class="code-head"><div class="dots"><span></span><span></span><span></span></div><span class="file">build &amp; serve</span><span class="lang">shell</span></div>
+<pre><code><span class="tk-c"># 1. build a Liechtenstein bundle</span>
+<span class="tk-k">$</span> cairn-build build \
     --osm liechtenstein-latest.osm.pbf \
     --wof whosonfirst-data-admin-li.db \
     --out bundle
 
-<span class="cmt"># 2. serve it</span>
-<span class="cmd">$</span> cairn serve --bundle bundle
+<span class="tk-c"># 2. serve it (single static binary)</span>
+<span class="tk-k">$</span> cairn-serve --bundle bundle
 
-<span class="cmt"># 3. query it</span>
-<span class="cmd">$</span> curl 'http://localhost:8080/v1/search?q=Vaduz'
-{
-  "results": [{
-    "name": "Vaduz",
-    "kind": "city",
-    "lon": 9.522,
-    "lat": 47.139
-  }]
-}</code></pre>
-    </div>
-  </section>
-
-  <section id="overview" class="container section">
-    <h2>Overview</h2>
-    <p>
-      Geocoding turns the name of a place into coordinates and the
-      coordinates of a point into a chain of administrative places. It
-      is what powers the search box on a map, the address autocomplete
-      on a checkout form, and the &ldquo;you are here&rdquo; on a
-      satellite image. Pelias, Photon, and Nominatim cover this for
-      online services with Elasticsearch or PostgreSQL behind them.
-    </p>
-    <p>
-      Cairn is the same thing without the cluster. It targets
-      deployments where the geocoder must run on a single box, in a
-      datacentre with no internet, on a vehicle, or on a developer
-      laptop without warming up Postgres. The runtime is one statically
-      linked binary; the data is one directory of mmap-ready files.
-    </p>
-    <ul class="bullet">
-      <li>Pure Rust at runtime. Single static musl binary.</li>
-      <li>One directory of files; the entire bundle ships in a tar.</li>
-      <li>Tantivy + R*-tree on disk; no cluster, no JVM, no Postgres.</li>
-      <li>Multilingual names, fuzzy matching, layer filters, focus bias.</li>
-      <li>OSM + WhosOnFirst + OpenAddresses + Geonames in one importer.</li>
-    </ul>
-  </section>
-
-  <section id="install" class="container section">
-    <h2>Install</h2>
-    <h3>From a binary release</h3>
-    <pre><code><span class="cmt"># Linux x86_64 (musl, statically linked)</span>
-<span class="cmd">$</span> curl -fsSL -o cairn.tar.gz \
-    https://github.com/cairn-geocoder/cairn/releases/latest/download/cairn-v0.0.1-alpha-linux-x86_64-musl.tar.gz
-<span class="cmd">$</span> tar xzf cairn.tar.gz &amp;&amp; cd cairn-*/
-<span class="cmd">$</span> ./cairn-build --version</code></pre>
-
-    <h3>From source</h3>
-    <pre><code><span class="cmd">$</span> git clone https://github.com/cairn-geocoder/cairn
-<span class="cmd">$</span> cd cairn
-<span class="cmd">$</span> cargo build --release -p cairn-build -p cairn-serve</code></pre>
-
-    <h3>From a container</h3>
-    <pre><code><span class="cmd">$</span> docker run --rm -p 8080:8080 \
-    ghcr.io/cairn-geocoder/cairn:latest</code></pre>
-  </section>
-
-  <section id="examples" class="container section">
-    <h2>Examples</h2>
-
-    <h3>Forward search</h3>
-    <p>
-      Free-text query. Returns ranked Places with coordinates and admin
-      ancestry.
-    </p>
-    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/search?q=Vaduz&amp;limit=2'
-{
-  "query": "Vaduz",
-  "results": [
-    { "name": "Vaduz", "kind": "city",  "lon": 9.522, "lat": 47.139 },
-    { "name": "Vaduz", "kind": "county","lon": 9.520, "lat": 47.144 }
+<span class="tk-c"># 3. query it</span>
+<span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=Vaduz'</span>
+</code></pre>
+          </div>
+          <div class="code">
+            <div class="code-head"><div class="dots"><span></span><span></span><span></span></div><span class="file">response</span><span class="lang">json</span></div>
+<pre><code>{
+  <span class="tk-s">"query"</span>: <span class="tk-s">"Vaduz"</span>,
+  <span class="tk-s">"results"</span>: [
+    {
+      <span class="tk-s">"name"</span>:  <span class="tk-s">"Vaduz"</span>,
+      <span class="tk-s">"kind"</span>:  <span class="tk-s">"city"</span>,
+      <span class="tk-s">"lon"</span>:   <span class="tk-n">9.522</span>,
+      <span class="tk-s">"lat"</span>:   <span class="tk-n">47.139</span>,
+      <span class="tk-s">"label"</span>: <span class="tk-s">"Vaduz, Schweiz"</span>,
+      <span class="tk-s">"langs"</span>: [<span class="tk-s">"de"</span>, <span class="tk-s">"en"</span>, <span class="tk-s">"fr"</span>],
+      <span class="tk-s">"score"</span>: <span class="tk-n">48.45</span>
+    }
   ]
-}</code></pre>
+}
+</code></pre>
+          </div>
+        </div>
+      </section>
 
-    <h3>Autocomplete</h3>
-    <p>
-      Prefix match against a per-character ngram index. Cheap enough for
-      keystroke-grain UI.
-    </p>
-    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/search?q=Vad&amp;mode=autocomplete'</code></pre>
+      <!-- ── CONCEPTS ──────────────────────────────────────────── -->
+      <section class="section" id="concepts">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">04 — Core concepts</div>
+            <h2>How Cairn thinks.</h2>
+            <p>Six ideas that explain the design. Read these once and the rest of the docs makes sense.</p>
+          </div>
+          <div class="r"><a href="https://github.com/cairn-geocoder/cairn/blob/main/ROADMAP.md">Roadmap →</a></div>
+        </div>
+        <div class="tiles">
+          <a class="tile" href="#bundle">
+            <span class="lbl">Concept · 01</span>
+            <h4>The bundle</h4>
+            <p>One directory of mmap-ready files. <code>manifest.toml</code> with blake3 hashes anchors integrity. Build once, ship anywhere.</p>
+            <span class="arrow">Read →</span>
+          </a>
+          <a class="tile" href="#examples">
+            <span class="lbl">Concept · 02</span>
+            <h4>rkyv tile blobs</h4>
+            <p>Place data lives in 16-byte aligned rkyv archives. <code>cairn-serve</code> mmap's them; PIP touches archived bytes directly — 92× faster than <code>geo::Contains</code> on miss.</p>
+            <span class="arrow">Read →</span>
+          </a>
+          <a class="tile" href="#examples">
+            <span class="lbl">Concept · 03</span>
+            <h4>Tantivy + FST + ngram</h4>
+            <p>BM25 search with prefix-ngram tokenizer for autocomplete, FuzzyTermQuery for typos, and a <code>name_translit</code> field for cross-script ("moskva" → "Москва").</p>
+            <span class="arrow">Read →</span>
+          </a>
+          <a class="tile" href="#examples">
+            <span class="lbl">Concept · 04</span>
+            <h4>Phonetic + semantic rerank</h4>
+            <p>DoubleMetaphone catches typos (Smyth → Smith). 32-dim character-trigram vectors catch morphology (Vienna → Viennese). Both opt-in, both shipped.</p>
+            <span class="arrow">Read →</span>
+          </a>
+          <a class="tile" href="#data-sources">
+            <span class="lbl">Concept · 05</span>
+            <h4>Multi-source dedup</h4>
+            <p>OSM + WoF + OA + Geonames merge into one Place stream. <code>--source-priority</code> flags weight the cross-source dedup; haversine bucket collapses near-duplicates.</p>
+            <span class="arrow">Read →</span>
+          </a>
+          <a class="tile" href="#api">
+            <span class="lbl">Concept · 06</span>
+            <h4>Federation</h4>
+            <p>Run <code>cairn-serve --bundles a/,b/,c/</code> to fan out across continental shards. Search merges by score; reverse merges by finest admin level.</p>
+            <span class="arrow">Read →</span>
+          </a>
+        </div>
+      </section>
 
-    <h3>Fuzzy</h3>
-    <p>
-      Edit-distance recovery. Lets users mis-type. Forward mode only;
-      autocomplete stays exact.
-    </p>
-    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/search?q=vaaduz&amp;fuzzy=2'
-<span class="cmt"># &rarr; matches "Vaduz" (1 edit)</span></code></pre>
+      <!-- ── EXAMPLES ──────────────────────────────────────────── -->
+      <section class="section" id="examples">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">05 — Examples</div>
+            <h2>Recipes from the trail.</h2>
+            <p>Short, complete <code>curl</code> snippets covering the most common queries against a running <code>cairn-serve</code>.</p>
+          </div>
+          <div class="r"><a href="demo/">Live demo →</a></div>
+        </div>
 
-    <h3>Layer filter + focus bias</h3>
-    <p>
-      Restrict to one or more place kinds, and re-rank by distance from
-      a focus point. Useful when the same name appears across kinds (a
-      city and a county both named &ldquo;Vaduz&rdquo;).
-    </p>
-    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/search?q=Vaduz \
+        <div class="ex-strip">
+          <div class="ex">
+            <div class="ex-hd"><span class="num">i.</span><h4>Forward search</h4></div>
+            <div class="code"><pre><code><span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=Vaduz&amp;limit=2'</span>
+{
+  <span class="tk-s">"results"</span>: [
+    { <span class="tk-s">"name"</span>: <span class="tk-s">"Vaduz"</span>, <span class="tk-s">"kind"</span>: <span class="tk-s">"city"</span>,
+      <span class="tk-s">"lon"</span>: <span class="tk-n">9.522</span>, <span class="tk-s">"lat"</span>: <span class="tk-n">47.139</span> }
+  ]
+}</code></pre></div>
+          </div>
+          <div class="ex">
+            <div class="ex-hd"><span class="num">ii.</span><h4>Autocomplete</h4></div>
+            <div class="code"><pre><code><span class="tk-c"># Prefix-ngram index. Cheap enough for keystroke-grain UI.</span>
+<span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=Vad&amp;mode=autocomplete'</span></code></pre></div>
+          </div>
+          <div class="ex">
+            <div class="ex-hd"><span class="num">iii.</span><h4>Fuzzy + phonetic</h4></div>
+            <div class="code"><pre><code><span class="tk-c"># Edit distance + DoubleMetaphone</span>
+<span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=vaaduz&amp;fuzzy=2'</span>
+<span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=Smyth&amp;phonetic=true'</span>
+<span class="tk-c"># Phonetic rescues 99.5% of typos in Cairn's noisy benchmark.</span></code></pre></div>
+          </div>
+          <div class="ex">
+            <div class="ex-hd"><span class="num">iv.</span><h4>Layer + focus bias</h4></div>
+            <div class="code"><pre><code><span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=Vaduz \
     &amp;layer=city \
     &amp;focus.lat=47.165&amp;focus.lon=9.51 \
-    &amp;focus.weight=2.0'</code></pre>
-
-    <h3>Structured search</h3>
-    <p>
-      Field-by-field query. Cairn picks a layer hint based on the
-      finest non-empty field and concatenates the rest into a free-text
-      query.
-    </p>
-    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/structured \
-    ?road=Aeulestrasse&amp;city=Vaduz'</code></pre>
-
-    <h3>Reverse geocoding</h3>
-    <p>
-      Point-in-polygon against the admin layer; falls back to nearest
-      centroid when the point sits outside any polygon. Results are
-      sorted finest-containing-polygon first.
-    </p>
-    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/reverse \
-    ?lat=47.141&amp;lon=9.523&amp;limit=4'
+    &amp;focus.weight=2.0'</span></code></pre></div>
+          </div>
+          <div class="ex">
+            <div class="ex-hd"><span class="num">v.</span><h4>Structured search</h4></div>
+            <div class="code"><pre><code><span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/structured \
+    ?road=Aeulestrasse&amp;city=Vaduz'</span></code></pre></div>
+          </div>
+          <div class="ex">
+            <div class="ex-hd"><span class="num">vi.</span><h4>Reverse geocoding</h4></div>
+            <div class="code"><pre><code><span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/reverse \
+    ?lat=47.141&amp;lon=9.523&amp;limit=4'</span>
 {
-  "source": "pip",
-  "results": [
-    { "name": "Vaduz",         "kind": "city",    "level": 1 },
-    { "name": "Oberland",      "kind": "county",  "level": 1 },
-    { "name": "Liechtenstein", "kind": "country", "level": 0 }
+  <span class="tk-s">"source"</span>: <span class="tk-s">"pip"</span>,
+  <span class="tk-s">"results"</span>: [
+    { <span class="tk-s">"name"</span>: <span class="tk-s">"Vaduz"</span>,    <span class="tk-s">"level"</span>: <span class="tk-n">1</span> },
+    { <span class="tk-s">"name"</span>: <span class="tk-s">"Oberland"</span>, <span class="tk-s">"level"</span>: <span class="tk-n">1</span> },
+    { <span class="tk-s">"name"</span>: <span class="tk-s">"Liechtenstein"</span>, <span class="tk-s">"level"</span>: <span class="tk-n">0</span> }
   ]
-}</code></pre>
+}</code></pre></div>
+          </div>
+        </div>
+      </section>
 
-    <h3>Address parsing</h3>
-    <p>
-      A heuristic parser ships in the default build. The
-      <code>libpostal</code> feature swaps in libpostal&rsquo;s
-      multilingual CRF tagger when its language model is available.
-    </p>
-    <pre><code><span class="cmd">$</span> curl 'localhost:8080/v1/parse \
-    ?q=Hauptstrasse%2012%2C%2010115%20Berlin%2C%20Deutschland'
-{
-  "parsed": {
-    "postcode": "10115",
-    "city":     "Berlin",
-    "country":  "Deutschland"
-  }
-}</code></pre>
-  </section>
+      <!-- ── API REFERENCE ─────────────────────────────────────── -->
+      <section class="section" id="api">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">06 — Reference</div>
+            <h2>The HTTP API at a glance.</h2>
+            <p>Pelias-compatible endpoint shape. Same curl, same JSON envelope; substitute <code>localhost:8080</code> for whatever <code>cairn-serve</code> binds.</p>
+          </div>
+          <div class="r"><a href="https://github.com/cairn-geocoder/cairn/blob/main/crates/cairn-api/src/lib.rs">Source →</a></div>
+        </div>
+        <div class="api">
+          <div class="api-row hd">
+            <span>Method</span><span>Endpoint</span><span>Description</span><span>Since</span>
+          </div>
+          <div class="api-row">
+            <span class="method get">GET</span>
+            <span class="endpoint">/v1/search</span>
+            <span class="desc">Forward + autocomplete + fuzzy + phonetic + semantic + layer + focus + bbox.</span>
+            <span class="since">v0.0.1</span>
+          </div>
+          <div class="api-row">
+            <span class="method get">GET</span>
+            <span class="endpoint">/v1/structured</span>
+            <span class="desc">Field-by-field address search with auto layer hint.</span>
+            <span class="since">v0.0.1</span>
+          </div>
+          <div class="api-row">
+            <span class="method get">GET</span>
+            <span class="endpoint">/v1/reverse</span>
+            <span class="desc">Point-in-polygon with nearest-centroid fallback.</span>
+            <span class="since">v0.0.1</span>
+          </div>
+          <div class="api-row">
+            <span class="method get">GET</span>
+            <span class="endpoint">/v1/parse</span>
+            <span class="desc">Free-text address → ParsedAddress (heuristic + libpostal).</span>
+            <span class="since">v0.0.1</span>
+          </div>
+          <div class="api-row">
+            <span class="method get">GET</span>
+            <span class="endpoint">/v1/expand</span>
+            <span class="desc">Free-text address → normalized variants.</span>
+            <span class="since">v0.0.1</span>
+          </div>
+          <div class="api-row">
+            <span class="method get">GET</span>
+            <span class="endpoint">/v1/place</span>
+            <span class="desc">Pelias-compat lookup by place_id list.</span>
+            <span class="since">v0.0.1</span>
+          </div>
+          <div class="api-row">
+            <span class="method get">GET</span>
+            <span class="endpoint">/v1/info</span>
+            <span class="desc">Bundle metadata, federation IDs, uptime.</span>
+            <span class="since">v0.0.2</span>
+          </div>
+          <div class="api-row">
+            <span class="method get">GET</span>
+            <span class="endpoint">/v1/sbom</span>
+            <span class="desc">CycloneDX 1.5 SBOM for the running bundle.</span>
+            <span class="since">v0.0.2</span>
+          </div>
+          <div class="api-row">
+            <span class="method get">GET</span>
+            <span class="endpoint">/healthz · /readyz · /metrics</span>
+            <span class="desc">Liveness · readiness · Prometheus exposition.</span>
+            <span class="since">v0.0.1</span>
+          </div>
+        </div>
+      </section>
 
-  <section id="api" class="container section">
-    <h2>API reference</h2>
-    <table class="api">
-      <thead>
-        <tr><th>Endpoint</th><th>Purpose</th></tr>
-      </thead>
-      <tbody>
-        <tr><td><code>GET /v1/search</code></td><td>Forward + autocomplete + fuzzy + layer + focus.</td></tr>
-        <tr><td><code>GET /v1/structured</code></td><td>Field-by-field address search with auto layer hint.</td></tr>
-        <tr><td><code>GET /v1/reverse</code></td><td>Point-in-polygon with nearest-centroid fallback.</td></tr>
-        <tr><td><code>GET /v1/parse</code></td><td>Free-text address &rarr; ParsedAddress.</td></tr>
-        <tr><td><code>GET /v1/expand</code></td><td>Free-text address &rarr; normalized variants.</td></tr>
-        <tr><td><code>GET /healthz</code></td><td>Liveness.</td></tr>
-        <tr><td><code>GET /readyz</code></td><td>Readiness (returns 503 if no text index).</td></tr>
-        <tr><td><code>GET /metrics</code></td><td>Prometheus exposition format.</td></tr>
-      </tbody>
-    </table>
-  </section>
-
-  <section id="bundle" class="container section">
-    <h2>What&rsquo;s in a bundle</h2>
-    <pre><code>bundle/
-├── manifest.toml              schema, source hashes, blake3
-├── tiles/&lt;level&gt;/&lt;row&gt;/&lt;col&gt;/&lt;id&gt;.bin   rkyv-archived Place blobs
-├── index/text/                tantivy segments (mmap'd at runtime)
+      <!-- ── BUNDLE LAYOUT ─────────────────────────────────────── -->
+      <section class="section" id="bundle">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">07 — Bundle</div>
+            <h2>What's in a bundle.</h2>
+            <p>One directory. Everything Cairn needs at runtime, anchored by blake3 hashes in <code>manifest.toml</code>. <code>cairn-build verify</code> recomputes them and refuses any drifted artifact.</p>
+          </div>
+          <div class="r"><a href="https://github.com/cairn-geocoder/cairn/blob/main/crates/cairn-tile/src/lib.rs">Source →</a></div>
+        </div>
+        <div class="code">
+          <div class="code-head"><div class="dots"><span></span><span></span><span></span></div><span class="file">bundle/</span><span class="lang">tree</span></div>
+<pre><code>bundle/
+├── manifest.toml              <span class="tk-c">schema, source hashes, blake3</span>
+├── manifest.toml.sig          <span class="tk-c">ed25519 detached signature (optional)</span>
+├── sbom.json                  <span class="tk-c">CycloneDX 1.5 software + data BoM</span>
+├── tiles/&lt;level&gt;/&lt;row&gt;/&lt;col&gt;/&lt;id&gt;.bin   <span class="tk-c">rkyv-archived Place blobs</span>
+├── index/text/                <span class="tk-c">tantivy segments (mmap'd at runtime)</span>
 └── spatial/
-    ├── admin.bin              bincode AdminLayer (polygons + metadata)
-    └── points.bin             bincode PointLayer (centroids for fallback)</code></pre>
-    <p>
-      Bundle integrity is anchored by blake3 hashes in
-      <code>manifest.toml</code>. <code>cairn-build verify</code>
-      recomputes them and refuses any tile or spatial artifact whose
-      hash drifted.
-    </p>
-  </section>
+    ├── admin/&lt;level&gt;/&lt;tile&gt;.bin   <span class="tk-c">per-tile rkyv AdminLayer</span>
+    └── points/&lt;tile&gt;.bin          <span class="tk-c">per-tile bincode PointLayer</span>
+</code></pre>
+        </div>
+      </section>
 
-  <section id="data-sources" class="container section">
-    <h2>Build sources</h2>
-    <table class="api">
-      <thead>
-        <tr><th>Source</th><th>Format</th><th>Flag</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>OpenStreetMap</td><td><code>*.osm.pbf</code></td><td><code>--osm</code></td></tr>
-        <tr><td>WhosOnFirst</td><td>SQLite per-country bundles</td><td><code>--wof</code></td></tr>
-        <tr><td>OpenAddresses</td><td>CSV per-region authoritative addresses</td><td><code>--oa</code></td></tr>
-        <tr><td>Geonames</td><td>TSV populated places</td><td><code>--geonames</code></td></tr>
-      </tbody>
-    </table>
-    <p>
-      Mix and match. OSM alone is enough for a working bundle; WhosOnFirst
-      lifts admin polygon quality; OpenAddresses fills addresses where
-      OSM is sparse; Geonames adds populated places where OSM coverage
-      is thin.
-    </p>
-  </section>
+      <!-- ── BUILD SOURCES ─────────────────────────────────────── -->
+      <section class="section" id="data-sources">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">08 — Build sources</div>
+            <h2>Bring your own data.</h2>
+            <p>Mix and match. OSM alone is enough for a working bundle; the rest fill specific holes.</p>
+          </div>
+          <div class="r"><a href="comparison/">Why these four →</a></div>
+        </div>
+        <table class="api">
+          <thead>
+            <tr><th>Source</th><th>Format</th><th>Flag</th><th>Coverage</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>OpenStreetMap</td><td><code>*.osm.pbf</code></td><td><code>--osm</code></td><td>Places, POIs, streets, admin polygons.</td></tr>
+            <tr><td>WhosOnFirst</td><td>SQLite per-country</td><td><code>--wof</code></td><td>High-quality admin polygons + multilingual names.</td></tr>
+            <tr><td>OpenAddresses</td><td>CSV per-region</td><td><code>--oa</code></td><td>Authoritative addresses where OSM is sparse.</td></tr>
+            <tr><td>Geonames</td><td>TSV</td><td><code>--geonames · --postcodes</code></td><td>Populated places + postal codes.</td></tr>
+          </tbody>
+        </table>
+      </section>
 
-  <section class="container section three-cards">
-    <div class="card">
-      <h3>Demo</h3>
-      <p>9 preset queries plus a free-form composer, dispatched live to
-      <code>cairn.kaldera.dev</code>.</p>
-      <p><a href="demo/">Open the demo &rarr;</a></p>
-    </div>
-    <div class="card">
-      <h3>Source</h3>
-      <p>11-crate Rust workspace. Dual MIT / Apache-2.0. CI on every push.</p>
-      <p><a href="https://github.com/cairn-geocoder/cairn">Browse on GitHub &rarr;</a></p>
-    </div>
-    <div class="card">
-      <h3>Roadmap</h3>
-      <p>Phase status, deferred work, and concrete plans for libpostal,
-      per-tile spatial, and OSM admin relations.</p>
-      <p><a href="https://github.com/cairn-geocoder/cairn/blob/main/ROADMAP.md">Read ROADMAP.md &rarr;</a></p>
-    </div>
-  </section>
+      <!-- ── BENCHMARK ─────────────────────────────────────────── -->
+      <section class="section" id="benchmark">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">09 — Benchmark</div>
+            <h2>Switzerland on a Mac.</h2>
+            <p>Same 506 MB OSM PBF, same 6 408-query workload, same Apple Silicon host. Cairn vs Pelias, Nominatim, Photon. Reproducible — <a href="https://github.com/cairn-geocoder/cairn/tree/main/benchmarks"><code>benchmarks/</code></a> ships every script.</p>
+          </div>
+          <div class="r"><a href="https://github.com/cairn-geocoder/cairn/blob/main/benchmarks/results/REPORT.md">REPORT.md →</a></div>
+        </div>
+        <table class="api">
+          <thead>
+            <tr><th>Engine</th><th>Build</th><th>Disk</th><th>Hot RSS</th><th>p50</th><th>p99</th><th>Peak RPS</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Cairn</strong></td>
+              <td><strong>27 s</strong></td>
+              <td><strong>212 MB</strong></td>
+              <td><strong>102 MB</strong></td>
+              <td><strong><code>0.68 ms</code></strong></td>
+              <td><strong><code>1.32 ms</code></strong></td>
+              <td><strong>29 342</strong></td>
+            </tr>
+            <tr>
+              <td>Pelias</td><td>3 m 46 s</td><td>3.5 GB</td><td>2.7 GB</td>
+              <td><code>13.76 ms</code></td><td><code>57.23 ms</code></td><td>362</td>
+            </tr>
+            <tr>
+              <td>Nominatim</td><td>3 h 13 m</td><td>9.2 GB</td><td>2.4 GB</td>
+              <td><code>9.51 ms</code></td><td><code>23.00 ms</code></td><td>1 109</td>
+            </tr>
+            <tr>
+              <td>Photon</td><td>2 m 1 s</td><td>1.3 GB</td><td>2.1 GB</td>
+              <td><code>5.88 ms</code></td><td><code>25.18 ms</code></td><td>2 406</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Cairn is <strong>17–43× faster at p99</strong>, sustains
+          <strong>12–81× higher peak RPS</strong>, with
+          <strong>21–27× smaller hot RSS</strong> and
+          <strong>6–44× smaller disk</strong> than each incumbent.
+          Build wall-clock is <strong>4.5–430× faster</strong>.
+          Recall on 1 153 noisy queries: <code>?phonetic=true</code>
+          lifts hit-rate from 22.3% to <strong>99.5%</strong> alone.
+        </p>
+      </section>
 
-  <section id="benchmark" class="container section">
-    <h2>Benchmark — Switzerland on a Mac</h2>
-    <p>
-      Same 506 MB OSM PBF, same 6 408-query workload, same Apple
-      Silicon host. Cairn vs Pelias, Nominatim, Photon. Reproducible —
-      <a href="https://github.com/cairn-geocoder/cairn/tree/main/benchmarks"><code>benchmarks/</code></a>
-      ships every script.
-    </p>
-    <table class="api">
-      <thead>
-        <tr>
-          <th>Engine</th>
-          <th>Build</th>
-          <th>Disk</th>
-          <th>Hot RSS</th>
-          <th>p50</th>
-          <th>p99</th>
-          <th>Peak RPS</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong>Cairn</strong></td>
-          <td><strong>27 s</strong></td>
-          <td><strong>212 MB</strong></td>
-          <td><strong>102 MB</strong></td>
-          <td><strong><code>0.68 ms</code></strong></td>
-          <td><strong><code>1.32 ms</code></strong></td>
-          <td><strong>29 342</strong></td>
-        </tr>
-        <tr>
-          <td>Pelias</td>
-          <td>3 m 46 s</td>
-          <td>3.5 GB</td>
-          <td>2.7 GB</td>
-          <td><code>13.76 ms</code></td>
-          <td><code>57.23 ms</code></td>
-          <td>362</td>
-        </tr>
-        <tr>
-          <td>Nominatim</td>
-          <td>3 h 13 m</td>
-          <td>9.2 GB</td>
-          <td>2.4 GB</td>
-          <td><code>9.51 ms</code></td>
-          <td><code>23.00 ms</code></td>
-          <td>1 109</td>
-        </tr>
-        <tr>
-          <td>Photon</td>
-          <td>2 m 1 s</td>
-          <td>1.3 GB</td>
-          <td>2.1 GB</td>
-          <td><code>5.88 ms</code></td>
-          <td><code>25.18 ms</code></td>
-          <td>2 406</td>
-        </tr>
-      </tbody>
-    </table>
-    <p>
-      Cairn is <strong>17–43× faster at p99</strong>, sustains
-      <strong>12–81× higher peak RPS</strong>, with
-      <strong>21–27× smaller hot RSS</strong> and
-      <strong>6–44× smaller disk</strong> than each incumbent.
-      Build wall-clock is <strong>4.5–430× faster</strong>.
-      Recall on 1 153 noisy queries: <code>?phonetic=true</code>
-      lifts hit-rate from 22.3% to <strong>99.5%</strong> alone.
-    </p>
-    <p>
-      <a href="comparison/">Full comparison &rarr;</a> ·
-      <a href="https://github.com/cairn-geocoder/cairn/blob/main/benchmarks/results/REPORT.md">REPORT.md &rarr;</a>
-    </p>
-  </section>
+      <!-- ── COMMUNITY ─────────────────────────────────────────── -->
+      <section class="section" id="community">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">10 — Community</div>
+            <h2>Stack with us.</h2>
+            <p>Cairn is built in the open. Issues, PRs, and design discussions all happen on GitHub.</p>
+          </div>
+          <div class="r"><a href="https://github.com/cairn-geocoder/cairn/blob/main/CONTRIBUTING.md">Contribute →</a></div>
+        </div>
+        <div class="comm">
+          <div class="comm-card feat">
+            <div class="lbl">Latest milestone</div>
+            <h4>v0.0.2-alpha — "Switzerland"</h4>
+            <p>Tier 1+2+3+4 of the superiority plan shipped. ed25519 signed bundles, CycloneDX SBOM, federation, semantic + phonetic rerank, WASM autocomplete, and a reproducible Switzerland benchmark.</p>
+            <span class="arrow" style="color: var(--accent)">2026 · alpha</span>
+          </div>
+          <div class="comm-card">
+            <div class="lbl">GitHub</div>
+            <div class="stat">★ Issues + PRs</div>
+            <p>11-crate Rust workspace. Dual MIT / Apache-2.0. CI on every push.</p>
+            <a class="arrow" href="https://github.com/cairn-geocoder/cairn">github.com/cairn-geocoder/cairn →</a>
+          </div>
+          <div class="comm-card">
+            <div class="lbl">Live demo <span class="pulse-dot" style="margin-left:6px"></span></div>
+            <div class="stat">cairn.kaldera.dev</div>
+            <p>9 preset queries plus a free-form composer dispatched live to a hosted Switzerland bundle.</p>
+            <a class="arrow" href="demo/">Open the demo →</a>
+          </div>
+        </div>
+      </section>
 
-  <section id="security" class="container section">
-    <h2>Security</h2>
-    <p>
-      The production container image is scanned by Trivy on every push,
-      every PR, and once a day at 06:17 UTC. The table below mirrors the
-      most recent scan; the canonical source is the
-      <a href="https://github.com/cairn-geocoder/cairn/security/code-scanning">GitHub Code Scanning tab</a>.
-      Reporting policy and threat model live in
-      <a href="https://github.com/cairn-geocoder/cairn/blob/main/SECURITY.md">SECURITY.md</a>.
-    </p>
+      <!-- ── SECURITY (preserved) ──────────────────────────────── -->
+      <section class="section" id="security">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">11 — Security</div>
+            <h2>Live CVE pipeline.</h2>
+            <p>The production container image is scanned by Trivy on every push, every PR, and once a day at 06:17 UTC. The table below mirrors the most recent scan; the canonical source is the <a href="https://github.com/cairn-geocoder/cairn/security/code-scanning">GitHub Code Scanning tab</a>. Reporting policy and threat model live in <a href="https://github.com/cairn-geocoder/cairn/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+          </div>
+          <div class="r"><a href="https://github.com/cairn-geocoder/cairn/blob/main/SECURITY.md">SECURITY.md →</a></div>
+        </div>
 
-    <div id="cve-meta" class="cve-meta">Loading current CVE list&hellip;</div>
-    <div id="cve-summary" class="cve-summary"></div>
+        <div id="cve-meta" class="cve-meta">Loading current CVE list…</div>
+        <div id="cve-summary" class="cve-summary"></div>
 
-    <div class="cve-scroll">
-      <table id="cve-table" class="cve-table">
-        <thead>
-          <tr>
-            <th>CVE</th>
-            <th>Severity</th>
-            <th>Package</th>
-            <th>Installed</th>
-            <th>Fixed in</th>
-            <th>Title</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td colspan="6" class="cve-empty">Loading&hellip;</td></tr>
-        </tbody>
-      </table>
-    </div>
+        <div class="cve-scroll">
+          <table id="cve-table" class="cve-table">
+            <thead>
+              <tr>
+                <th>CVE</th>
+                <th>Severity</th>
+                <th>Package</th>
+                <th>Installed</th>
+                <th>Fixed in</th>
+                <th>Title</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td colspan="6" class="cve-empty">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-    <p class="cve-foot">
-      Triage policy:
-      <code>CRITICAL</code> &le; 7 days,
-      <code>HIGH</code> next release,
-      <code>MEDIUM</code> routine maintenance.
-      Anything not listed here is either patched, ignored with documented
-      reason, or below the <code>MEDIUM</code> reporting threshold.
-    </p>
-  </section>
+        <p class="cve-foot">
+          Triage policy:
+          <code>CRITICAL</code> ≤ 7 days,
+          <code>HIGH</code> next release,
+          <code>MEDIUM</code> routine maintenance.
+          Anything not listed here is either patched, ignored with documented
+          reason, or below the <code>MEDIUM</code> reporting threshold.
+        </p>
+      </section>
 
-  <footer class="foot container">
-    <p>Cairn is dual-licensed MIT OR Apache-2.0. Maintained at
-    <a href="https://github.com/cairn-geocoder/cairn">github.com/cairn-geocoder/cairn</a>.
-    Issues, PRs, and contributions welcome.</p>
+    </main>
+
+    <!-- TOC -->
+    <aside class="toc">
+      <h4>On this page</h4>
+      <ul>
+        <li><a class="active" href="#hero">Introduction</a></li>
+        <li><a href="#install">Install</a></li>
+        <li class="indent"><a href="#install">Cargo, Docker, binary</a></li>
+        <li><a href="#quickstart">30-second quickstart</a></li>
+        <li><a href="#concepts">Core concepts</a></li>
+        <li class="indent"><a href="#concepts">rkyv tile blobs</a></li>
+        <li class="indent"><a href="#concepts">Phonetic + semantic</a></li>
+        <li><a href="#examples">Examples</a></li>
+        <li class="indent"><a href="#examples">Forward search</a></li>
+        <li class="indent"><a href="#examples">Reverse geocoding</a></li>
+        <li><a href="#api">HTTP API</a></li>
+        <li><a href="#bundle">Bundle layout</a></li>
+        <li><a href="#data-sources">Build sources</a></li>
+        <li><a href="#benchmark">Benchmark</a></li>
+        <li><a href="#community">Community</a></li>
+        <li><a href="#security">Security</a></li>
+      </ul>
+    </aside>
+
+  </div>
+
+  <footer class="docs-footer">
+    <span>Cairn · open-source geocoder · MIT / Apache-2.0</span>
+    <span>Stacked with care · 2026</span>
   </footer>
 
   <script>
