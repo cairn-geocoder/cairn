@@ -5,73 +5,133 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Cairn — Live Geocoder Demo</title>
   <meta name="description" content="Live demo of the Cairn offline geocoder against a Liechtenstein bundle hosted on Hetzner." />
+  <link rel="icon" type="image/svg+xml" href="../assets/cairn-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
         crossorigin="" />
+  <link rel="stylesheet" href="../site.css" />
   <link rel="stylesheet" href="demo.css" />
 </head>
 <body>
-  <header class="masthead">
-    <div class="masthead-inner">
-      <a class="brand" href="../">CAIRN</a>
-      <nav class="nav">
-        <a href="https://github.com/cairn-geocoder/cairn">GitHub</a>
-        <a href="https://crates.io/crates/cairn-geocoder">crates.io</a>
-        <a href="https://cairn.kaldera.dev/healthz" target="_blank" rel="noopener">backend</a>
+
+  <header class="topnav">
+    <div class="topnav-inner">
+      <a class="brand" href="../">
+        <img class="mk" src="../assets/cairn-photoreal.svg" alt="" />
+        <span>cairn<span class="dot">.</span></span>
+      </a>
+      <nav>
+        <a href="../#hero">Docs</a>
+        <a href="../#install">Install</a>
+        <a href="../#api">Reference</a>
+        <a href="../#benchmark">Benchmark</a>
+        <a href="../algorithms/">Algorithms</a>
+        <a href="../comparison/">Comparison</a>
+        <a class="active" href="./">Live demo</a>
       </nav>
-    </div>
-    <div class="masthead-tag">
-      <h1>Live geocoder demo</h1>
-      <p>Every query below is dispatched live to <code>https://cairn.kaldera.dev/</code> — a single <code>cairn-serve</code> pod on Hetzner k3s with a Liechtenstein bundle (3553 OSM places + 94 WhosOnFirst admins, 27 polygons). Fall back to cached responses if the box is down.</p>
+      <div class="right">
+        <span class="ver-pill">v0.1.0 · beta</span>
+        <a class="gh-link" href="https://github.com/cairn-geocoder/cairn">★ GitHub</a>
+      </div>
     </div>
   </header>
 
-  <main class="grid">
-    <aside class="queries">
-      <h2>Preset queries</h2>
-      <ul id="query-list"></ul>
+  <main class="demo-page">
 
-      <h2>Custom query</h2>
-      <form id="custom-form" class="custom">
-        <label>
-          Endpoint
-          <select id="custom-endpoint">
-            <option value="/v1/search">/v1/search</option>
-            <option value="/v1/structured">/v1/structured</option>
-            <option value="/v1/reverse">/v1/reverse</option>
-            <option value="/healthz">/healthz</option>
-          </select>
-        </label>
-        <label>
-          Query string
-          <input id="custom-params" type="text"
-                 placeholder="q=Vaduz&amp;limit=5"
-                 spellcheck="false"
-                 autocomplete="off" />
-        </label>
-        <button type="submit">Run</button>
-      </form>
-    </aside>
-
-    <section class="panel">
-      <header class="panel-head">
-        <h2 id="panel-title">Pick a query</h2>
-        <code id="panel-url"></code>
-        <span id="panel-status" data-kind="idle">idle</span>
-      </header>
-      <div class="panel-body">
-        <div id="map"></div>
-        <details open>
-          <summary>Response JSON</summary>
-          <pre><code id="panel-json"></code></pre>
-        </details>
+    <section class="demo-hero">
+      <div class="demo-hero-inner">
+        <div class="demo-eyebrow">Live demo · cairn.kaldera.dev</div>
+        <h1>Talk to a real <span class="demo-italic">cairn-serve</span>.</h1>
+        <p class="demo-lede">
+          Every query below dispatches live to a <code>cairn-serve</code>
+          pod on Hetzner k3s. Liechtenstein bundle: 3 553 OSM places + 94
+          WhosOnFirst admins + 27 polygons. Latency from your browser
+          includes round-trip TLS; the actual server-side p99 is
+          well under 1 ms.
+        </p>
+        <div class="demo-meta">
+          <span class="demo-meta-pill">
+            <span class="demo-pulse" aria-hidden="true"></span>
+            <a href="https://cairn.kaldera.dev/healthz" target="_blank" rel="noopener">backend health</a>
+          </span>
+          <span class="demo-meta-pill">
+            <a href="https://github.com/cairn-geocoder/cairn">★ GitHub</a>
+          </span>
+        </div>
       </div>
     </section>
-  </main>
 
-  <footer class="foot">
-    <p>Cairn is dual-licensed MIT OR Apache-2.0 · <a href="https://github.com/cairn-geocoder/cairn/blob/main/ROADMAP.md">Roadmap</a> · <a href="https://github.com/cairn-geocoder/cairn">Source</a></p>
-  </footer>
+    <section class="demo-grid">
+      <aside class="demo-queries">
+        <div class="demo-section-hd">
+          <span class="demo-num">i.</span>
+          <h2>Preset queries</h2>
+        </div>
+        <ul id="query-list" class="demo-query-list"></ul>
+
+        <div class="demo-section-hd" style="margin-top: 36px;">
+          <span class="demo-num">ii.</span>
+          <h2>Custom query</h2>
+        </div>
+        <form id="custom-form" class="demo-custom">
+          <label>
+            <span class="demo-label">Endpoint</span>
+            <select id="custom-endpoint">
+              <option value="/v1/search">/v1/search</option>
+              <option value="/v1/structured">/v1/structured</option>
+              <option value="/v1/reverse">/v1/reverse</option>
+              <option value="/healthz">/healthz</option>
+            </select>
+          </label>
+          <label>
+            <span class="demo-label">Query string</span>
+            <input id="custom-params" type="text"
+                   placeholder="q=Vaduz&amp;limit=5"
+                   spellcheck="false"
+                   autocomplete="off" />
+          </label>
+          <button type="submit" class="demo-btn">Run query</button>
+        </form>
+      </aside>
+
+      <section class="demo-panel">
+        <header class="demo-panel-head">
+          <div>
+            <div class="demo-eyebrow">Response</div>
+            <h2 id="panel-title">Pick a query</h2>
+          </div>
+          <span id="panel-status" data-kind="idle">idle</span>
+        </header>
+        <code id="panel-url" class="demo-url"></code>
+        <div class="demo-panel-body">
+          <div id="map" class="demo-map"></div>
+          <details open class="demo-json-wrap">
+            <summary>Response JSON</summary>
+            <pre><code id="panel-json"></code></pre>
+          </details>
+        </div>
+      </section>
+    </section>
+
+    <footer class="demo-foot">
+      <div class="demo-foot-inner">
+        <div>
+          <strong>Cairn</strong> — offline geocoder, dual-licensed MIT
+          OR Apache-2.0.
+        </div>
+        <div class="demo-foot-links">
+          <a href="../">Docs home</a>
+          <a href="../algorithms/">Algorithms</a>
+          <a href="../comparison/">Comparison</a>
+          <a href="https://github.com/cairn-geocoder/cairn/blob/main/ROADMAP.md">Roadmap</a>
+          <a href="https://github.com/cairn-geocoder/cairn">Source</a>
+        </div>
+      </div>
+    </footer>
+  </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="

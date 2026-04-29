@@ -1,58 +1,194 @@
-/* Comparison subpage — extends ../site.css with the matrix table styling
-   and a tighter hero. */
+/* Comparison subpage — styled on the same warm-beige limestone palette
+   as the landing page. Reuses tokens from ../site.css; classes here
+   shadow the legacy comparison-only ones the HTML still references
+   (.topbar, .container, .matrix, .matrix-scroll, .kicker, .caveat). */
 
-.hero-compact {
-  padding: 48px 0 36px;
+/* ── PAGE FRAME ───────────────────────────────────────────────── */
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
 }
-.hero-compact .lede {
-  margin: 12px 0 0;
-  font-size: 17px;
-  color: #2a2a2a;
-  max-width: 64ch;
+
+.container {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 32px;
 }
-.hero-compact .kicker {
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  font-size: 12px;
-  color: var(--muted);
-  margin: 0 0 8px;
+
+/* ── TOP BAR (mirrors site.css .topnav) ───────────────────────── */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: rgba(245, 237, 225, 0.92);
+  -webkit-backdrop-filter: saturate(140%) blur(8px);
+  backdrop-filter: saturate(140%) blur(8px);
+  border-bottom: 1px solid var(--rule);
 }
-.hero-compact h1 {
-  margin: 0;
-  font-family: var(--serif);
-  font-size: clamp(30px, 3.4vw, 42px);
-  letter-spacing: -0.01em;
-  line-height: 1.1;
+.topbar-inner {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  padding: 14px 32px;
+}
+.topbar .brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   font-weight: 600;
+  font-size: 18px;
+  letter-spacing: -0.02em;
+  color: var(--ink);
 }
+.topbar .brand-mark { width: 30px; height: 30px; }
+.topbar nav {
+  display: flex;
+  gap: 22px;
+  font-size: 13px;
+  color: var(--ink-2);
+  margin-left: auto;
+}
+.topbar nav a:hover { color: var(--accent); }
+.topbar nav a[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 500;
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 2px;
+}
+
+/* ── HERO ─────────────────────────────────────────────────────── */
+
+.hero {
+  padding: 72px 0 48px;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 24px;
+}
+.hero.hero-compact {
+  padding: 56px 0 36px;
+}
+
+.kicker {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 18px;
+}
+
+.hero h1 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(40px, 5vw, 72px);
+  line-height: 0.98;
+  letter-spacing: -0.025em;
+  margin: 0 0 22px;
+  color: var(--ink);
+}
+
+.hero .lede {
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  max-width: 64ch;
+  margin: 0;
+}
+
+/* ── SECTIONS ─────────────────────────────────────────────────── */
+
+.section {
+  padding: 32px 0;
+}
+.section + .section {
+  border-top: 1px solid var(--rule-soft);
+}
+
+.section h2 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(30px, 3vw, 44px);
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+  margin: 16px 0 24px;
+  color: var(--ink);
+}
+
+.section h3 {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 19px;
+  letter-spacing: -0.005em;
+  margin: 28px 0 10px;
+  color: var(--ink);
+}
+
+.section p {
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  max-width: 70ch;
+  margin: 0 0 14px;
+}
+
+.section ul {
+  margin: 0 0 18px;
+  padding-left: 24px;
+  color: var(--ink-2);
+  line-height: 1.7;
+  font-size: 15px;
+}
+.section ul li { margin: 6px 0; }
+.section ul li code { font-size: 13px; }
+
+.section code {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--rule-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+.section a {
+  color: var(--accent);
+  border-bottom: 1px dashed var(--accent-soft);
+}
+.section a:hover { border-bottom-style: solid; }
+.section strong { color: var(--ink); font-weight: 600; }
+
+/* ── MATRIX TABLE ─────────────────────────────────────────────── */
 
 .matrix-scroll {
   overflow-x: auto;
   margin: 8px 0 18px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
 }
 
 .matrix {
   width: 100%;
   border-collapse: collapse;
   font-size: 14px;
-  background: #fff;
 }
 
 .matrix thead th {
   font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 0.04em;
+  font-size: 11px;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--ink-3);
   text-align: left;
-  background: var(--surface);
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  background: var(--paper);
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule);
   white-space: nowrap;
+  font-weight: 500;
 }
-
 .matrix thead th:nth-child(2) {
   color: var(--accent);
   background: var(--accent-soft);
@@ -61,24 +197,27 @@
 .matrix tbody th {
   font-weight: 600;
   font-size: 13px;
-  color: var(--text);
+  color: var(--ink);
   text-align: left;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule-soft);
+  background: var(--paper);
   white-space: nowrap;
   width: 1%;
 }
 
 .matrix tbody td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule-soft);
   vertical-align: top;
-  color: #2a2a2a;
+  color: var(--ink-2);
 }
-
 .matrix tbody td:nth-child(2) {
-  background: rgba(31, 95, 166, 0.04);
+  background: rgba(201, 100, 66, 0.05);
+  color: var(--ink);
+}
+.matrix tbody tr:hover td:not(:nth-child(2)) {
+  background: rgba(201, 100, 66, 0.025);
 }
 
 .matrix tbody tr:last-child th,
@@ -87,24 +226,64 @@
 }
 
 .matrix code {
-  font-size: 12px;
+  font-size: 12.5px;
+  background: var(--rule-soft);
 }
+
+/* ── BENCH TABLE (api-style, reused from landing) ─────────────── */
+
+table.api {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 22px;
+  font-size: 14px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  overflow: hidden;
+}
+table.api thead th {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+  text-align: left;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+table.api tbody td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule-soft);
+  color: var(--ink-2);
+  vertical-align: top;
+}
+table.api tbody tr:last-child td { border-bottom: none; }
+table.api strong { color: var(--accent); }
+table.api code {
+  font-size: 12.5px;
+  background: transparent;
+  padding: 0;
+}
+
+/* ── CAVEAT NOTE ──────────────────────────────────────────────── */
 
 .caveat {
   font-size: 14px;
-  color: var(--muted);
-  border-left: 3px solid var(--border);
-  padding: 6px 0 6px 12px;
-  margin: 12px 0 8px;
-  max-width: 64ch;
+  color: var(--ink-2);
+  border-left: 3px solid var(--accent);
+  padding: 6px 0 6px 16px;
+  margin: 14px 0 10px;
+  max-width: 70ch;
+  line-height: 1.55;
 }
 
-.topbar nav a[aria-current="page"] {
-  color: var(--accent);
-  font-weight: 600;
-}
+/* ── RESPONSIVE ───────────────────────────────────────────────── */
 
 @media (max-width: 720px) {
+  .topbar nav { gap: 16px; font-size: 12px; }
   .matrix thead th,
   .matrix tbody th,
   .matrix tbody td {

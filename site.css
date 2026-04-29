@@ -561,7 +561,14 @@ img, svg { display: block; max-width: 100%; }
 .api-row .since { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
 
 /* ── EXAMPLES STRIP ────────────────────────────────────────────────── */
-.ex-strip { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.ex-strip {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  /* Required so long code lines inside .ex don't inflate the
+     grid track and bleed across the right-hand TOC. */
+  min-width: 0;
+}
 .ex {
   background: var(--paper);
   border: 1px solid var(--rule);
@@ -570,6 +577,13 @@ img, svg { display: block; max-width: 100%; }
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* Allow the grid track to shrink below content width so the
+     inner <pre> can scroll horizontally instead of overflowing. */
+  min-width: 0;
+}
+.ex .code {
+  min-width: 0;
+  width: 100%;
 }
 .ex .ex-hd { display: flex; align-items: center; gap: 12px; }
 .ex .ex-hd .num {
