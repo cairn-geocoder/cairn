@@ -12,7 +12,7 @@ use axum::{
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use cairn_place::Coord;
@@ -71,17 +71,20 @@ impl Metrics {
     }
 }
 
+/// Phase 7a-U — bundle hot-reload backing. The mutable bundle
+/// surface lives behind `ArcSwap` snapshots so an admin-triggered
+/// reload can atomically swap the live indices without restarting
+/// the process. Each request `.load_full()`s its own snapshot of
+/// every field at the start of handling and is unaffected by a
+/// reload that happens mid-request.
 #[derive(Clone)]
 pub struct AppState {
     pub bundle_path: Arc<std::path::PathBuf>,
-    pub text: Option<Arc<FederatedText>>,
-    pub admin: Option<Arc<FederatedAdmin>>,
-    pub nearest: Option<Arc<FederatedNearest>>,
+    text_swap: Arc<arc_swap::ArcSwapOption<FederatedText>>,
+    admin_swap: Arc<arc_swap::ArcSwapOption<FederatedAdmin>>,
+    nearest_swap: Arc<arc_swap::ArcSwapOption<FederatedNearest>>,
+    bundle_ids_swap: Arc<arc_swap::ArcSwap<Vec<String>>>,
     pub metrics: Arc<Metrics>,
-    /// Bundle IDs participating in this server. Length 1 for the
-    /// classic single-bundle deploy; >1 when `cairn-serve --bundles
-    /// a/,b/,c/` federated several bundles. Reported on `/v1/info`.
-    pub bundle_ids: Arc<Vec<String>>,
     /// Optional API key. When `Some`, every request to `/v1/*` must
     /// present `X-API-Key: <key>` (or `?api_key=<key>`) or 401.
     pub api_key: Option<Arc<String>>,
@@ -101,6 +104,75 @@ pub struct AppState {
     /// against attackers who bypass the proxy. Empty = trust unconditionally
     /// (when `trust_forwarded_for` is also true).
     pub trusted_proxy_cidrs: Arc<Vec<TrustedCidr>>,
+}
+
+/// Bundle pieces a hot-reload swap needs to install in one go.
+/// Built fresh from disk by the operator (or by the reload helper)
+/// and then plugged into [`AppState::install_bundle`].
+pub struct BundleSnapshot {
+    pub text: Option<Arc<FederatedText>>,
+    pub admin: Option<Arc<FederatedAdmin>>,
+    pub nearest: Option<Arc<FederatedNearest>>,
+    pub bundle_ids: Vec<String>,
+}
+
+impl AppState {
+    /// Build the mutable surface from an initial bundle snapshot.
+    /// Stable fields (api_key, rate_limit, trusted_proxy_cidrs, …)
+    /// are constructed by the caller; this only seeds the swap-able
+    /// indices.
+    pub fn new(
+        bundle_path: std::path::PathBuf,
+        snapshot: BundleSnapshot,
+        metrics: Arc<Metrics>,
+        api_key: Option<Arc<String>>,
+        rate_limit: Option<Arc<RateLimiter>>,
+        trust_forwarded_for: bool,
+        trusted_proxy_cidrs: Arc<Vec<TrustedCidr>>,
+    ) -> Self {
+        Self {
+            bundle_path: Arc::new(bundle_path),
+            text_swap: Arc::new(arc_swap::ArcSwapOption::from(snapshot.text)),
+            admin_swap: Arc::new(arc_swap::ArcSwapOption::from(snapshot.admin)),
+            nearest_swap: Arc::new(arc_swap::ArcSwapOption::from(snapshot.nearest)),
+            bundle_ids_swap: Arc::new(arc_swap::ArcSwap::from(Arc::new(snapshot.bundle_ids))),
+            metrics,
+            api_key,
+            rate_limit,
+            trust_forwarded_for,
+            trusted_proxy_cidrs,
+        }
+    }
+
+    /// Phase 7a-U — atomically replace the bundle surface. Pre-built
+    /// indices are pushed into the swaps in a single visible step;
+    /// already-running requests keep their previous snapshot until
+    /// they release it. Returns the previous bundle id list for
+    /// logging.
+    pub fn install_bundle(&self, snapshot: BundleSnapshot) -> Arc<Vec<String>> {
+        self.text_swap.store(snapshot.text);
+        self.admin_swap.store(snapshot.admin);
+        self.nearest_swap.store(snapshot.nearest);
+        self.bundle_ids_swap.swap(Arc::new(snapshot.bundle_ids))
+    }
+
+    /// Snapshot of the current text index, suitable for the lifetime
+    /// of a single request handler.
+    pub fn text(&self) -> Option<Arc<FederatedText>> {
+        self.text_swap.load_full()
+    }
+
+    pub fn admin(&self) -> Option<Arc<FederatedAdmin>> {
+        self.admin_swap.load_full()
+    }
+
+    pub fn nearest(&self) -> Option<Arc<FederatedNearest>> {
+        self.nearest_swap.load_full()
+    }
+
+    pub fn bundle_ids(&self) -> Arc<Vec<String>> {
+        self.bundle_ids_swap.load_full()
+    }
 }
 
 /// Minimal CIDR matcher (no external dep). Stores the network address
@@ -375,6 +447,10 @@ pub fn router(state: AppState) -> Router {
         .route("/autocomplete", get(pelias_autocomplete))
         .route("/reverse", get(pelias_reverse))
         .route("/place", get(place_lookup))
+        // Phase 7a-U — bundle hot-reload. Auth-gated (under the same
+        // require_api_key middleware as the rest of /v1/*) so a
+        // public deploy without a key still rejects reload attempts.
+        .route("/admin/reload", post(admin_reload))
         // Layer order (last .route_layer is outermost → runs first):
         //   1. require_api_key  (cheap; unauthenticated traffic fails
         //      fast and never burns rate-limit tokens)
@@ -545,9 +621,9 @@ struct ReadyComponents {
 
 async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<ReadyBody>) {
     let components = ReadyComponents {
-        text: state.text.is_some(),
-        admin: state.admin.is_some(),
-        nearest: state.nearest.is_some(),
+        text: state.text().is_some(),
+        admin: state.admin().is_some(),
+        nearest: state.nearest().is_some(),
     };
     let ready = components.text;
     let status = if ready {
@@ -586,6 +662,114 @@ struct InfoBody {
 /// how long it's been up, and whether auth / rate limiting are active.
 /// Does not require an API key (treated like /healthz so probes can
 /// hit it without credentials).
+/// Phase 7a-U — load bundle indices from disk into a [`BundleSnapshot`].
+/// Shared between cairn-serve startup and the `/admin/reload` handler.
+/// Single-bundle path; federated multi-bundle reload needs the `--bundles`
+/// list passed in (out of scope for the per-process reload endpoint).
+pub fn load_bundle_snapshot(path: &std::path::Path) -> Result<BundleSnapshot, std::io::Error> {
+    let manifest = cairn_tile::read_manifest(&path.join("manifest.toml")).ok();
+
+    let text_dir = path.join("index/text");
+    let text = if text_dir.exists() {
+        let idx = cairn_text::TextIndex::open(&text_dir).map_err(io_err)?;
+        Some(Arc::new(FederatedText::from_single(Arc::new(idx))))
+    } else {
+        None
+    };
+
+    let admin = match manifest.as_ref() {
+        Some(m) if !m.admin_tiles.is_empty() => {
+            let entries = m.admin_tiles.clone();
+            let idx = cairn_spatial::AdminIndex::open(path, entries);
+            Some(Arc::new(FederatedAdmin::from_single(Arc::new(idx))))
+        }
+        _ => None,
+    };
+
+    let nearest = match manifest.as_ref() {
+        Some(m) if !m.point_tiles.is_empty() => {
+            let entries = m.point_tiles.clone();
+            let idx = cairn_spatial::NearestIndex::open(path, entries);
+            Some(Arc::new(FederatedNearest::from_single(Arc::new(idx))))
+        }
+        _ => None,
+    };
+
+    let bundle_id = manifest
+        .as_ref()
+        .map(|m| m.bundle_id.clone())
+        .unwrap_or_else(|| "unknown".into());
+
+    Ok(BundleSnapshot {
+        text,
+        admin,
+        nearest,
+        bundle_ids: vec![bundle_id],
+    })
+}
+
+fn io_err<E: std::fmt::Display>(e: E) -> std::io::Error {
+    std::io::Error::other(e.to_string())
+}
+
+#[derive(Serialize)]
+struct ReloadResponse {
+    previous_bundle_ids: Vec<String>,
+    current_bundle_ids: Vec<String>,
+    duration_ms: u128,
+}
+
+/// `POST /admin/reload` — Phase 7a-U bundle hot-reload. Re-reads the
+/// bundle from `state.bundle_path` (operator orchestrates the symlink
+/// or directory swap externally) and atomically installs the new
+/// indices via [`AppState::install_bundle`]. In-flight requests
+/// finish on the previous snapshot; new requests pick up the new
+/// bundle on their next [`AppState::text`] / `admin` / `nearest` call.
+async fn admin_reload(State(state): State<AppState>) -> Response {
+    let started = Instant::now();
+    let path = (*state.bundle_path).clone();
+    let snapshot = match tokio::task::spawn_blocking(move || load_bundle_snapshot(&path)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            error!(error = %e, "admin_reload: load failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "reload_load_failed",
+                    "detail": e.to_string(),
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!(error = %e, "admin_reload: blocking task panicked");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "reload_task_panicked",
+                    "detail": e.to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let new_ids = snapshot.bundle_ids.clone();
+    let prev = state.install_bundle(snapshot);
+    let elapsed_ms = started.elapsed().as_millis();
+    tracing::info!(
+        previous = ?prev,
+        current = ?new_ids,
+        elapsed_ms,
+        "admin_reload: bundle swapped"
+    );
+    Json(ReloadResponse {
+        previous_bundle_ids: (*prev).clone(),
+        current_bundle_ids: new_ids,
+        duration_ms: elapsed_ms,
+    })
+    .into_response()
+}
+
 async fn info(State(state): State<AppState>) -> Json<InfoBody> {
     let started_unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -594,8 +778,8 @@ async fn info(State(state): State<AppState>) -> Json<InfoBody> {
         .saturating_sub(state.metrics.started.elapsed().as_secs());
     Json(InfoBody {
         bundle_id: state.metrics.bundle_id.clone(),
-        bundle_ids: (*state.bundle_ids).clone(),
-        bundle_count: state.bundle_ids.len(),
+        bundle_ids: (*state.bundle_ids()).clone(),
+        bundle_count: state.bundle_ids().len(),
         started_at_unix: started_unix,
         uptime_seconds: state.metrics.started.elapsed().as_secs(),
         admin_features: state.metrics.admin_features,
@@ -831,8 +1015,8 @@ async fn search(
         valid_at: params.valid_at,
     };
 
-    let text = match state.text.as_ref() {
-        Some(t) => t.clone(),
+    let text = match state.text() {
+        Some(t) => t,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -973,8 +1157,7 @@ fn reverse_full(state: AppState, lat: f64, lon: f64, probe: Coord) -> Response {
     // every admin polygon, which is fine; the nearest-by-class
     // companions still answer.
     let admin_chain: Vec<ReverseHit> = state
-        .admin
-        .as_ref()
+        .admin()
         .map(|a| a.point_in_polygon(probe))
         .unwrap_or_default()
         .into_iter()
@@ -994,7 +1177,7 @@ fn reverse_full(state: AppState, lat: f64, lon: f64, probe: Coord) -> Response {
     // R*-tree; the filtered nearest_k_filtered widens slot coverage
     // automatically when the predicate is selective.
     let nearest_for = |target: &'static str| -> Option<ReverseHit> {
-        let nearest = state.nearest.as_ref()?;
+        let nearest = state.nearest()?;
         let pp = nearest
             .nearest_k_filtered(probe, 1, |p| classify_kind(&p.kind) == Some(target))
             .into_iter()
@@ -1062,7 +1245,7 @@ async fn reverse(
     }
 
     // PIP path first.
-    if let Some(admin) = state.admin.as_ref() {
+    if let Some(admin) = state.admin() {
         let matches = admin.point_in_polygon(probe);
         if !matches.is_empty() {
             state.metrics.reverse_pip.fetch_add(1, Ordering::Relaxed);
@@ -1092,7 +1275,7 @@ async fn reverse(
 
     // Fallback: nearest-K centroid query.
     if nearest_k > 0 {
-        if let Some(nearest) = state.nearest.as_ref() {
+        if let Some(nearest) = state.nearest() {
             state
                 .metrics
                 .reverse_nearest
@@ -1121,7 +1304,7 @@ async fn reverse(
         }
     }
 
-    if state.admin.is_none() && state.nearest.is_none() {
+    if state.admin().is_none() && state.nearest().is_none() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
@@ -1340,8 +1523,8 @@ async fn structured(
         valid_at: None,
     };
 
-    let text = match state.text.as_ref() {
-        Some(t) => t.clone(),
+    let text = match state.text() {
+        Some(t) => t,
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1678,10 +1861,8 @@ async fn pelias_search_impl(
         valid_at: None,
     };
     let text_idx = state
-        .text
-        .as_ref()
-        .ok_or_else(|| ApiError::unavailable("text_index_unloaded", "text index not loaded"))?
-        .clone();
+        .text()
+        .ok_or_else(|| ApiError::unavailable("text_index_unloaded", "text index not loaded"))?;
     let hits = text_idx.search(text, &opts).map_err(|err| match err {
         TextError::Query(_) => ApiError::bad_request("bad_query", err.to_string()),
         _ => ApiError::internal("text_search_failed", err.to_string()),
@@ -1722,10 +1903,8 @@ async fn pelias_reverse(
     }
 
     let admin = state
-        .admin
-        .as_ref()
-        .ok_or_else(|| ApiError::unavailable("admin_unloaded", "admin layer not loaded"))?
-        .clone();
+        .admin()
+        .ok_or_else(|| ApiError::unavailable("admin_unloaded", "admin layer not loaded"))?;
     let limit = params.size.unwrap_or(10).clamp(1, 40);
     let probe = Coord { lon, lat };
     let matches = admin.point_in_polygon(probe);
@@ -1799,10 +1978,8 @@ async fn place_lookup(
         ));
     }
     let text = state
-        .text
-        .as_ref()
-        .ok_or_else(|| ApiError::unavailable("text_index_unloaded", "text index not loaded"))?
-        .clone();
+        .text()
+        .ok_or_else(|| ApiError::unavailable("text_index_unloaded", "text index not loaded"))?;
     let hits = text
         .lookup_by_ids(&ids)
         .map_err(|err| ApiError::internal("text_lookup_failed", err.to_string()))?;

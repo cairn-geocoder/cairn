@@ -142,24 +142,60 @@ fn build_test_state() -> AppState {
     };
     let nearest = NearestIndex::build(point_layer);
 
-    AppState {
-        bundle_path: Arc::new(bundle),
-        text: Some(Arc::new(FederatedText::from_single(Arc::new(text)))),
-        admin: Some(Arc::new(FederatedAdmin::from_single(Arc::new(admin)))),
-        nearest: Some(Arc::new(FederatedNearest::from_single(Arc::new(nearest)))),
-        metrics: Arc::new(Metrics::new("test".into(), 1, 3)),
-        bundle_ids: Arc::new(vec!["test".into()]),
-        api_key: None,
-        rate_limit: None,
-        trust_forwarded_for: false,
-        trusted_proxy_cidrs: Arc::new(Vec::new()),
-    }
+    AppState::new(
+        bundle,
+        cairn_api::BundleSnapshot {
+            text: Some(Arc::new(FederatedText::from_single(Arc::new(text)))),
+            admin: Some(Arc::new(FederatedAdmin::from_single(Arc::new(admin)))),
+            nearest: Some(Arc::new(FederatedNearest::from_single(Arc::new(nearest)))),
+            bundle_ids: vec!["test".into()],
+        },
+        Arc::new(Metrics::new("test".into(), 1, 3)),
+        None,
+        None,
+        false,
+        Arc::new(Vec::new()),
+    )
 }
 
 fn build_test_state_with_key(key: &str) -> AppState {
-    let mut state = build_test_state();
-    state.api_key = Some(Arc::new(key.to_string()));
-    state
+    let bundle = tempdir();
+    let places = vec![vaduz(), schaan(), liechtenstein()];
+    let text_dir = bundle.join("index/text");
+    build_index(&text_dir, places.clone()).unwrap();
+    let text = TextIndex::open(&text_dir).unwrap();
+    let admin_layer = AdminLayer {
+        features: vec![liechtenstein_admin()],
+    };
+    let admin = AdminIndex::build(admin_layer);
+    let point_layer = PointLayer {
+        points: places
+            .iter()
+            .map(|p| PlacePoint {
+                place_id: p.id.0,
+                level: p.id.level(),
+                kind: cairn_text::kind_str(p.kind).to_string(),
+                name: p.names[0].value.clone(),
+                centroid: p.centroid,
+                admin_path: vec![],
+            })
+            .collect(),
+    };
+    let nearest = NearestIndex::build(point_layer);
+    AppState::new(
+        bundle,
+        cairn_api::BundleSnapshot {
+            text: Some(Arc::new(FederatedText::from_single(Arc::new(text)))),
+            admin: Some(Arc::new(FederatedAdmin::from_single(Arc::new(admin)))),
+            nearest: Some(Arc::new(FederatedNearest::from_single(Arc::new(nearest)))),
+            bundle_ids: vec!["test".into()],
+        },
+        Arc::new(Metrics::new("test".into(), 1, 3)),
+        Some(Arc::new(key.to_string())),
+        None,
+        false,
+        Arc::new(Vec::new()),
+    )
 }
 
 async fn get_json(state: AppState, uri: &str) -> (StatusCode, Value) {
@@ -268,18 +304,20 @@ async fn federated_search_merges_hits_across_bundles() {
     let text_b = TextIndex::open(&dir_b).unwrap();
 
     let federated = FederatedText::from_many(vec![Arc::new(text_a), Arc::new(text_b)]);
-    let state = AppState {
-        bundle_path: Arc::new(bundle_a.clone()),
-        text: Some(Arc::new(federated)),
-        admin: None,
-        nearest: None,
-        metrics: Arc::new(Metrics::new("a,b".into(), 0, 2)),
-        bundle_ids: Arc::new(vec!["a".into(), "b".into()]),
-        api_key: None,
-        rate_limit: None,
-        trust_forwarded_for: false,
-        trusted_proxy_cidrs: Arc::new(Vec::new()),
-    };
+    let state = AppState::new(
+        bundle_a.clone(),
+        cairn_api::BundleSnapshot {
+            text: Some(Arc::new(federated)),
+            admin: None,
+            nearest: None,
+            bundle_ids: vec!["a".into(), "b".into()],
+        },
+        Arc::new(Metrics::new("a,b".into(), 0, 2)),
+        None,
+        None,
+        false,
+        Arc::new(Vec::new()),
+    );
 
     let (status, body) = get_json(state.clone(), "/v1/search?q=Vaduz").await;
     assert_eq!(status, StatusCode::OK);
@@ -801,18 +839,20 @@ async fn search_categories_filter_drops_non_matching_pois() {
     let text_dir = bundle.join("index/text");
     build_index(&text_dir, vec![hospital, bakery]).unwrap();
     let text = TextIndex::open(&text_dir).unwrap();
-    let state = AppState {
-        bundle_path: Arc::new(bundle),
-        text: Some(Arc::new(FederatedText::from_single(Arc::new(text)))),
-        admin: None,
-        nearest: None,
-        metrics: Arc::new(Metrics::new("test".into(), 0, 2)),
-        bundle_ids: Arc::new(vec!["test".into()]),
-        api_key: None,
-        rate_limit: None,
-        trust_forwarded_for: false,
-        trusted_proxy_cidrs: Arc::new(Vec::new()),
-    };
+    let state = AppState::new(
+        bundle,
+        cairn_api::BundleSnapshot {
+            text: Some(Arc::new(FederatedText::from_single(Arc::new(text)))),
+            admin: None,
+            nearest: None,
+            bundle_ids: vec!["test".into()],
+        },
+        Arc::new(Metrics::new("test".into(), 0, 2)),
+        None,
+        None,
+        false,
+        Arc::new(Vec::new()),
+    );
     let (status, body) = get_json(state.clone(), "/v1/search?q=Salus+Center").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["results"].as_array().unwrap().len(), 2);

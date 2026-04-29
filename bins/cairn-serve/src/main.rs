@@ -245,18 +245,20 @@ async fn main() -> Result<()> {
         );
     }
 
-    let state = AppState {
-        bundle_path: Arc::new(primary_path),
-        text,
-        admin,
-        nearest,
+    let state = AppState::new(
+        primary_path,
+        cairn_api::BundleSnapshot {
+            text,
+            admin,
+            nearest,
+            bundle_ids: bundle_ids.clone(),
+        },
         metrics,
-        bundle_ids: Arc::new(bundle_ids.clone()),
         api_key,
         rate_limit,
         trust_forwarded_for,
-        trusted_proxy_cidrs: Arc::new(trusted_proxy_cidrs),
-    };
+        Arc::new(trusted_proxy_cidrs),
+    );
     let app = router(state);
 
     tracing::info!(

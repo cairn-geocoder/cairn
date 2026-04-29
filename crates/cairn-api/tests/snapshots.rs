@@ -120,24 +120,26 @@ fn build_state() -> AppState {
             .collect(),
     });
 
-    AppState {
-        bundle_path: Arc::new(bundle),
-        text: Some(Arc::new(cairn_api::FederatedText::from_single(Arc::new(
-            text,
-        )))),
-        admin: Some(Arc::new(cairn_api::FederatedAdmin::from_single(Arc::new(
-            admin,
-        )))),
-        nearest: Some(Arc::new(cairn_api::FederatedNearest::from_single(
-            Arc::new(nearest),
-        ))),
-        metrics: Arc::new(Metrics::new("snapshot-bundle".into(), 2, 1)),
-        bundle_ids: Arc::new(vec!["snapshot-bundle".into()]),
-        api_key: None,
-        rate_limit: None,
-        trust_forwarded_for: false,
-        trusted_proxy_cidrs: Arc::new(Vec::new()),
-    }
+    AppState::new(
+        bundle,
+        cairn_api::BundleSnapshot {
+            text: Some(Arc::new(cairn_api::FederatedText::from_single(Arc::new(
+                text,
+            )))),
+            admin: Some(Arc::new(cairn_api::FederatedAdmin::from_single(Arc::new(
+                admin,
+            )))),
+            nearest: Some(Arc::new(cairn_api::FederatedNearest::from_single(
+                Arc::new(nearest),
+            ))),
+            bundle_ids: vec!["snapshot-bundle".into()],
+        },
+        Arc::new(Metrics::new("snapshot-bundle".into(), 2, 1)),
+        None,
+        None,
+        false,
+        Arc::new(Vec::new()),
+    )
 }
 
 async fn fetch_json(state: AppState, uri: &str) -> Value {
