@@ -54,34 +54,32 @@ fn load_bundle(path: &std::path::Path) -> Result<LoadedBundle> {
         None
     };
 
-    let admin = if !manifest
-        .as_ref()
-        .map(|m| m.admin_tiles.is_empty())
-        .unwrap_or(true)
-    {
-        let entries = manifest.as_ref().unwrap().admin_tiles.clone();
-        tracing::info!(tiles = entries.len(), "opening admin layer (partitioned)");
-        let index = AdminIndex::open(path, entries);
-        tracing::info!(features = index.len(), "admin index ready");
-        Some(Arc::new(index))
-    } else {
-        tracing::warn!("no admin tiles in manifest");
-        None
+    let admin = match manifest.as_ref() {
+        Some(m) if !m.admin_tiles.is_empty() => {
+            let entries = m.admin_tiles.clone();
+            tracing::info!(tiles = entries.len(), "opening admin layer (partitioned)");
+            let index = AdminIndex::open(path, entries);
+            tracing::info!(features = index.len(), "admin index ready");
+            Some(Arc::new(index))
+        }
+        _ => {
+            tracing::warn!("no admin tiles in manifest");
+            None
+        }
     };
 
-    let nearest = if !manifest
-        .as_ref()
-        .map(|m| m.point_tiles.is_empty())
-        .unwrap_or(true)
-    {
-        let entries = manifest.as_ref().unwrap().point_tiles.clone();
-        tracing::info!(tiles = entries.len(), "opening point layer (partitioned)");
-        let index = NearestIndex::open(path, entries);
-        tracing::info!(points = index.len(), "nearest index ready");
-        Some(Arc::new(index))
-    } else {
-        tracing::warn!("no point tiles in manifest");
-        None
+    let nearest = match manifest.as_ref() {
+        Some(m) if !m.point_tiles.is_empty() => {
+            let entries = m.point_tiles.clone();
+            tracing::info!(tiles = entries.len(), "opening point layer (partitioned)");
+            let index = NearestIndex::open(path, entries);
+            tracing::info!(points = index.len(), "nearest index ready");
+            Some(Arc::new(index))
+        }
+        _ => {
+            tracing::warn!("no point tiles in manifest");
+            None
+        }
     };
 
     let bundle_id = manifest

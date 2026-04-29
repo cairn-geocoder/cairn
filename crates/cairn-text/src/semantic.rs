@@ -59,7 +59,7 @@ fn hash_trigram(tri: &[char]) -> usize {
 }
 
 /// Compute a fixed-size lexical-vector embedding for `text`. Steps:
-/// 1. Lowercase + strip non-alphanumeric to a Vec<char>.
+/// 1. Lowercase + strip non-alphanumeric to a `Vec<char>`.
 /// 2. Pad with `#` boundary markers so word starts / ends carry
 ///    their own trigrams (`#vi`, `na#` for `vienna`).
 /// 3. Slide a 3-character window; bump the hashed bucket by 1.

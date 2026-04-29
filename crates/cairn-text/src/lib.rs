@@ -31,7 +31,13 @@ const PREFIX_MIN: usize = 1;
 const PREFIX_MAX: usize = 25;
 const CJK_NGRAM_MIN: usize = 1;
 const CJK_NGRAM_MAX: usize = 2;
-const WRITER_HEAP: usize = 64 * 1024 * 1024;
+/// Build-time tantivy IndexWriter heap. 256 MiB instead of the
+/// default 50 MiB cuts segment flush count + merge churn at country
+/// scale (DE: previously ~120 in-build segments; bumped to a single
+/// digit). Per-bundle build is the only allocator hit, so spending
+/// 256 MiB during build buys multi-second wall-clock at no serve-side
+/// cost.
+const WRITER_HEAP: usize = 256 * 1024 * 1024;
 const RERANK_MULTIPLIER: usize = 5;
 const MAX_FUZZY_DISTANCE: u8 = 2;
 /// Multiplier applied to a Hit's BM25 score when the lowercased,
@@ -526,6 +532,11 @@ where
         doc_count += 1;
     }
     writer.commit()?;
+    // Block until tantivy's background merge threads quiesce before
+    // returning. Otherwise cairn-build's blake3 hashing race with
+    // post-commit merges produces manifest hashes that don't match
+    // the file bytes once the merge thread finishes its last write.
+    writer.wait_merging_threads()?;
     debug!(docs = doc_count, "tantivy index committed");
     Ok(doc_count)
 }

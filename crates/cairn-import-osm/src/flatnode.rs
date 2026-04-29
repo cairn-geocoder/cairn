@@ -185,9 +185,7 @@ impl FlatnodeReader {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
         if mmap.len() < HEADER_SIZE {
-            return Err(FlatnodeError::BadMagic {
-                got: [0u8; 8],
-            });
+            return Err(FlatnodeError::BadMagic { got: [0u8; 8] });
         }
         let mut got = [0u8; 8];
         got.copy_from_slice(&mmap[0..8]);

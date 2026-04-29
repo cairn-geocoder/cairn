@@ -141,8 +141,9 @@ fn dedup_score(f: &AdminFeature) -> (usize, usize) {
 ///   1. `--source-priority` rank (lower index wins).
 ///   2. Richer feature (longer admin_path, then longer name).
 ///
-/// `priority` is a list of [`SourceKind`]s in preferred order. Empty
-/// priority falls back to richness-only.
+/// `priority` is a list of `SourceKind`s in preferred order (the
+/// `cairn-place` enum used by the build pipeline; not depended on
+/// here to avoid a cycle). Empty priority falls back to richness-only.
 ///
 /// Polygon geometry is left untouched on the winner; we don't try to
 /// reconcile slightly different OSM and WoF rings here, only avoid the

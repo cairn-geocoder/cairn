@@ -61,9 +61,7 @@ pub enum NodeCacheStrategy {
     /// `16 + (max_node_id + 1) * 8` bytes — for planet that's
     /// ~72 GB but the resident set typically stays under 4 GB.
     /// Default for inputs > 30 GB.
-    Flatnode {
-        path: PathBuf,
-    },
+    Flatnode { path: PathBuf },
 }
 
 /// Quantize a `(lon, lat)` pair to a pair of i32 representing
@@ -254,6 +252,10 @@ impl NodeCoords {
 }
 
 type WayNodes = HashMap<i64, Vec<i64>>;
+
+/// Per-block accumulator for the sorted-vec node-cache build pass:
+/// quantized coords by id, plus the addr-tagged node map.
+type SortedVecBlockAcc = (Vec<(i64, [i32; 2])>, NodeAddrs);
 
 /// `addr:housenumber` value at a given node, plus the optional
 /// `addr:street` co-tagged with it. Captured in pass 1 so that pass 2 can
@@ -694,7 +696,11 @@ fn collect_referenced_node_ids(pbf_path: &Path) -> Result<HashSet<i64>, ImportEr
             |a, b| match (a, b) {
                 (Ok(aa), Ok(bb)) => {
                     // Extend the larger set with the smaller.
-                    let (mut big, small) = if aa.len() >= bb.len() { (aa, bb) } else { (bb, aa) };
+                    let (mut big, small) = if aa.len() >= bb.len() {
+                        (aa, bb)
+                    } else {
+                        (bb, aa)
+                    };
                     big.extend(small);
                     Ok(big)
                 }
@@ -714,42 +720,40 @@ fn load_node_caches_sorted_vec(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs
     let blob_reader = BlobReader::from_path(pbf_path)?;
     let (coords_vec, addrs) = blob_reader
         .par_bridge()
-        .map(
-            |blob| -> Result<(Vec<(i64, [i32; 2])>, NodeAddrs), ImportError> {
-                let blob = blob?;
-                match blob.decode()? {
-                    BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
-                        Ok((Vec::new(), HashMap::new()))
-                    }
-                    BlobDecode::OsmData(block) => {
-                        let mut coords: Vec<(i64, [i32; 2])> = Vec::new();
-                        let mut addrs: NodeAddrs = HashMap::new();
-                        for elem in block.elements() {
-                            match elem {
-                                Element::Node(n) => {
-                                    if needed.contains(&n.id()) {
-                                        coords.push((n.id(), quantize_coord([n.lon(), n.lat()])));
-                                    }
-                                    if let Some(addr) = node_addr_from_tags(n.tags()) {
-                                        addrs.insert(n.id(), addr);
-                                    }
-                                }
-                                Element::DenseNode(n) => {
-                                    if needed.contains(&n.id()) {
-                                        coords.push((n.id(), quantize_coord([n.lon(), n.lat()])));
-                                    }
-                                    if let Some(addr) = node_addr_from_tags(n.tags()) {
-                                        addrs.insert(n.id(), addr);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        Ok((coords, addrs))
-                    }
+        .map(|blob| -> Result<SortedVecBlockAcc, ImportError> {
+            let blob = blob?;
+            match blob.decode()? {
+                BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
+                    Ok((Vec::new(), HashMap::new()))
                 }
-            },
-        )
+                BlobDecode::OsmData(block) => {
+                    let mut coords: Vec<(i64, [i32; 2])> = Vec::new();
+                    let mut addrs: NodeAddrs = HashMap::new();
+                    for elem in block.elements() {
+                        match elem {
+                            Element::Node(n) => {
+                                if needed.contains(&n.id()) {
+                                    coords.push((n.id(), quantize_coord([n.lon(), n.lat()])));
+                                }
+                                if let Some(addr) = node_addr_from_tags(n.tags()) {
+                                    addrs.insert(n.id(), addr);
+                                }
+                            }
+                            Element::DenseNode(n) => {
+                                if needed.contains(&n.id()) {
+                                    coords.push((n.id(), quantize_coord([n.lon(), n.lat()])));
+                                }
+                                if let Some(addr) = node_addr_from_tags(n.tags()) {
+                                    addrs.insert(n.id(), addr);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok((coords, addrs))
+                }
+            }
+        })
         .reduce(
             || Ok((Vec::new(), HashMap::new())),
             |a, b| match (a, b) {
@@ -786,18 +790,13 @@ fn scan_max_node_id(pbf_path: &Path) -> Result<i64, ImportError> {
                 BlobDecode::OsmData(block) => {
                     let mut m = 0i64;
                     for elem in block.elements() {
-                        match elem {
-                            Element::Node(n) => {
-                                if n.id() > m {
-                                    m = n.id();
-                                }
-                            }
-                            Element::DenseNode(n) => {
-                                if n.id() > m {
-                                    m = n.id();
-                                }
-                            }
-                            _ => {}
+                        let id = match elem {
+                            Element::Node(n) => n.id(),
+                            Element::DenseNode(n) => n.id(),
+                            _ => continue,
+                        };
+                        if id > m {
+                            m = id;
                         }
                     }
                     Ok(m)
@@ -1968,8 +1967,18 @@ mod tests {
             let q = quantize_coord([lon, lat]);
             let back = dequantize_coord(q);
             // i32 round-trip is exact within float epsilon at this scale.
-            assert!((back[0] - lon).abs() < 1e-9, "lon {} drifted to {}", lon, back[0]);
-            assert!((back[1] - lat).abs() < 1e-9, "lat {} drifted to {}", lat, back[1]);
+            assert!(
+                (back[0] - lon).abs() < 1e-9,
+                "lon {} drifted to {}",
+                lon,
+                back[0]
+            );
+            assert!(
+                (back[1] - lat).abs() < 1e-9,
+                "lat {} drifted to {}",
+                lat,
+                back[1]
+            );
         }
     }
 
