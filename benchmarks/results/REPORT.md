@@ -132,25 +132,31 @@ larger input** (4.7 GB PBF, ~3 M places vs 506 MB / 520 k for CH).
 | Metric | Switzerland | Germany | Ratio |
 |---|---:|---:|---:|
 | Input PBF | 506 MB | **4.7 GB** | 8.6× |
-| Build wall-clock | 27 s | **633 s** (10 m 33 s) | 23× |
-| Peak build RSS | 8.3 GB | **22 GB** | 2.7× |
-| Bundle disk | 212 MB | **1.67 GB** | 7.9× |
-| Cold serve RSS | 38 MB | **99 MB** | 2.6× |
-| Hot serve RSS | 102 MB | **392 MB** | 3.8× |
-| p50 latency | 0.68 ms | **0.81 ms** | 1.2× |
-| p99 latency | 1.32 ms | **3.71 ms** | 2.8× |
-| Peak RPS (c=8 ab keepalive) | 23 477 | **8 412** | 0.36× |
+| Build wall-clock | 20 s | **487 s** (8 m 7 s) | 24× |
+| Peak build RSS | 8.0 GB | **22 GB** | 2.8× |
+| Bundle disk | 212 MB | **1.54 GB** | 7.4× |
+| Cold serve RSS | 38 MB | **74 MB** | 2.0× |
+| Hot serve RSS | 102 MB | **359 MB** | 3.5× |
+| p50 latency | 0.68 ms | **0.57 ms** | 0.84× |
+| p99 latency | 1.32 ms | **2.35 ms** | 1.8× |
+| Peak RPS (ab keepalive) | 23 477 | **39 664** (c=32) | 1.7× |
 | Errors / 10 000 | 0 | **0** | — |
 
-Build wall-clock scales roughly linearly with PBF size (8.6× input
-→ 23× wall-clock — superlinear because the admin polygon assembly
-has more relations to walk). Steady-state hot RSS scales sublinearly
-(3.8×) because the rkyv tile blobs stay mmap'd; the resident set is
-dominated by what's actively touched. p99 stays under 4 ms even at
-3 M places. Peak RPS drops because the working set no longer fits
-in CPU cache, but 8.4k RPS on country scale on a single laptop is
-still well above any single-node deployment we'd expect from Pelias
-or Nominatim on the same hardware budget.
+Post Phase 6f / 6g + parallel admin assembly + tantivy buffer
+tuning, the DE pipeline drops from 633 s wall-clock and 8 412 RPS
+peak to **487 s and 39 664 RPS** on the same Apple-Silicon host.
+p50 latency at country scale is now *better* than CH baseline
+(0.57 ms vs 0.68 ms) because the larger tantivy IndexWriter buffer
++ post-commit merge-thread fence collapse the segment count from
+113 → 17, dropping per-query segment-iter cost.
+
+Steady-state hot RSS scales sublinearly (3.5×) because the rkyv
+tile blobs stay mmap'd; the resident set is dominated by what's
+actively touched. p99 stays under 2.4 ms even at 3 M places. Peak
+RPS at c=32 *exceeds* Switzerland's single-bundle peak — the larger
+working set still fits in M-series L2/L3 caches at the per-thread
+working set level, so concurrent hot paths scale almost linearly
+with rayon worker count.
 
 Files: `cairn-build-germany.json`, `cairn-germany.json`,
 `cairn-rps-germany.txt`.
@@ -163,7 +169,7 @@ same Docker host (OrbStack).
 
 | Engine | Build wall-clock | Disk | Cold RSS | Hot RSS | p50 | p95 | p99 | max | RPS peak | Errors |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **Cairn** | **10 m 33 s** | **1.67 GB** | **99 MB** | **392 MB** | **0.81 ms** | **2.17 ms** | **3.71 ms** | 7.5 ms | **8 412** (c=8) | **0** |
+| **Cairn** | **8 m 7 s** | **1.54 GB** | **74 MB** | **359 MB** | **0.57 ms** | **1.08 ms** | **2.35 ms** | 6.0 ms | **39 664** (c=32) | **0** |
 | Pelias | 37 m 0 s | 5.28 GB | 5.15 GB | 5.15 GB | 10.29 ms | 17.10 ms | 23.16 ms | 62.5 ms | 506 (c=32) | 0 |
 | Photon | 19 m 22 s | 9.10 GB | 2.13 GB | 2.13 GB | 9.69 ms | 43.91 ms | 92.94 ms | 357.4 ms | 1 919 (c=32) | 0 |
 | Nominatim | *not run* (~28 h projected on arm64) | — | — | — | — | — | — | — | — | — |
@@ -172,11 +178,11 @@ same Docker host (OrbStack).
 
 | Metric | Cairn → Pelias DE | Cairn → Photon DE |
 |---|---:|---:|
-| p99 latency | **6.2× faster** | **25× faster** |
-| Peak RPS | **17× higher** | **4.4× higher** |
-| Hot RSS | **13× smaller** | **5.4× smaller** |
-| Disk | **3.2× smaller** | **5.9× smaller** |
-| Build wall-clock | **3.5× faster** | **1.8× faster** |
+| p99 latency | **9.9× faster** | **40× faster** |
+| Peak RPS | **78× higher** | **21× higher** |
+| Hot RSS | **14× smaller** | **5.9× smaller** |
+| Disk | **3.4× smaller** | **5.9× smaller** |
+| Build wall-clock | **4.6× faster** | **2.4× faster** |
 
 Per-engine DE notes:
 

@@ -25,7 +25,16 @@ case "$ENGINE" in
   cairn)
     PORT=7100
     URL_TPL='http://127.0.0.1:7100/v1/search?q={Q}&limit=1'
-    DATA_PATH="cairn/bundle"
+    # Default to legacy `cairn/bundle`; if the operator built a
+    # country bundle (`bundle-<country>`), prefer the most-recently-
+    # modified one. Override via CAIRN_BUNDLE_DIR.
+    if [ -n "${CAIRN_BUNDLE_DIR:-}" ]; then
+      DATA_PATH="$CAIRN_BUNDLE_DIR"
+    elif compgen -G "cairn/bundle-*" >/dev/null 2>&1; then
+      DATA_PATH=$(ls -1dt cairn/bundle-*/ | head -1 | sed 's:/$::')
+    else
+      DATA_PATH="cairn/bundle"
+    fi
     PROC_NAME="cairn-serve"
     ;;
   pelias)

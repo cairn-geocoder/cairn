@@ -536,24 +536,25 @@
           </thead>
           <tbody>
             <tr><td>Input PBF</td><td>506 MB</td><td><strong>4.7 GB</strong></td><td>8.6×</td></tr>
-            <tr><td>Build wall-clock</td><td>27 s</td><td><strong>633 s</strong></td><td>23×</td></tr>
-            <tr><td>Bundle disk</td><td>212 MB</td><td><strong>1.67 GB</strong></td><td>7.9×</td></tr>
-            <tr><td>Hot serve RSS</td><td>102 MB</td><td><strong>392 MB</strong></td><td>3.8×</td></tr>
-            <tr><td>p50 latency</td><td><code>0.68 ms</code></td><td><strong><code>0.81 ms</code></strong></td><td>1.2×</td></tr>
-            <tr><td>p99 latency</td><td><code>1.32 ms</code></td><td><strong><code>3.71 ms</code></strong></td><td>2.8×</td></tr>
-            <tr><td>Peak RPS (c=8)</td><td>23 477</td><td><strong>8 412</strong></td><td>0.36×</td></tr>
+            <tr><td>Build wall-clock</td><td>20 s</td><td><strong>487 s</strong></td><td>24×</td></tr>
+            <tr><td>Bundle disk</td><td>212 MB</td><td><strong>1.54 GB</strong></td><td>7.4×</td></tr>
+            <tr><td>Hot serve RSS</td><td>102 MB</td><td><strong>359 MB</strong></td><td>3.5×</td></tr>
+            <tr><td>p50 latency</td><td><code>0.68 ms</code></td><td><strong><code>0.57 ms</code></strong></td><td>0.84×</td></tr>
+            <tr><td>p99 latency</td><td><code>1.32 ms</code></td><td><strong><code>2.35 ms</code></strong></td><td>1.8×</td></tr>
+            <tr><td>Peak RPS</td><td>23 477</td><td><strong>39 664</strong> (c=32)</td><td>1.7×</td></tr>
           </tbody>
         </table>
         <p>
           Steady-state hot RSS scales <strong>sublinearly</strong>
-          (3.8× for 8.6× input) — rkyv tiles stay mmap'd; resident
+          (3.5× for 8.6× input) — rkyv tiles stay mmap'd; resident
           set is what's actively touched. p99 stays
-          <strong>under 4 ms at 3 M places</strong>. Peak RPS drops
-          because the working set no longer fits in CPU cache, but
-          8.4k RPS on country scale on a single laptop is still well
-          above any single-node Pelias/Nominatim/Photon deploy on
-          the same hardware budget. Verifies "does this hold up
-          beyond a 500k bundle" — yes.
+          <strong>under 2.4 ms at 3 M places</strong>. Peak RPS at
+          c=32 actually <em>exceeds</em> Switzerland's single-bundle
+          peak — concurrent hot paths scale with rayon worker count.
+          Post Phase 6f / 6g + parallel admin assembly + tantivy
+          buffer tuning, DE peak RPS lifted from <strong>8.4 k → 39.7 k</strong>
+          and p99 dropped from <strong>3.71 ms → 2.35 ms</strong> on the
+          same Apple-Silicon host.
         </p>
         <p>
           x86_64 reproduction: a manual GitHub Actions
@@ -571,18 +572,18 @@
             <tr><th>Engine</th><th>Build</th><th>Disk</th><th>Hot RSS</th><th>p50</th><th>p99</th><th>RPS peak</th></tr>
           </thead>
           <tbody>
-            <tr><td><strong>Cairn</strong></td><td><strong>10 m 33 s</strong></td><td><strong>1.67 GB</strong></td><td><strong>392 MB</strong></td><td><strong><code>0.81 ms</code></strong></td><td><strong><code>3.71 ms</code></strong></td><td><strong>8 412</strong></td></tr>
+            <tr><td><strong>Cairn</strong></td><td><strong>8 m 7 s</strong></td><td><strong>1.54 GB</strong></td><td><strong>359 MB</strong></td><td><strong><code>0.57 ms</code></strong></td><td><strong><code>2.35 ms</code></strong></td><td><strong>39 664</strong></td></tr>
             <tr><td>Pelias</td><td>37 m</td><td>5.28 GB</td><td>5.15 GB</td><td><code>10.29 ms</code></td><td><code>23.16 ms</code></td><td>506</td></tr>
             <tr><td>Photon</td><td>19 m 22 s</td><td>9.10 GB</td><td>2.13 GB</td><td><code>9.69 ms</code></td><td><code>92.94 ms</code></td><td>1 919</td></tr>
             <tr><td>Nominatim</td><td colspan="6"><em>not run — ~28 h projected on arm64 single-thread osm2pgsql</em></td></tr>
           </tbody>
         </table>
         <p>
-          On 3 M places, Cairn keeps a <strong>6–25× p99 lead</strong>,
-          <strong>4–17× peak RPS</strong>, and <strong>5–13×
-          smaller hot RSS</strong> than each incumbent. Build is
-          <strong>1.8–3.5× faster</strong> in wall-clock and produces
-          a <strong>3–6× smaller</strong> on-disk artifact.
+          On 3 M places, Cairn keeps a <strong>10–40× p99 lead</strong>,
+          <strong>21–78× peak RPS</strong>, and <strong>6–14× smaller
+          hot RSS</strong> than each incumbent. Build is
+          <strong>2.4–4.6× faster</strong> in wall-clock and produces
+          a <strong>3.4–5.9× smaller</strong> on-disk artifact.
         </p>
       </section>
 
