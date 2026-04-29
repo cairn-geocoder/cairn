@@ -122,10 +122,17 @@ fn build_state() -> AppState {
 
     AppState {
         bundle_path: Arc::new(bundle),
-        text: Some(Arc::new(text)),
-        admin: Some(Arc::new(admin)),
-        nearest: Some(Arc::new(nearest)),
+        text: Some(Arc::new(cairn_api::FederatedText::from_single(Arc::new(
+            text,
+        )))),
+        admin: Some(Arc::new(cairn_api::FederatedAdmin::from_single(Arc::new(
+            admin,
+        )))),
+        nearest: Some(Arc::new(cairn_api::FederatedNearest::from_single(
+            Arc::new(nearest),
+        ))),
         metrics: Arc::new(Metrics::new("snapshot-bundle".into(), 2, 1)),
+        bundle_ids: Arc::new(vec!["snapshot-bundle".into()]),
         api_key: None,
         rate_limit: None,
         trust_forwarded_for: false,

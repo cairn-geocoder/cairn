@@ -16,8 +16,13 @@ use axum::{
     Router,
 };
 use cairn_place::Coord;
+#[allow(unused_imports)]
 use cairn_spatial::{AdminIndex, NearestIndex};
+#[allow(unused_imports)]
 use cairn_text::{Bbox, Hit, SearchMode, SearchOptions, TextError, TextIndex};
+
+mod federated;
+pub use federated::{FederatedAdmin, FederatedNearest, FederatedText};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -69,10 +74,14 @@ impl Metrics {
 #[derive(Clone)]
 pub struct AppState {
     pub bundle_path: Arc<std::path::PathBuf>,
-    pub text: Option<Arc<TextIndex>>,
-    pub admin: Option<Arc<AdminIndex>>,
-    pub nearest: Option<Arc<NearestIndex>>,
+    pub text: Option<Arc<FederatedText>>,
+    pub admin: Option<Arc<FederatedAdmin>>,
+    pub nearest: Option<Arc<FederatedNearest>>,
     pub metrics: Arc<Metrics>,
+    /// Bundle IDs participating in this server. Length 1 for the
+    /// classic single-bundle deploy; >1 when `cairn-serve --bundles
+    /// a/,b/,c/` federated several bundles. Reported on `/v1/info`.
+    pub bundle_ids: Arc<Vec<String>>,
     /// Optional API key. When `Some`, every request to `/v1/*` must
     /// present `X-API-Key: <key>` (or `?api_key=<key>`) or 401.
     pub api_key: Option<Arc<String>>,
@@ -556,6 +565,12 @@ async fn readyz(State(state): State<AppState>) -> (StatusCode, Json<ReadyBody>) 
 #[derive(Serialize)]
 struct InfoBody {
     bundle_id: String,
+    /// Length 1 for single-bundle deploys, >1 when this serve
+    /// process is federating several bundles. Operators inspecting
+    /// `/v1/info` can confirm which shards a node is fronting.
+    bundle_ids: Vec<String>,
+    /// Number of bundles being served (== `bundle_ids.len()`).
+    bundle_count: usize,
     started_at_unix: u64,
     uptime_seconds: u64,
     admin_features: u64,
@@ -578,6 +593,8 @@ async fn info(State(state): State<AppState>) -> Json<InfoBody> {
         .saturating_sub(state.metrics.started.elapsed().as_secs());
     Json(InfoBody {
         bundle_id: state.metrics.bundle_id.clone(),
+        bundle_ids: (*state.bundle_ids).clone(),
+        bundle_count: state.bundle_ids.len(),
         started_at_unix: started_unix,
         uptime_seconds: state.metrics.started.elapsed().as_secs(),
         admin_features: state.metrics.admin_features,

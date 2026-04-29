@@ -11,7 +11,10 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode};
-use cairn_api::{router, AppState, Metrics, RateLimiter, TrustedCidr};
+use cairn_api::{
+    router, AppState, FederatedAdmin, FederatedNearest, FederatedText, Metrics, RateLimiter,
+    TrustedCidr,
+};
 use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
 use cairn_spatial::{AdminFeature, AdminIndex, AdminLayer, NearestIndex, PlacePoint, PointLayer};
 use cairn_text::{build_index, TextIndex};
@@ -141,10 +144,11 @@ fn build_test_state() -> AppState {
 
     AppState {
         bundle_path: Arc::new(bundle),
-        text: Some(Arc::new(text)),
-        admin: Some(Arc::new(admin)),
-        nearest: Some(Arc::new(nearest)),
+        text: Some(Arc::new(FederatedText::from_single(Arc::new(text)))),
+        admin: Some(Arc::new(FederatedAdmin::from_single(Arc::new(admin)))),
+        nearest: Some(Arc::new(FederatedNearest::from_single(Arc::new(nearest)))),
         metrics: Arc::new(Metrics::new("test".into(), 1, 3)),
+        bundle_ids: Arc::new(vec!["test".into()]),
         api_key: None,
         rate_limit: None,
         trust_forwarded_for: false,
@@ -247,6 +251,73 @@ async fn search_autoparse_off_omits_parsed_field() {
         body.get("parsed").is_none(),
         "parsed must be omitted when autoparse is off"
     );
+}
+
+#[tokio::test]
+async fn federated_search_merges_hits_across_bundles() {
+    // Build TWO independent bundles. Bundle A has Vaduz; bundle B has
+    // Schaan. A federated search must surface both.
+    let bundle_a = tempdir();
+    let dir_a = bundle_a.join("index/text");
+    build_index(&dir_a, vec![vaduz()]).unwrap();
+    let text_a = TextIndex::open(&dir_a).unwrap();
+
+    let bundle_b = tempdir();
+    let dir_b = bundle_b.join("index/text");
+    build_index(&dir_b, vec![schaan()]).unwrap();
+    let text_b = TextIndex::open(&dir_b).unwrap();
+
+    let federated = FederatedText::from_many(vec![Arc::new(text_a), Arc::new(text_b)]);
+    let state = AppState {
+        bundle_path: Arc::new(bundle_a.clone()),
+        text: Some(Arc::new(federated)),
+        admin: None,
+        nearest: None,
+        metrics: Arc::new(Metrics::new("a,b".into(), 0, 2)),
+        bundle_ids: Arc::new(vec!["a".into(), "b".into()]),
+        api_key: None,
+        rate_limit: None,
+        trust_forwarded_for: false,
+        trusted_proxy_cidrs: Arc::new(Vec::new()),
+    };
+
+    let (status, body) = get_json(state.clone(), "/v1/search?q=Vaduz").await;
+    assert_eq!(status, StatusCode::OK);
+    let names: Vec<&str> = body["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"Vaduz"), "Vaduz hit missing: {body}");
+
+    let (_, body) = get_json(state.clone(), "/v1/search?q=Schaan").await;
+    let names: Vec<&str> = body["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"Schaan"), "Schaan hit missing: {body}");
+
+    let (_, body) = get_json(state, "/v1/info").await;
+    let ids: Vec<&str> = body["bundle_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["a", "b"]);
+    assert_eq!(body["bundle_count"], 2);
+}
+
+#[tokio::test]
+async fn info_reports_single_bundle_id_in_array_form() {
+    let (status, body) = get_json(build_test_state(), "/v1/info").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["bundle_count"], 1);
+    let ids = body["bundle_ids"].as_array().unwrap();
+    assert_eq!(ids.len(), 1);
 }
 
 #[tokio::test]
@@ -694,10 +765,11 @@ async fn search_categories_filter_drops_non_matching_pois() {
     let text = TextIndex::open(&text_dir).unwrap();
     let state = AppState {
         bundle_path: Arc::new(bundle),
-        text: Some(Arc::new(text)),
+        text: Some(Arc::new(FederatedText::from_single(Arc::new(text)))),
         admin: None,
         nearest: None,
         metrics: Arc::new(Metrics::new("test".into(), 0, 2)),
+        bundle_ids: Arc::new(vec!["test".into()]),
         api_key: None,
         rate_limit: None,
         trust_forwarded_for: false,

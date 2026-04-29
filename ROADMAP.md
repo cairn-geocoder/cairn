@@ -313,9 +313,20 @@ total: ~3 weeks focused work for full superiority claim.
   way/relation no-op). Phase 2 (in-place tile blob mutation for
   node-only ops) requires OSM-id tag stamping at import + tile
   read/modify/write helpers — scoped, not yet implemented.
-- **2e. Bundle federation** *(~2 days)* — `cairn-serve --bundles
-  a/,b/,c/` queries all, merges by score. Lets planet split into
-  continental shards. **MEDIUM**
+- **2e. Bundle federation** — **SHIPPED.** `cairn-serve --bundles
+  a/,b/,c/` (or repeated `--bundle`) loads each bundle independently
+  and wraps their indices in `FederatedText` / `FederatedAdmin` /
+  `FederatedNearest`. Single-bundle deploys short-circuit to direct
+  calls (no overhead). Multi-bundle path: text search fans out, hits
+  concat-and-sort by score; PIP fans out, sorts finest-first by
+  admin level; nearest-K fans out, re-sorts by haversine to query.
+  Each Hit's `admin_names` label is rendered inside its own bundle
+  before merge so Place-ID collisions across bundles don't pollute
+  labels. `/v1/info` reports `bundle_ids: [...]` + `bundle_count`.
+  Operational pattern: split a planet into continental shards
+  without standing up multiple processes. 9 cairn-api unit tests
+  (federated.rs) + 2 integration tests (cross-bundle merge,
+  bundle_ids array shape).
 
 ### Tier 3 — Ops polish (1-2 days)
 
