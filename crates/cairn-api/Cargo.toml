@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+readme = "../../README.md"
+keywords = ["geocoding", "geocoder", "axum", "http", "rest"]
+categories = ["science::geo", "web-programming::http-server"]
 
 [features]
 default = []

@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+readme = "../../README.md"
+keywords = ["geocoding", "geocoder", "tile", "manifest", "cairn"]
+categories = ["science::geo", "filesystem"]
 
 [dependencies]
 cairn-place = { workspace = true }

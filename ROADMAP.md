@@ -328,16 +328,32 @@ total: ~3 weeks focused work for full superiority claim.
   (federated.rs) + 2 integration tests (cross-bundle merge,
   bundle_ids array shape).
 
-### Tier 3 — Ops polish (1-2 days)
+### Tier 3 — Ops polish
 
-- **3a. Auth middleware** — API-key bearer + scoped read/write.
-- **3b. ZSTD default for tile blobs** — wire-size win, `--zstd`
-  default.
-- **3c. Tile differential update protocol** — tighten `cairn-build
-  apply`.
-- **3d. CHANGELOG.md** + semantic-release hooks.
-- **3e. crates.io publish** — release `cairn`, `cairn-place`,
-  `cairn-text`, `cairn-spatial` (squat-release email pending).
+- **3a. Auth middleware** — **SHIPPED.** `require_api_key` axum
+  middleware honors `X-API-Key` header or `?api_key=` query.
+  `CAIRN_API_KEY` env var on cairn-serve; absent = open. Health /
+  readyz / info bypass the gate so probes don't need a key.
+- **3b. ZSTD default for tile blobs** — **SHIPPED.** `cairn-build`
+  now writes ZSTD-compressed tile blobs by default. Pass
+  `--no-zstd` to opt out (debugging / external pipelines). Bundle
+  size drops ~50-70 % with negligible decompress cost at tile load.
+- **3c. Tile differential update protocol** — **SHIPPED.**
+  `cairn-build diff --old A/ --new B/ --out diff.toml` writes a
+  per-file added/changed/removed manifest with blake3 hashes;
+  `cairn-build apply --bundle A/ --diff diff.toml --source B/`
+  pulls deltas without re-downloading the whole bundle.
+- **3d. CHANGELOG.md** — **SHIPPED.** New top-level `CHANGELOG.md`
+  documenting Tier 1 + Tier 2 + Tier 3 + Tier 4e batches plus a
+  pre-history pointer to the git log.
+- **3e. crates.io publish prep** — **SHIPPED.** Every publishable
+  crate (`cairn-place`, `-tile`, `-text`, `-spatial`, `-parse`,
+  `-api`, `-import-{osm,wof,oa,geonames}`, `-geocoder`) has
+  `keywords`, `categories`, and `readme = "../../README.md"` set.
+  `cargo package --no-verify` cleanly produces 11 tarballs.
+  `scripts/publish-all.sh` walks them in dependency order with
+  rate-limit-aware retry. Operator runs `cargo login <token>` then
+  the script when the squat-release on bare `cairn` clears.
 
 ### Tier 4 — Differentiators (5-7 days; "nobody else has this")
 

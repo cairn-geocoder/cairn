@@ -48,10 +48,14 @@ enum Command {
         out: PathBuf,
         #[arg(long, default_value = "alpha-bundle")]
         bundle_id: String,
-        /// Compress every tile blob with zstd. Smaller bundle on disk
-        /// at the cost of a tiny CPU hit on first read.
+        /// Disable zstd compression of tile blobs. Compression is
+        /// ON by default (bundle size drops ~50-70% with negligible
+        /// read-time overhead — decompress runs once on tile load,
+        /// reads are mmap'd after that). Use this only for
+        /// differential debugging or when an embedded operator
+        /// pipes blobs through their own compression layer.
         #[arg(long)]
-        zstd: bool,
+        no_zstd: bool,
         /// Comma-separated source priority for cross-source dedup.
         /// Earlier in the list = higher trust. Tokens: osm, wof, oa,
         /// geonames. Default `wof,osm,oa,geonames` (admin polygons +
@@ -202,7 +206,7 @@ fn main() -> Result<()> {
             postcodes,
             out,
             bundle_id,
-            zstd,
+            no_zstd,
             source_priority,
             simplify_meters,
         } => cmd_build(BuildArgs {
@@ -215,10 +219,11 @@ fn main() -> Result<()> {
             bundle_id,
             source_priority: parse_source_priority(&source_priority)?,
             simplify_tolerance_deg: meters_to_degrees(simplify_meters),
-            compression: if zstd {
-                TileCompression::Zstd
-            } else {
+            // ZSTD is on by default. Pass `--no-zstd` to disable.
+            compression: if no_zstd {
                 TileCompression::None
+            } else {
+                TileCompression::Zstd
             },
         }),
         Command::Extract {
