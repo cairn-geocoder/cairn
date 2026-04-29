@@ -71,68 +71,33 @@ Tracks shipped phases and deferred work.
   the bundle baked into the image. Lets cairn.kaldera.dev switch to
   Switzerland / Germany / planet without an image rebuild.
 
+### Phase 6f — Build-time node-coord cache strategies — **SHIPPED**
+
+`cairn-build build --node-cache auto|inline|sorted-vec|flatnode`
+with the default chosen automatically by PBF size:
+
+- ≤ 5 GB → `inline` (legacy `HashMap<i64,[f64;2]>`, ~48 B/entry,
+  fastest lookup).
+- 5–30 GB → `sorted-vec` (`Vec<(i64,[i32;2])>` sorted by id, i32-
+  quantized coords, binary search; 16 B/entry, lossless at OSM
+  precision; pre-filter pass drops nodes not referenced by any
+  way / relation).
+- ≥ 30 GB → `flatnode` (mmap'd dense `[i32;2]` array indexed by
+  node id, sparse-file backing keeps real disk usage ~15 % of
+  logical; `(0,0)` sentinel for absent slots).
+
+Switzerland end-to-end (commit `636753d`):
+
+  inline      27.2 s  8.95 GB peak footprint
+  sorted-vec  29.0 s  5.45 GB peak footprint  (-39 %)
+  flatnode    67.8 s  2.51 GB peak footprint  (-72 %)
+
+All three bundles `cairn-build verify` clean with identical
+per-tile place counts. Per-coord quantization causes only
+sub-meter drift in admin polygon vertices, well within the
+100 m simplify tolerance. Tracked via issue #1.
+
 ## Deferred
-
-### Phase 6f — Build-time node-coord cache strategies
-
-Unblocks Europe / planet builds on commodity hardware. Today
-`cairn-import-osm::load_node_caches` returns a `HashMap<i64, [f64;2]>`
-holding every OSM node's lon/lat. Hashbrown overhead is ~48 B/entry,
-which scales linearly with node count and dominates build RSS.
-
-Validated against DE actuals: ~430 M nodes × 48 B = ~21 GB peak,
-matches the observed 22 GB. Linear projections:
-
-| Region    | Nodes | HashMap RAM | Total projected |
-|-----------|------:|------------:|----------------:|
-| Europe    | ~2.1 B | ~100 GB | ~105 GB |
-| Planet    | ~9 B   | ~430 GB | ~440 GB |
-
-⇒ Mac harness (36 GB) caps out somewhere between DE and Europe
-without changes; planet is unreachable on any single box without
-mmap-backed lookup.
-
-Ship as `cairn-build --node-cache <strategy>` (default chosen by
-PBF size unless overridden):
-
-1. **`inline`** *(default ≤ 5 GB PBF — current behavior).*
-   `HashMap<i64, [f64;2]>`. No code change. Keeps the fast path for
-   country-scale.
-
-2. **`sorted-vec`** *(default 5–30 GB PBF — first thing to ship).*
-   - Replace HashMap with `Vec<(i64, [i32;2])>` sorted by id.
-   - Quantize coords f64×2 → i32×2 (~1 cm precision; lossless for
-     OSM coord precision of 1e-7 degrees).
-   - 16 B/entry vs 48 B → 3× smaller.
-   - Pair with a reference-pre-filter pass: scan ways + relations
-     first to build `HashSet<i64>` of node IDs actually referenced
-     by way centroids / admin polygons / interpolation lines, then
-     pass-1 only caches those. Typical OSM dataset has 50-70 % of
-     nodes as decorative way vertices that are not standalone refs.
-   - Combined: DE ~22 GB → ~3 GB. Europe ~105 GB → ~12 GB. Fits
-     36 GB Mac with headroom.
-   - ~1-2 days work, all in `cairn-import-osm`.
-
-3. **`flatnode <path>`** *(default ≥ 30 GB PBF — required for
-   planet).*
-   - Dense `[i32;2]` array indexed by `node_id`. 8 B × max_node_id.
-   - Planet ~72 GB on disk; RSS bounded by mmap working set (~2-4
-     GB regardless of input). Kernel pages out unused regions.
-   - Build becomes I/O-bound not RAM-bound. Same trick Nominatim
-     uses (`osm2pgsql --flat-nodes`).
-   - Crash-safety: write to `<path>.tmp`, fsync, atomic-rename on
-     success. Resumable across runs.
-   - ~3-5 days work, careful `unsafe` for the mmap'd write path.
-
-**Order of work:**
-1. Land sorted-vec + pre-filter first (#2). Multi-country grid
-   bench gets cheaper, Europe becomes possible on rented box.
-2. Land flatnode (#3) once #2 proves the build pipeline holds at
-   continent scale. Unlocks planet on a $300/mo Hetzner AX102.
-
-Bench harness gains a `node-cache-strategy` knob in
-`benchmarks/cairn/build.sh` so the multi-country grid can compare
-RSS curves across all three strategies.
 
 ### Phase 6c — Per-tile spatial partitioning + mmap rkyv
 
