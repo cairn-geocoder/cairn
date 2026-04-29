@@ -730,6 +730,20 @@ impl NearestIndex {
     /// Linear scan within candidates is fine at country scale; planet-scale
     /// will switch to per-tile R*-trees + bounded heap merge.
     pub fn nearest_k(&self, coord: Coord, k: usize) -> Vec<PlacePoint> {
+        self.nearest_k_filtered(coord, k, |_| true)
+    }
+
+    /// Phase 7a-H — nearest-K with a per-place filter. Used by the
+    /// `?context=full` reverse path to fetch the nearest road, the
+    /// nearest POI, and the nearest address with three independent
+    /// queries. The filter runs after slot collection but before the
+    /// final sort, so the search widens slot coverage proportionally
+    /// to the filter's selectivity (we keep gathering until we have
+    /// at least `k * 4` *matching* candidates or run out of slots).
+    pub fn nearest_k_filtered<F>(&self, coord: Coord, k: usize, mut keep: F) -> Vec<PlacePoint>
+    where
+        F: FnMut(&PlacePoint) -> bool,
+    {
         if k == 0 || self.total_items == 0 {
             return Vec::new();
         }
@@ -746,7 +760,11 @@ impl NearestIndex {
 
         let mut gathered: Vec<PlacePoint> = Vec::new();
         for (slot_idx, _) in ranked {
-            gathered.extend(self.load_slot(slot_idx).iter().cloned());
+            for p in self.load_slot(slot_idx).iter() {
+                if keep(p) {
+                    gathered.push(p.clone());
+                }
+            }
             if gathered.len() >= k * 4 {
                 break;
             }

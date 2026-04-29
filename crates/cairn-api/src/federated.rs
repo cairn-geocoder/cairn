@@ -160,12 +160,27 @@ impl FederatedNearest {
     /// list is re-sorted by haversine distance to the query point
     /// and truncated to `k` so the global top-k surfaces.
     pub fn nearest_k(&self, coord: Coord, k: usize) -> Vec<PlacePoint> {
+        self.nearest_k_filtered(coord, k, |_| true)
+    }
+
+    /// Phase 7a-H — filtered kNN. Each bundle's filtered nearest list
+    /// is merged + re-sorted globally. Used by the context-aware
+    /// reverse endpoint to fetch nearest road / POI / address per
+    /// federation member without dropping fed semantics.
+    pub fn nearest_k_filtered<F>(&self, coord: Coord, k: usize, mut keep: F) -> Vec<PlacePoint>
+    where
+        F: FnMut(&PlacePoint) -> bool,
+    {
         if self.bundles.len() == 1 {
-            return self.bundles[0].nearest_k(coord, k);
+            return self.bundles[0].nearest_k_filtered(coord, k, keep);
         }
         let mut all: Vec<PlacePoint> = Vec::new();
         for b in &self.bundles {
-            all.extend(b.nearest_k(coord, k));
+            // Re-borrow `keep` per-bundle so the closure stays movable
+            // into each call. Cheap since the predicate is `FnMut`
+            // and per-call cost is dominated by the spatial scan.
+            let mut local_keep = |p: &PlacePoint| keep(p);
+            all.extend(b.nearest_k_filtered(coord, k, &mut local_keep));
         }
         all.sort_by(|a, b| {
             haversine_km(coord.lat, coord.lon, a.centroid.lat, a.centroid.lon)

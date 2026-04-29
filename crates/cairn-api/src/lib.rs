@@ -895,6 +895,12 @@ pub struct ReverseQuery {
     /// place centroids. 0 disables fallback.
     #[serde(default)]
     pub nearest: Option<usize>,
+    /// Phase 7a-H — `?context=full` returns a structured response
+    /// with the containing admin chain plus the nearest road, the
+    /// nearest POI, and the nearest address all in one call. Default
+    /// (None / "min") keeps the legacy single-list shape.
+    #[serde(default)]
+    pub context: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -915,6 +921,96 @@ struct ReverseResponse {
     lon: f64,
     source: &'static str,
     results: Vec<ReverseHit>,
+}
+
+/// Phase 7a-H — structured reverse response combining admin chain
+/// with the nearest road / POI / address in a single call.
+#[derive(Serialize)]
+struct ReverseFullResponse {
+    lat: f64,
+    lon: f64,
+    /// Containing admin features finest-first (city → region → country).
+    /// Empty when the probe falls outside every admin polygon.
+    admin: Vec<ReverseHit>,
+    /// Nearest place with `kind == "street"`. None when no roads in bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nearest_road: Option<ReverseHit>,
+    /// Nearest POI (kind == "poi" / "amenity" / shop / leisure / …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nearest_poi: Option<ReverseHit>,
+    /// Nearest address point (kind == "address"). Spotty coverage outside
+    /// OpenAddresses imports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nearest_address: Option<ReverseHit>,
+}
+
+/// Categorize a `kind` string into the three classes the
+/// context-aware reverse endpoint exposes. Single source of truth so
+/// the API layer + future filters agree.
+fn classify_kind(kind: &str) -> Option<&'static str> {
+    match kind {
+        "street" | "highway" | "road" => Some("street"),
+        "address" => Some("address"),
+        "poi" | "amenity" | "shop" | "tourism" | "leisure" | "office" | "historic"
+        | "healthcare" | "emergency" | "craft" => Some("poi"),
+        _ => None,
+    }
+}
+
+fn reverse_full(state: AppState, lat: f64, lon: f64, probe: Coord) -> Response {
+    state.metrics.reverse_pip.fetch_add(1, Ordering::Relaxed);
+
+    // Admin chain (PIP) — finest-first. Empty when probe is outside
+    // every admin polygon, which is fine; the nearest-by-class
+    // companions still answer.
+    let admin_chain: Vec<ReverseHit> = state
+        .admin
+        .as_ref()
+        .map(|a| a.point_in_polygon(probe))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| ReverseHit {
+            place_id: f.place_id,
+            name: f.name.clone(),
+            kind: f.kind.clone(),
+            level: f.level,
+            lon: f.centroid.lon,
+            lat: f.centroid.lat,
+            admin_path: f.admin_path.clone(),
+            distance_km: haversine_km(lat, lon, f.centroid.lat, f.centroid.lon),
+        })
+        .collect();
+
+    // Nearest-by-class. Each query is independent against the same
+    // R*-tree; the filtered nearest_k_filtered widens slot coverage
+    // automatically when the predicate is selective.
+    let nearest_for = |target: &'static str| -> Option<ReverseHit> {
+        let nearest = state.nearest.as_ref()?;
+        let pp = nearest
+            .nearest_k_filtered(probe, 1, |p| classify_kind(&p.kind) == Some(target))
+            .into_iter()
+            .next()?;
+        Some(ReverseHit {
+            place_id: pp.place_id,
+            name: pp.name.clone(),
+            kind: pp.kind.clone(),
+            level: pp.level,
+            lon: pp.centroid.lon,
+            lat: pp.centroid.lat,
+            admin_path: pp.admin_path.clone(),
+            distance_km: haversine_km(lat, lon, pp.centroid.lat, pp.centroid.lon),
+        })
+    };
+
+    Json(ReverseFullResponse {
+        lat,
+        lon,
+        admin: admin_chain,
+        nearest_road: nearest_for("street"),
+        nearest_poi: nearest_for("poi"),
+        nearest_address: nearest_for("address"),
+    })
+    .into_response()
 }
 
 async fn reverse(
@@ -948,6 +1044,13 @@ async fn reverse(
     let limit = params.limit.unwrap_or(10).clamp(1, 50);
     let nearest_k = params.nearest.unwrap_or(0).min(50);
     let probe = Coord { lon, lat };
+
+    // Phase 7a-H — `?context=full` short-circuits the legacy
+    // single-list response and returns admin chain + nearest road
+    // + nearest POI + nearest address in one structured payload.
+    if matches!(params.context.as_deref(), Some("full")) {
+        return reverse_full(state, lat, lon, probe).into_response();
+    }
 
     // PIP path first.
     if let Some(admin) = state.admin.as_ref() {
