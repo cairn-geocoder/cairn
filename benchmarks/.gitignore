@@ -1,10 +1,11 @@
 data/*.pbf
 data/*.zip
 data/*.txt
-queries/swiss-10k.txt
-queries/swiss-noisy.txt
+queries/*-10k.txt
+queries/*-noisy.txt
 results/*.timings.txt
 cairn/bundle/
+cairn/bundle-*/
 cairn/.pid
 cairn/serve.log
 pelias/es-data/

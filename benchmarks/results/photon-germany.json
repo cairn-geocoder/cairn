@@ -1,0 +1,23 @@
+{
+  "engine": "photon",
+  "queries": 10000,
+  "errors": 0,
+  "total_seconds": 424.248984,
+  "rps": 23.57106410890073,
+  "latency_ms": {
+    "p50": 9.693999999999999,
+    "p90": 30.844,
+    "p95": 43.91,
+    "p99": 92.942,
+    "max": 357.372,
+    "mean": 15.3690529
+  },
+  "rss_bytes": {
+    "cold": 2132451262,
+    "hot": 2132451262
+  },
+  "disk_bytes": 9771050598,
+  "country": "germany",
+  "arch": "arm64",
+  "import_seconds": 1162
+}

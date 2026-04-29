@@ -155,6 +155,59 @@ or Nominatim on the same hardware budget.
 Files: `cairn-build-germany.json`, `cairn-germany.json`,
 `cairn-rps-germany.txt`.
 
+### Incumbents on Germany — head-to-head
+
+Same 4.7 GB Geofabrik PBF, same Mac, same `<country>-10k.txt`
+workload (10 000 sampled DE city / postcode / composite queries),
+same Docker host (OrbStack).
+
+| Engine | Build wall-clock | Disk | Cold RSS | Hot RSS | p50 | p95 | p99 | max | RPS peak | Errors |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Cairn** | **10 m 33 s** | **1.67 GB** | **99 MB** | **392 MB** | **0.81 ms** | **2.17 ms** | **3.71 ms** | 7.5 ms | **8 412** (c=8) | **0** |
+| Pelias | 37 m 0 s | 5.28 GB | 5.15 GB | 5.15 GB | 10.29 ms | 17.10 ms | 23.16 ms | 62.5 ms | 506 (c=32) | 0 |
+| Photon | 19 m 22 s | 9.10 GB | 2.13 GB | 2.13 GB | 9.69 ms | 43.91 ms | 92.94 ms | 357.4 ms | 1 919 (c=32) | 0 |
+| Nominatim | *not run* (~28 h projected on arm64) | — | — | — | — | — | — | — | — | — |
+
+#### Cairn vs each incumbent on DE
+
+| Metric | Cairn → Pelias DE | Cairn → Photon DE |
+|---|---:|---:|
+| p99 latency | **6.2× faster** | **25× faster** |
+| Peak RPS | **17× higher** | **4.4× higher** |
+| Hot RSS | **13× smaller** | **5.4× smaller** |
+| Disk | **3.2× smaller** | **5.9× smaller** |
+| Build wall-clock | **3.5× faster** | **1.8× faster** |
+
+Per-engine DE notes:
+
+- **Pelias DE** — ES 7.16.1 + osm-import on `germany-latest.osm.pbf`,
+  adminLookup disabled (no WoF). 24 189 231 documents indexed in
+  37 min. Hot RSS dominated by ES (2.81 GB) + libpostal (1.91 GB)
+  + node api (93 MB). p99 actually beats the CH run (23 ms vs
+  57 ms on CH) — likely ES heap fits the working set better when
+  it's pre-warmed by the bench, while CH numbers reflect first-touch.
+  Peak RPS plateaus at c=32; c=64 regresses (p99 331 ms) when ES
+  request queue saturates.
+- **Photon DE** — Java 21 + OpenSearch internal cluster. 26 961 549
+  documents imported in 19 m 22 s from graphhopper.com's DE
+  photon-dump. Peak RPS 1 919 at c=32 with p99 27 ms; the 92.94 ms
+  *sequential* p99 is dominated by JVM GC tail (max 357 ms is a
+  young-gen pause).
+- **Nominatim DE** — *not run.* On arm64 with the mediagis 4.4
+  image's hardcoded `osm2pgsql --number-processes 1 --cache 0
+  --flat-nodes` flags, Switzerland (506 MB) took 3 h 13 m. Germany
+  is 9× larger and the bottleneck is single-thread CPU on
+  ClientRead waits, so the projected wall-clock is **~28 hours**
+  on this host. Running the import is straightforward
+  (`./nominatim/up.sh` with `PBF_URL=…/germany-latest.osm.pbf`),
+  but the wall-clock makes it impractical for the bench rig.
+  Operators on x86_64 with multi-thread `osm2pgsql` should expect
+  ~3–6 hours instead.
+
+Files: `cairn-germany.json`, `cairn-rps-germany.txt`,
+`pelias-germany.json`, `pelias-rps-germany.txt`,
+`photon-germany.json`, `photon-rps-germany.txt`.
+
 ## Reproducing
 
 ```bash

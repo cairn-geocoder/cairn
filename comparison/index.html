@@ -328,6 +328,71 @@
         wall-clock is <strong>4.5–430× faster</strong> on the same
         506 MB PBF input.
       </p>
+
+      <h3>Country scale — Germany</h3>
+      <p>
+        Same harness, 8.6× the input (4.7 GB Geofabrik PBF, ~3 M
+        places). Nominatim DE not run — projected ~28 h on arm64
+        single-thread <code>osm2pgsql</code>.
+      </p>
+      <table class="api">
+        <thead>
+          <tr>
+            <th>Engine</th>
+            <th>Build</th>
+            <th>Disk</th>
+            <th>Hot RSS</th>
+            <th>p50</th>
+            <th>p95</th>
+            <th>p99</th>
+            <th>Peak RPS</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Cairn</strong></td>
+            <td><strong>10 m 33 s</strong></td>
+            <td><strong>1.67 GB</strong></td>
+            <td><strong>392 MB</strong></td>
+            <td><strong><code>0.81 ms</code></strong></td>
+            <td><strong><code>2.17 ms</code></strong></td>
+            <td><strong><code>3.71 ms</code></strong></td>
+            <td><strong>8 412</strong></td>
+          </tr>
+          <tr>
+            <td>Pelias</td>
+            <td>37 m</td>
+            <td>5.28 GB</td>
+            <td>5.15 GB</td>
+            <td><code>10.29 ms</code></td>
+            <td><code>17.10 ms</code></td>
+            <td><code>23.16 ms</code></td>
+            <td>506</td>
+          </tr>
+          <tr>
+            <td>Photon</td>
+            <td>19 m 22 s</td>
+            <td>9.10 GB</td>
+            <td>2.13 GB</td>
+            <td><code>9.69 ms</code></td>
+            <td><code>43.91 ms</code></td>
+            <td><code>92.94 ms</code></td>
+            <td>1 919</td>
+          </tr>
+          <tr>
+            <td>Nominatim</td>
+            <td colspan="7"><em>not run — ~28 h projected on arm64 single-thread <code>osm2pgsql</code></em></td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        On 3 M places Cairn keeps a <strong>6–25× p99 lead</strong>,
+        <strong>4–17× peak RPS</strong>, and
+        <strong>5–13× smaller hot RSS</strong> vs each incumbent.
+        Build is <strong>1.8–3.5× faster</strong> in wall-clock and
+        produces a <strong>3–6× smaller</strong> on-disk artifact.
+      </p>
+
       <h3>Recall on noisy queries</h3>
       <p>
         1 153 deliberate typo / ASCII-fold variants, top-1 hit rate.

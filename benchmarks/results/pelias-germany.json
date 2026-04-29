@@ -1,0 +1,23 @@
+{
+  "engine": "pelias",
+  "queries": 10000,
+  "errors": 0,
+  "total_seconds": 368.901583,
+  "rps": 27.107500918476674,
+  "latency_ms": {
+    "p50": 10.293999999999999,
+    "p90": 14.846,
+    "p95": 17.098,
+    "p99": 23.161,
+    "max": 62.457,
+    "mean": 10.201978800000001
+  },
+  "rss_bytes": {
+    "cold": 5153019133,
+    "hot": 5153019133
+  },
+  "disk_bytes": 5280223232,
+  "country": "germany",
+  "arch": "arm64",
+  "import_seconds": 2220
+}

@@ -1,0 +1,14 @@
+{
+  "engine": "cairn",
+  "country": "germany",
+  "phase": "build",
+  "host": "Marcos-MacBook-Pro.local",
+  "arch": "arm64",
+  "compile_seconds": 1,
+  "build_seconds": 633,
+  "peak_rss_bytes": 22048931840,
+  "bundle_disk_bytes": 1751474176,
+  "bundle_disk_mb": 1670,
+  "bundle_id": "germany-bench",
+  "input_pbf_bytes": 4749278929
+}

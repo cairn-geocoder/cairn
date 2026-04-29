@@ -560,6 +560,30 @@
           <code>bench</code> workflow runs the same harness on
           ubuntu-latest (Intel) so numbers aren't arm64-specific.
         </p>
+
+        <h3 style="font-family: var(--serif); font-style: italic; font-size: 24px; margin-top: 40px;">Germany — head-to-head with the incumbents</h3>
+        <p>
+          Same 4.7 GB Geofabrik PBF, same Mac, same 10 000-query
+          DE workload. Cairn vs Pelias vs Photon at country scale:
+        </p>
+        <table class="api">
+          <thead>
+            <tr><th>Engine</th><th>Build</th><th>Disk</th><th>Hot RSS</th><th>p50</th><th>p99</th><th>RPS peak</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Cairn</strong></td><td><strong>10 m 33 s</strong></td><td><strong>1.67 GB</strong></td><td><strong>392 MB</strong></td><td><strong><code>0.81 ms</code></strong></td><td><strong><code>3.71 ms</code></strong></td><td><strong>8 412</strong></td></tr>
+            <tr><td>Pelias</td><td>37 m</td><td>5.28 GB</td><td>5.15 GB</td><td><code>10.29 ms</code></td><td><code>23.16 ms</code></td><td>506</td></tr>
+            <tr><td>Photon</td><td>19 m 22 s</td><td>9.10 GB</td><td>2.13 GB</td><td><code>9.69 ms</code></td><td><code>92.94 ms</code></td><td>1 919</td></tr>
+            <tr><td>Nominatim</td><td colspan="6"><em>not run — ~28 h projected on arm64 single-thread osm2pgsql</em></td></tr>
+          </tbody>
+        </table>
+        <p>
+          On 3 M places, Cairn keeps a <strong>6–25× p99 lead</strong>,
+          <strong>4–17× peak RPS</strong>, and <strong>5–13×
+          smaller hot RSS</strong> than each incumbent. Build is
+          <strong>1.8–3.5× faster</strong> in wall-clock and produces
+          a <strong>3–6× smaller</strong> on-disk artifact.
+        </p>
       </section>
 
       <!-- ── COMMUNITY ─────────────────────────────────────────── -->
