@@ -39,6 +39,7 @@ expression: body
       "lang": null,
       "layers": null,
       "phonetic": null,
+      "semantic": null,
       "size": 2,
       "text": "Vaduz"
     },

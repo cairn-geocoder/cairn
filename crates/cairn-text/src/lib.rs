@@ -11,6 +11,8 @@
 use cairn_place::{Coord, Place, PlaceKind};
 use rphonetic::DoubleMetaphone;
 use serde::{Deserialize, Serialize};
+
+pub mod semantic;
 use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, FuzzyTermQuery, Occur, Query, QueryParser, TermQuery};
@@ -209,6 +211,12 @@ pub struct SearchOptions {
     /// distance can't reach: `"Mueller"` ↔ `"Müller"`,
     /// `"Smyth"` ↔ `"Smith"`, `"Katherine"` ↔ `"Catherine"`.
     pub phonetic: bool,
+    /// When true, post-rerank the candidate set by lexical-vector
+    /// (character-trigram BoW) cosine similarity to the query.
+    /// Boosts hits with morphologically similar names — `"Vienna"`
+    /// query bumps `"Viennese"`, `"Trisenberg"` rescues
+    /// `"Triesenberg"` past plain BM25. See `cairn_text::semantic`.
+    pub semantic: bool,
     /// When true, populate `Hit::explain` with the BM25 baseline plus
     /// each rerank multiplier so callers can surface "why this hit
     /// ranked here". Tiny per-hit cost; off by default to keep the
@@ -244,6 +252,7 @@ impl Default for SearchOptions {
             categories: Vec::new(),
             bbox: None,
             phonetic: false,
+            semantic: false,
             explain: false,
         }
     }
@@ -279,6 +288,11 @@ struct TextSchema {
     /// `Müller` ↔ `Mueller`, `Smith` ↔ `Smyth`, `Catherine` ↔
     /// `Katherine` would otherwise miss.
     name_phonetic: Field,
+    /// Packed `DIM*4` little-endian f32 lexical-vector embedding
+    /// of the place's primary name. STORED only — never indexed,
+    /// since cosine ranking happens on the candidate set after
+    /// BM25. See `semantic.rs` for layout.
+    name_vec: Field,
 }
 
 impl TextSchema {
@@ -320,6 +334,14 @@ impl TextSchema {
         // need to echo encoded codes back; only used as a query
         // pivot. Indexed to support TermQuery lookups.
         let name_phonetic = sb.add_text_field("name_phonetic", STRING);
+        // Lexical-vector embedding: DIM*4 packed bytes per place,
+        // STORED only (no indexing). The cosine rerank reads it on
+        // the candidate set after BM25, so this stays out of the
+        // hot inverted-index path.
+        let name_vec = sb.add_bytes_field(
+            "name_vec",
+            tantivy::schema::BytesOptions::default().set_stored(),
+        );
         let schema = sb.build();
         Self {
             schema,
@@ -337,6 +359,7 @@ impl TextSchema {
             lang_codes,
             categories,
             name_phonetic,
+            name_vec,
         }
     }
 }
@@ -460,6 +483,21 @@ where
         }
         for cat in cairn_place::categories_for(&place) {
             doc.add_text(schema.categories, &cat);
+        }
+        // Lexical-vector embedding of the primary (default-language)
+        // name. Skipped when the place ships no usable name string —
+        // the unpack helper already returns the zero vector for
+        // missing data, so reranking is a no-op on those.
+        let primary = place
+            .names
+            .iter()
+            .find(|n| n.lang == "default")
+            .or_else(|| place.names.first())
+            .map(|n| n.value.as_str())
+            .unwrap_or("");
+        if !primary.is_empty() {
+            let v = semantic::embed(primary);
+            doc.add_bytes(schema.name_vec, semantic::pack(&v));
         }
         doc.add_u64(schema.place_id, place.id.0);
         doc.add_u64(schema.level, place.id.level() as u64);
@@ -603,6 +641,9 @@ impl TextIndex {
         if let Some(lang) = opts.prefer_lang.as_deref() {
             apply_lang_preference_boost(&mut hits, lang);
         }
+        if opts.semantic {
+            self.apply_semantic_boost(&mut hits, trimmed, &searcher)?;
+        }
 
         if let Some(focus) = opts.focus {
             apply_geo_bias(&mut hits, focus, opts.focus_weight);
@@ -730,6 +771,49 @@ impl TextIndex {
     /// matches widen recall without dropping BM25 hits. Multi-token
     /// queries OR every token's codes — order doesn't matter for
     /// catching variant spellings.
+    /// Rerank `hits` by lexical-vector cosine similarity to the
+    /// query. Reads each hit's stored `name_vec` blob, decodes it,
+    /// computes cosine vs the query embedding, and applies a
+    /// monotonic multiplicative boost via [`semantic::boost_for`].
+    /// Hits with no vector (older bundles) get the zero vector and
+    /// no boost.
+    fn apply_semantic_boost(
+        &self,
+        hits: &mut [Hit],
+        query: &str,
+        searcher: &tantivy::Searcher,
+    ) -> Result<(), TextError> {
+        let qv = semantic::embed(query);
+        // Skip if query produced the zero vector — too short to embed.
+        if qv.iter().all(|x| *x == 0.0) {
+            return Ok(());
+        }
+        for h in hits.iter_mut() {
+            let id = h.place_id;
+            // Locate this hit's doc to read the stored name_vec.
+            // place_id is FAST + INDEXED so the term lookup is cheap.
+            let term = Term::from_field_u64(self.schema.place_id, id);
+            let q: Box<dyn Query> = Box::new(TermQuery::new(term, IndexRecordOption::Basic));
+            if let Some((_, addr)) = searcher
+                .search(&q, &TopDocs::with_limit(1))?
+                .into_iter()
+                .next()
+            {
+                let doc: TantivyDocument = searcher.doc(addr)?;
+                if let Some(bytes) = doc
+                    .get_first(self.schema.name_vec)
+                    .and_then(|v| v.as_bytes())
+                {
+                    let v = semantic::unpack(bytes);
+                    let sim = semantic::cosine(&qv, &v);
+                    let boost = semantic::boost_for(sim);
+                    h.score *= boost;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn apply_phonetic_orclause(
         &self,
         text_q: Box<dyn Query>,

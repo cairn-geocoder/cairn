@@ -675,6 +675,12 @@ pub struct SearchQuery {
     /// queries (`Smyth → Smith`, `Mueller → Müller`).
     #[serde(default)]
     pub phonetic: Option<bool>,
+    /// Opt-in lexical-vector semantic rerank. Boosts hits whose
+    /// name shares character-trigram structure with the query
+    /// (`Vienna → Viennese`, `Trisenberg → Triesenberg`). See
+    /// `cairn_text::semantic`.
+    #[serde(default)]
+    pub semantic: Option<bool>,
     /// When `true`, run the free-text query through
     /// `cairn_parse::parse` first; if the parser returns at least one
     /// useful structured component (postcode / city / country) those
@@ -806,6 +812,7 @@ async fn search(
         categories,
         bbox,
         phonetic: params.phonetic.unwrap_or(false),
+        semantic: params.semantic.unwrap_or(false),
         explain: params.explain.unwrap_or(false),
     };
 
@@ -1199,6 +1206,7 @@ async fn structured(
         categories: Vec::new(),
         bbox: None,
         phonetic: false,
+        semantic: false,
         explain: false,
     };
 
@@ -1362,6 +1370,8 @@ struct PeliasSearchQuery {
     bbox_max_lon: Option<f64>,
     #[serde(default)]
     phonetic: Option<bool>,
+    #[serde(default)]
+    semantic: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Default, Debug)]
@@ -1533,6 +1543,7 @@ async fn pelias_search_impl(
         categories,
         bbox,
         phonetic: params.phonetic.unwrap_or(false),
+        semantic: params.semantic.unwrap_or(false),
         explain: false,
     };
     let text_idx = state

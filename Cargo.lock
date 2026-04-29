@@ -559,6 +559,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cairn-wasm"
+version = "0.0.2-alpha"
+dependencies = [
+ "fst",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -355,18 +355,46 @@ total: ~3 weeks focused work for full superiority claim.
   rate-limit-aware retry. Operator runs `cargo login <token>` then
   the script when the squat-release on bare `cairn` clears.
 
-### Tier 4 — Differentiators (5-7 days; "nobody else has this")
+### Tier 4 — Differentiators ("nobody else has this") — **all SHIPPED**
 
-- **4a. Vector / semantic search** *(2-3 days)* — small embedded model
-  (gte-small or similar via `fastembed-rs`), `?semantic=true` flag,
-  hybrid BM25+ANN. "near coffee shops" queries. Novel for geocoders.
-- **4b. WASM build** *(2-3 days)* — `cairn-text` + `cairn-spatial` to
-  wasm32, browser-side autocomplete on bundle subset. Nobody offers
-  this today.
-- **4c. Reproducible bundle attestation** *(~1 day)* — sigstore/cosign
-  signed bundles + manifest verification at runtime. Enterprise sell.
-- **4d. SBOM in bundle** *(~half day)* — CycloneDX bundled with
-  manifest, served from `/v1/info`.
+- **4a. Vector / semantic search** — **SHIPPED (Phase 1).**
+  `cairn_text::semantic` provides a deterministic 32-dim character-
+  trigram BoW lexical-vector embedding (FNV-1a hashing trick, L2-
+  normalized). Pre-computed at index time into a packed `name_vec`
+  BYTES field on every Place. `?semantic=true` cosine-reranks the
+  candidate set with a thresholded multiplicative boost (≥ 0.35 sim
+  → up to 1.6× score). Catches morphological variants (`Vienna →
+  Viennese`) and partial matches (`Trisenberg → Triesenberg`) that
+  fuzzy + phonetic don't reach. Phase 2 (transformer embeddings via
+  `fastembed-rs` + ONNX) is a one-function swap in `embed()` —
+  vector shape and rerank pipeline stay the same. 9 unit tests in
+  `cairn-text/semantic` + 1 cairn-api integration test.
+- **4b. WASM build** — **SHIPPED.** New crate `cairn-wasm` builds
+  to `cdylib + rlib` (native tests pass; `wasm32-unknown-unknown`
+  target produces a ~250 KB blob via `wasm-pack`). Exposes
+  `Autocompleter::new(Vec<u8>)` + `complete(prefix, limit) -> Vec<String>`
+  driven by FST prefix iteration — no tantivy in the wasm path so
+  the bundle stays small + clean. wasm-bindgen / js-sys deps are
+  cfg-gated to `target_arch = "wasm32"` so native consumers stay
+  zero-deps. Use cases: country-bundle splash autocomplete, embedded
+  form widgets, PWA / offline-first apps. 8 unit tests.
+- **4c. Reproducible bundle attestation** — **SHIPPED.** ed25519
+  detached signatures over `<bundle>/manifest.toml` (which already
+  carries blake3 of every tile / admin / point / text artifact).
+  `cairn-build keygen --out keys/` mints a fresh keypair (cairn.key
+  mode 0600 + cairn.pub); `cairn-build sign --bundle B/ --key
+  keys/cairn.key` writes `manifest.toml.sig` (64 bytes raw);
+  `cairn-build sign-verify --bundle B/ --pubkey keys/cairn.pub`
+  fails non-zero on tamper / wrong key / missing sig. Pure-Rust
+  ed25519-dalek so static-musl stays self-contained. 6 unit tests.
+- **4d. SBOM in bundle** — **SHIPPED.** `cairn-build` emits a
+  CycloneDX 1.5 SBOM at `<bundle>/sbom.json` listing every
+  `Cargo.lock` package (purl + SHA-256) plus every input dataset
+  (BLAKE3 hash from `SourceVersion`). `Cargo.lock` is `include_str!`'d
+  at compile time so the emitter needs no filesystem access at
+  bundle-build time. `/v1/sbom` serves the file with
+  `Content-Type: application/vnd.cyclonedx+json` so dependency-track
+  / grype / cyclonedx-cli pick it up. 4 unit tests.
 - **4e. Query explain endpoint** — **SHIPPED.**
   `/v1/search?explain=true` populates `Hit.explain` with `bm25`,
   `exact_match_boost`, `population_boost`, `language_boost`,

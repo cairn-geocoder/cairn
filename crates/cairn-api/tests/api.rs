@@ -350,6 +350,15 @@ async fn info_reports_single_bundle_id_in_array_form() {
 }
 
 #[tokio::test]
+async fn search_semantic_param_passes_through_to_engine() {
+    // ?semantic=true should round-trip the request without 4xx —
+    // the actual rerank is unit-tested in cairn_text::semantic.
+    let (status, body) = get_json(build_test_state(), "/v1/search?q=Vaduz&semantic=true").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!body["results"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn search_explain_returns_per_stage_breakdown() {
     let (status, body) = get_json(build_test_state(), "/v1/search?q=Vaduz&explain=true").await;
     assert_eq!(status, StatusCode::OK);
