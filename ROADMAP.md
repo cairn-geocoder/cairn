@@ -298,8 +298,21 @@ total: ~3 weeks focused work for full superiority claim.
   `cargo build --features cairn-parse/libpostal` flips the whole
   serve path to the CRF backend. 5 cairn-parse tests + 3 cairn-api
   integration tests covering autoparse and parsed-field echo paths.
-- **2d. Diff apply** *(multi-day)* — apply minutely diffs to tile-scoped
-  reindex (fetcher already shipped). **MEDIUM**
+- **2d. Diff apply** — **PHASE 1 SHIPPED** (parse + dispatch).
+  `bins/cairn-build/src/osc.rs` parses `.osc` / `.osc.gz` minutely
+  diffs into `DiffOp` records (create / modify / delete × node / way
+  / relation, with tags). `cairn-build replicate-apply --dry-run`
+  walks staged diffs, buckets node-place ops by `(level, tile_id)`
+  via `TileCoord::from_coord`, and reports a per-action histogram +
+  dirty-tile count. Real run advances `last_applied_seq` in
+  `replication_state.toml` so the next invocation picks up where it
+  left off. Way / relation re-application is logged + counted but
+  defers to a full PBF rebuild — those need the way-node graph the
+  bundle doesn't persist. 7 osc parser tests + 4 apply tests
+  (process_ops bucket logic, dry-run state safety, idempotent rerun,
+  way/relation no-op). Phase 2 (in-place tile blob mutation for
+  node-only ops) requires OSM-id tag stamping at import + tile
+  read/modify/write helpers — scoped, not yet implemented.
 - **2e. Bundle federation** *(~2 days)* — `cairn-serve --bundles
   a/,b/,c/` queries all, merges by score. Lets planet split into
   continental shards. **MEDIUM**

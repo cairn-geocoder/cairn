@@ -5,6 +5,7 @@
 //! phases.
 
 use anyhow::{Context, Result};
+mod osc;
 mod replication;
 use cairn_place::Place;
 use cairn_spatial::{PlacePoint, PointLayer};
@@ -161,6 +162,26 @@ enum Command {
         #[arg(long)]
         bundle: PathBuf,
     },
+    /// Apply previously-fetched OSM minutely diffs to the bundle's
+    /// place tiles. Walks `<bundle>/replication/*.osc.gz` from
+    /// `last_applied_seq+1` up to `last_fetched_seq`, parses each
+    /// diff, and rewrites every tile that any node-place op touched.
+    /// Way / relation re-application is deferred (logged + skipped);
+    /// run a full rebuild from PBF for those.
+    ReplicateApply {
+        #[arg(long)]
+        bundle: PathBuf,
+        /// Cap on number of diffs applied per invocation. Default 60.
+        /// Lets a stale bundle catch up over multiple runs without
+        /// holding the tile store locked for hours.
+        #[arg(long, default_value_t = 60)]
+        max: usize,
+        /// Parse + bucket without rewriting any tile blobs. Prints
+        /// the dirty-tile count + per-action histogram so operators
+        /// can sanity-check before committing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -227,6 +248,11 @@ fn main() -> Result<()> {
             max,
         } => cmd_replicate_fetch(&bundle, upstream.as_deref(), max),
         Command::ReplicateStatus { bundle } => cmd_replicate_status(&bundle),
+        Command::ReplicateApply {
+            bundle,
+            max,
+            dry_run,
+        } => cmd_replicate_apply(&bundle, max, dry_run),
     }
 }
 
@@ -305,6 +331,187 @@ fn cmd_replicate_status(bundle: &Path) -> Result<()> {
         None => println!("(no replication state — run replicate-fetch --upstream URL first)"),
     }
     Ok(())
+}
+
+/// Apply previously-fetched OSM minutely diffs to the bundle.
+///
+/// Pipeline:
+///  1. Read replication state. Refuse to run without it.
+///  2. Walk `replication/<seq>.osc.gz` from `last_applied_seq + 1`
+///     up to `last_fetched_seq` (or until `max` is hit).
+///  3. Parse each diff via [`osc::parse_file`] and tally
+///     create/modify/delete totals per element kind.
+///  4. Bucket node-with-lat/lon ops by their tile coord at every
+///     level so operators can see which tiles need rebuilding.
+///  5. Advance `last_applied_seq` to the highest seq processed
+///     unless `--dry-run`.
+///
+/// Way / relation handling is logged + counted; actually rewriting
+/// way / polygon-bearing tiles requires the original way-node graph,
+/// which the bundle doesn't persist. Operators in that situation
+/// should run a full `cairn-build build` from the latest PBF.
+///
+/// Tile-blob mutation for node-only ops is the next concrete
+/// follow-up — the bucket map this command emits is exactly the set
+/// of (level, tile_id) keys that need rewriting. The writer side is
+/// already in `cairn-tile::write_tile`.
+fn cmd_replicate_apply(bundle: &Path, max: usize, dry_run: bool) -> Result<()> {
+    let mut state = match replication::read_state(bundle)? {
+        Some(s) => s,
+        None => {
+            return Err(anyhow::anyhow!(
+                "no replication state at {}/replication_state.toml — \
+                 run `cairn-build replicate-fetch --upstream URL` first",
+                bundle.display()
+            ));
+        }
+    };
+    let last_fetched = match state.last_fetched_seq {
+        Some(s) => s,
+        None => {
+            tracing::info!("no diffs fetched yet; nothing to apply");
+            return Ok(());
+        }
+    };
+    let start = state
+        .last_applied_seq
+        .map(|s| s.saturating_add(1))
+        .unwrap_or(0);
+    if start > last_fetched {
+        tracing::info!(
+            last_applied = state.last_applied_seq,
+            last_fetched,
+            "apply state already at head"
+        );
+        return Ok(());
+    }
+
+    let mut totals = ApplyTotals::default();
+    let mut dirty_tiles: std::collections::BTreeSet<(u8, u32)> = std::collections::BTreeSet::new();
+    let mut last_processed: Option<u64> = None;
+
+    for seq in start..=last_fetched {
+        if totals.diffs_processed >= max {
+            tracing::warn!(
+                processed = totals.diffs_processed,
+                next = seq,
+                max,
+                "hit --max cap; rerun replicate-apply to continue"
+            );
+            break;
+        }
+        let path = bundle
+            .join(replication_dir())
+            .join(format!("{seq:09}.osc.gz"));
+        if !path.exists() {
+            tracing::warn!(
+                seq,
+                path = %path.display(),
+                "missing diff file; refetch to recover"
+            );
+            break;
+        }
+        let ops = osc::parse_file(&path)
+            .with_context(|| format!("parse diff seq={seq} ({})", path.display()))?;
+        totals.diffs_processed += 1;
+        process_ops(&ops, &mut totals, &mut dirty_tiles);
+        last_processed = Some(seq);
+    }
+
+    println!(
+        "diffs processed = {}\n\
+         total ops       = {}\n\
+         node creates    = {}   modifies = {}   deletes = {}\n\
+         way creates     = {}   modifies = {}   deletes = {}\n\
+         relation creates = {}  modifies = {}   deletes = {}\n\
+         taggable nodes  = {}\n\
+         dirty tiles     = {}",
+        totals.diffs_processed,
+        totals.ops_total,
+        totals.node_creates,
+        totals.node_modifies,
+        totals.node_deletes,
+        totals.way_creates,
+        totals.way_modifies,
+        totals.way_deletes,
+        totals.relation_creates,
+        totals.relation_modifies,
+        totals.relation_deletes,
+        totals.taggable_nodes,
+        dirty_tiles.len(),
+    );
+
+    if totals.way_creates + totals.way_modifies + totals.way_deletes > 0
+        || totals.relation_creates + totals.relation_modifies + totals.relation_deletes > 0
+    {
+        println!(
+            "note: way / relation re-application is not yet implemented;\n\
+             run a full `cairn-build build` from the latest PBF to pick those up."
+        );
+    }
+
+    if dry_run {
+        println!("(dry-run: state file NOT updated)");
+        return Ok(());
+    }
+    if let Some(applied) = last_processed {
+        state.last_applied_seq = Some(applied);
+        replication::write_state(bundle, &state)?;
+        tracing::info!(last_applied_seq = applied, "replication state advanced");
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct ApplyTotals {
+    diffs_processed: usize,
+    ops_total: u64,
+    node_creates: u64,
+    node_modifies: u64,
+    node_deletes: u64,
+    way_creates: u64,
+    way_modifies: u64,
+    way_deletes: u64,
+    relation_creates: u64,
+    relation_modifies: u64,
+    relation_deletes: u64,
+    taggable_nodes: u64,
+}
+
+fn process_ops(
+    ops: &[osc::DiffOp],
+    totals: &mut ApplyTotals,
+    dirty_tiles: &mut std::collections::BTreeSet<(u8, u32)>,
+) {
+    use osc::{Action, OsmKind};
+    for op in ops {
+        totals.ops_total += 1;
+        match (op.kind, op.action) {
+            (OsmKind::Node, Action::Create) => totals.node_creates += 1,
+            (OsmKind::Node, Action::Modify) => totals.node_modifies += 1,
+            (OsmKind::Node, Action::Delete) => totals.node_deletes += 1,
+            (OsmKind::Way, Action::Create) => totals.way_creates += 1,
+            (OsmKind::Way, Action::Modify) => totals.way_modifies += 1,
+            (OsmKind::Way, Action::Delete) => totals.way_deletes += 1,
+            (OsmKind::Relation, Action::Create) => totals.relation_creates += 1,
+            (OsmKind::Relation, Action::Modify) => totals.relation_modifies += 1,
+            (OsmKind::Relation, Action::Delete) => totals.relation_deletes += 1,
+        }
+        if op.kind == OsmKind::Node && op.looks_taggable() {
+            totals.taggable_nodes += 1;
+            if let (Some(lat), Some(lon)) = (op.lat, op.lon) {
+                let coord = cairn_place::Coord { lon, lat };
+                for level in [Level::L0, Level::L1, Level::L2] {
+                    let tc = TileCoord::from_coord(level, coord);
+                    dirty_tiles.insert((level.as_u8(), tc.id()));
+                }
+            }
+        }
+    }
+}
+
+fn replication_dir() -> &'static str {
+    "replication"
 }
 
 fn parse_tile_arg(spec: &str) -> Result<(Level, u32)> {
@@ -1547,4 +1754,126 @@ fn now_iso8601() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("epoch:{}", secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn process_ops_buckets_taggable_node_into_three_levels() {
+        // Vaduz at 9.5209, 47.141 with place=village → taggable node.
+        let xml = r#"<osmChange><create>
+            <node id="1" lat="47.141" lon="9.5209" version="1">
+              <tag k="place" v="village"/>
+              <tag k="name" v="Vaduz"/>
+            </node>
+        </create></osmChange>"#;
+        let ops = osc::parse_reader(Cursor::new(xml)).unwrap();
+        let mut totals = ApplyTotals::default();
+        let mut dirty: std::collections::BTreeSet<(u8, u32)> = std::collections::BTreeSet::new();
+        process_ops(&ops, &mut totals, &mut dirty);
+        assert_eq!(totals.node_creates, 1);
+        assert_eq!(totals.taggable_nodes, 1);
+        // L0, L1, L2 tile coords for the same point — three entries.
+        assert_eq!(dirty.len(), 3);
+        // Levels 0/1/2 represented.
+        let levels: std::collections::BTreeSet<u8> = dirty.iter().map(|(l, _)| *l).collect();
+        let expected: std::collections::BTreeSet<u8> = [0u8, 1, 2].into_iter().collect();
+        assert_eq!(levels, expected);
+    }
+
+    #[test]
+    fn process_ops_skips_untagged_node() {
+        let xml = r#"<osmChange><create>
+            <node id="1" lat="47.141" lon="9.5209" version="1"/>
+        </create></osmChange>"#;
+        let ops = osc::parse_reader(Cursor::new(xml)).unwrap();
+        let mut totals = ApplyTotals::default();
+        let mut dirty: std::collections::BTreeSet<(u8, u32)> = std::collections::BTreeSet::new();
+        process_ops(&ops, &mut totals, &mut dirty);
+        assert_eq!(totals.node_creates, 1);
+        assert_eq!(totals.taggable_nodes, 0);
+        assert!(dirty.is_empty(), "untagged nodes must not dirty tiles");
+    }
+
+    #[test]
+    fn replicate_apply_dry_run_does_not_advance_state() {
+        // Spin up a fake bundle dir with a hand-rolled state file +
+        // one .osc.gz containing a node create. dry-run must
+        // process it and leave last_applied_seq untouched.
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let bundle = std::env::temp_dir().join(format!(
+            "cairn-apply-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let rep_dir = bundle.join("replication");
+        std::fs::create_dir_all(&rep_dir).unwrap();
+
+        let mut state =
+            replication::ReplicationState::new("https://example.com/replication".into());
+        state.last_fetched_seq = Some(7);
+        state.last_applied_seq = Some(6); // pretend everything before 7 already applied
+        replication::write_state(&bundle, &state).unwrap();
+
+        let xml = r#"<?xml version="1.0"?>
+<osmChange version="0.6">
+  <create>
+    <node id="1" lat="47.141" lon="9.5209" version="1">
+      <tag k="place" v="village"/>
+      <tag k="name" v="X"/>
+    </node>
+  </create>
+</osmChange>"#;
+        let raw = xml.as_bytes();
+        let path = rep_dir.join(format!("{:09}.osc.gz", 7));
+        let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
+        enc.write_all(raw).unwrap();
+        let gz = enc.finish().unwrap();
+        std::fs::write(&path, gz).unwrap();
+
+        cmd_replicate_apply(&bundle, 60, true).unwrap();
+        let after = replication::read_state(&bundle).unwrap().unwrap();
+        assert_eq!(
+            after.last_applied_seq,
+            Some(6),
+            "dry-run must NOT advance last_applied_seq"
+        );
+
+        // Real run: state advances to 7.
+        cmd_replicate_apply(&bundle, 60, false).unwrap();
+        let after = replication::read_state(&bundle).unwrap().unwrap();
+        assert_eq!(after.last_applied_seq, Some(7));
+
+        // Idempotent: rerunning is a no-op.
+        cmd_replicate_apply(&bundle, 60, false).unwrap();
+        let after = replication::read_state(&bundle).unwrap().unwrap();
+        assert_eq!(after.last_applied_seq, Some(7));
+    }
+
+    #[test]
+    fn process_ops_counts_way_relation_without_dirtying_tiles() {
+        let xml = r#"<osmChange>
+          <modify><way id="100" version="2"><tag k="highway" v="residential"/><tag k="name" v="X"/></way></modify>
+          <delete><relation id="500" version="3"/></delete>
+        </osmChange>"#;
+        let ops = osc::parse_reader(Cursor::new(xml)).unwrap();
+        let mut totals = ApplyTotals::default();
+        let mut dirty: std::collections::BTreeSet<(u8, u32)> = std::collections::BTreeSet::new();
+        process_ops(&ops, &mut totals, &mut dirty);
+        assert_eq!(totals.way_modifies, 1);
+        assert_eq!(totals.relation_deletes, 1);
+        assert!(
+            dirty.is_empty(),
+            "way / relation ops don't dirty tiles in node-only path"
+        );
+    }
 }

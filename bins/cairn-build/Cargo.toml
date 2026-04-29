@@ -34,3 +34,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rayon = { workspace = true }
 ureq = { workspace = true }
+quick-xml = { workspace = true }

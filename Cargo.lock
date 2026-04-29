@@ -389,6 +389,7 @@ dependencies = [
  "cairn-tile",
  "clap",
  "flate2",
+ "quick-xml",
  "rayon",
  "serde",
  "serde_json",
@@ -2158,6 +2159,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.36.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
