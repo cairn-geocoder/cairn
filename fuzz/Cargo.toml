@@ -1,0 +1,49 @@
+[package]
+name = "cairn-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cairn-tile = { path = "../crates/cairn-tile" }
+cairn-spatial = { path = "../crates/cairn-spatial" }
+cairn-text = { path = "../crates/cairn-text" }
+rkyv = "0.7"
+toml = "0.8"
+
+[[bin]]
+name = "fuzz_manifest"
+path = "fuzz_targets/fuzz_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_admin_archive"
+path = "fuzz_targets/fuzz_admin_archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_trigram_extract"
+path = "fuzz_targets/fuzz_trigram_extract.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_edit_distance"
+path = "fuzz_targets/fuzz_edit_distance.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+# Standalone — keep cairn-fuzz out of the parent workspace so a
+# `cargo build --workspace` doesn't try to pull libfuzzer-sys (which
+# only builds under `cargo fuzz`).

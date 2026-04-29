@@ -1,0 +1,64 @@
+name: fuzz
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'fuzz/**'
+      - 'crates/cairn-tile/**'
+      - 'crates/cairn-spatial/**'
+      - 'crates/cairn-text/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'fuzz/**'
+      - 'crates/cairn-tile/**'
+      - 'crates/cairn-spatial/**'
+      - 'crates/cairn-text/**'
+  schedule:
+    # Nightly deeper run.
+    - cron: '17 3 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_manifest
+          - fuzz_admin_archive
+          - fuzz_trigram_extract
+          - fuzz_edit_distance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Smoke-fuzz ${{ matrix.target }}
+        # 60 s on push / PR, 30 m on nightly cron.
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            DURATION=1800
+          else
+            DURATION=60
+          fi
+          cd fuzz
+          cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=$DURATION
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
