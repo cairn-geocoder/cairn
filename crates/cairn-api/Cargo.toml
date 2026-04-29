@@ -9,6 +9,14 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+# Forwards `cairn-parse/libpostal` so the libpostal-backed parse path
+# powers `/v1/parse` and `?autoparse=true`. Requires the C libpostal
+# library + ~2 GB language model at runtime (`LIBPOSTAL_DATA_DIR`
+# env var). See crates/cairn-parse/src/lib.rs.
+libpostal = ["cairn-parse/libpostal"]
+
 [dependencies]
 cairn-place = { workspace = true }
 cairn-text = { workspace = true }

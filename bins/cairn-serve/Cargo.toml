@@ -13,6 +13,14 @@ authors.workspace = true
 name = "cairn-serve"
 path = "src/main.rs"
 
+[features]
+default = []
+# `cargo build --features libpostal` enables CRF address parsing in
+# /v1/parse, /v1/expand, and ?autoparse=true. Requires libpostal C lib
+# + ~2 GB model on the runtime host. Build-from-source instructions
+# in crates/cairn-parse/src/lib.rs.
+libpostal = ["cairn-api/libpostal"]
+
 [dependencies]
 cairn-api = { workspace = true }
 cairn-text = { workspace = true }

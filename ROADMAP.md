@@ -276,10 +276,19 @@ total: ~3 weeks focused work for full superiority claim.
 - **2b. Address interpolation** *(~2 days)* — OSM `addr:interpolation`
   ways, synthetic Address places at import. Closes OA-sparse regions
   (most non-US territory). **HIGH**
-- **2c. libpostal FFI live wiring** *(Phase 6e, ~2 days)* — cargo
-  feature `libpostal`, `/v1/parse` endpoint, structured fallback when
-  free-text parse succeeds. Quality jump on non-English addresses
-  (`calle de alcalá 12, madrid`). **HIGH**
+- **2c. libpostal FFI live wiring** — **SHIPPED.** `cairn-parse` ships
+  a heuristic parser by default + `libpostal` cargo feature gating
+  `libpostal-sys` FFI bindings (CRF parser + multilingual normalizer,
+  ~2 GB model via `LIBPOSTAL_DATA_DIR`). `cairn-api` exposes
+  `/v1/parse?q=` (`ParsedAddress` shape: house_number / road / unit /
+  postcode / city / state / country) and `/v1/expand?q=` (Vec of
+  language-aware permutations). `/v1/search?autoparse=true` runs the
+  query through the parser, echoes `parsed` in the response, and
+  promotes `categories=postal` when the parser surfaces a postcode
+  with no road. cairn-api re-exports the `libpostal` feature so
+  `cargo build --features cairn-parse/libpostal` flips the whole
+  serve path to the CRF backend. 5 cairn-parse tests + 3 cairn-api
+  integration tests covering autoparse and parsed-field echo paths.
 - **2d. Diff apply** *(multi-day)* — apply minutely diffs to tile-scoped
   reindex (fetcher already shipped). **MEDIUM**
 - **2e. Bundle federation** *(~2 days)* — `cairn-serve --bundles

@@ -629,6 +629,16 @@ pub struct SearchQuery {
     /// queries (`Smyth → Smith`, `Mueller → Müller`).
     #[serde(default)]
     pub phonetic: Option<bool>,
+    /// When `true`, run the free-text query through
+    /// `cairn_parse::parse` first; if the parser returns at least one
+    /// useful structured component (postcode / city / country) those
+    /// components are echoed in the response under `parsed` and used
+    /// to derive an extra `?categories=postal` filter when a postcode
+    /// dominates. With the `libpostal` cargo feature enabled this
+    /// jumps quality on non-English addresses; without it, the
+    /// heuristic parser handles common Latin-script shapes.
+    #[serde(default)]
+    pub autoparse: Option<bool>,
     /// When `true`, every result includes an `explain` block listing
     /// the BM25 baseline plus each rerank multiplier. Off by default
     /// to keep payloads small. Useful for debugging ranking
@@ -642,6 +652,11 @@ pub struct SearchQuery {
 struct SearchResponse<'a> {
     query: &'a str,
     mode: &'a str,
+    /// When `?autoparse=true` was set and the parser found at least
+    /// one structured component, echo it back so callers can see
+    /// what the query was decomposed into.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parsed: Option<cairn_parse::ParsedAddress>,
     results: Vec<Hit>,
 }
 
@@ -676,7 +691,7 @@ async fn search(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let categories = params
+    let mut categories = params
         .categories
         .as_deref()
         .map(|s| {
@@ -686,6 +701,30 @@ async fn search(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+
+    // Optional autoparse: run free-text through the address parser
+    // (heuristic by default, libpostal CRF when the feature is on),
+    // echo structured fields back to caller, and bias the search
+    // when the parser surfaces high-signal components. Right now we
+    // promote the postcode → `categories=postal` filter when no
+    // explicit categories were passed AND the parser found a
+    // postcode but no road — typical "9490" or "9490 Vaduz" lookup
+    // shape. Future extensions: layer hint when country is recognized.
+    let parsed = if params.autoparse.unwrap_or(false) {
+        match cairn_parse::parse(q) {
+            Ok(p) => {
+                let postcode_only = p.postcode.is_some() && p.road.is_none();
+                if postcode_only && categories.is_empty() {
+                    categories.push("postal".into());
+                }
+                Some(p)
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
     let focus = match (params.focus_lat, params.focus_lon) {
         (Some(lat), Some(lon)) => Some(Coord { lon, lat }),
         _ => None,
@@ -762,6 +801,7 @@ async fn search(
                 Json(SearchResponse {
                     query: q,
                     mode: &mode_label,
+                    parsed,
                     results,
                 })
                 .into_response()

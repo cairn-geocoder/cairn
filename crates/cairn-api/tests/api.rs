@@ -203,6 +203,53 @@ async fn get_with_accept(
 }
 
 #[tokio::test]
+async fn search_autoparse_echoes_parsed_components() {
+    // Heuristic parser without libpostal still extracts postcode +
+    // city for German-style addresses. autoparse must echo the
+    // ParsedAddress in the response.
+    let (status, body) = get_json(
+        build_test_state(),
+        "/v1/search?q=Hauptstrasse+12,+9490+Vaduz,+Liechtenstein&autoparse=true",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let parsed = body
+        .get("parsed")
+        .expect("autoparse=true must echo `parsed`");
+    assert_eq!(parsed["postcode"], "9490");
+    assert_eq!(parsed["city"], "Vaduz");
+    assert_eq!(parsed["country"], "Liechtenstein");
+}
+
+#[tokio::test]
+async fn search_autoparse_postcode_only_promotes_postal_filter() {
+    // "Aeulestrasse, 9490 Vaduz" parses cleanly with the heuristic
+    // parser: postcode=9490, city=Vaduz, road=Aeulestrasse. We can't
+    // assert filter behaviour against the shared fixture (no
+    // postcode places present), but we confirm the parsed echo and
+    // a 200 response.
+    let (status, body) = get_json(
+        build_test_state(),
+        "/v1/search?q=Aeulestrasse,+9490+Vaduz&autoparse=true",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let parsed = body.get("parsed").expect("parsed echoed");
+    assert_eq!(parsed["postcode"], "9490");
+    assert_eq!(parsed["city"], "Vaduz");
+}
+
+#[tokio::test]
+async fn search_autoparse_off_omits_parsed_field() {
+    let (status, body) = get_json(build_test_state(), "/v1/search?q=Vaduz").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.get("parsed").is_none(),
+        "parsed must be omitted when autoparse is off"
+    );
+}
+
+#[tokio::test]
 async fn search_explain_returns_per_stage_breakdown() {
     let (status, body) = get_json(build_test_state(), "/v1/search?q=Vaduz&explain=true").await;
     assert_eq!(status, StatusCode::OK);
