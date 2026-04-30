@@ -69,6 +69,53 @@ pub struct Config {
     pub tags: TagPolicy,
 }
 
+impl Config {
+    /// Overlay caller-set fields onto a preset so the caller's wins
+    /// where set and the preset fills in the rest. Centralizes the
+    /// "is this field unset?" rules per field type so wrappers
+    /// (e.g. `cairn-import-overture`'s theme presets) don't each
+    /// re-implement them.
+    ///
+    /// "Unset" rules per field:
+    /// - [`String`] columns: empty string.
+    /// - [`Option`] columns: `None`.
+    /// - [`Vec`] policies: empty.
+    pub fn fill_defaults_from(&mut self, preset: Config) {
+        let Config {
+            map: pmap,
+            defaults: pdefaults,
+            tags: ptags,
+        } = preset;
+        if self.map.geometry.is_empty() {
+            self.map.geometry = pmap.geometry;
+        }
+        if self.map.lon.is_none() {
+            self.map.lon = pmap.lon;
+        }
+        if self.map.lat.is_none() {
+            self.map.lat = pmap.lat;
+        }
+        if self.map.name.is_empty() {
+            self.map.name = pmap.name;
+        }
+        if self.map.kind.is_none() {
+            self.map.kind = pmap.kind;
+        }
+        if self.map.lang.is_none() {
+            self.map.lang = pmap.lang;
+        }
+        if self.defaults.kind.is_empty() {
+            self.defaults.kind = pdefaults.kind;
+        }
+        if self.defaults.lang.is_empty() {
+            self.defaults.lang = pdefaults.lang;
+        }
+        if self.tags.keep.is_empty() {
+            self.tags.keep = ptags.keep;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ColumnMap {
     /// Column carrying the WKB-encoded geometry. GeoParquet
@@ -441,8 +488,12 @@ pub fn decode_wkb_point(bytes: &[u8]) -> Result<(f64, f64), ImportError> {
         payload_off += 4;
         geom_type &= !EWKB_SRID_FLAG;
     }
-    // Lower 8 bits = base type. 1 = Point, 0xF1 in some non-standard
-    // encodings (we ignore Z/M dimensions but accept them).
+    // Mask off Z/M dimension flags. ISO WKB type codes are small
+    // ints (1..=7) and PostGIS encodes Z/M variants as `1000+type`
+    // (PointZ=1001), `2000+type` (PointM=2001), `3000+type` (ZM).
+    // 16 bits cover everything up to 3xxx; an 8-bit mask would
+    // clip PolygonZ=1003 → 0xEB which is wrong. We discard the
+    // dimension itself (no z/m fields parsed) but accept the row.
     let base = geom_type & 0xFFFF;
     if base != 1 {
         return Err(ImportError::Wkb(format!(
@@ -487,13 +538,6 @@ fn build_place(
         admin_path: Vec::new(),
         tags: tags.to_vec(),
     }))
-}
-
-// Silence the unused-import lint that fires on some configs of the
-// arrow_array re-exports.
-#[allow(dead_code)]
-fn _suppress_unused(b: &arrow_array::BooleanArray) -> bool {
-    !b.is_null(0)
 }
 
 #[cfg(test)]

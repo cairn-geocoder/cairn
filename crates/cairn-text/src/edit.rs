@@ -56,9 +56,13 @@ pub fn myers_distance(pattern: &str, text: &str) -> Option<usize> {
             peq.push((ch, bit));
         }
     }
-    let zero_bits: u64 = 0;
     let last_bit: u64 = 1u64 << (m - 1);
 
+    // Initial `pv` is "all m low bits set". `(1 << 64) - 1` overflows
+    // (shift exponent equals register width), so we sub `u64::MAX`
+    // directly when `m == 64`. Anything below 64 takes the cheap
+    // bitmask path. This is a correctness guard, not perf — Myers'
+    // bitparallel algorithm requires every position bit to start hot.
     let mut pv: u64 = if m == 64 { u64::MAX } else { (1u64 << m) - 1 };
     let mut mv: u64 = 0;
     let mut score: usize = m;
@@ -68,7 +72,7 @@ pub fn myers_distance(pattern: &str, text: &str) -> Option<usize> {
             .iter()
             .find(|(ch, _)| *ch == c)
             .map(|(_, b)| *b)
-            .unwrap_or(zero_bits);
+            .unwrap_or(0);
         let xv = eq | mv;
         let xh = (((eq & pv).wrapping_add(pv)) ^ pv) | eq;
         let mut ph = mv | !(xh | pv);

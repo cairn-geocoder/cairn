@@ -65,14 +65,23 @@ pub enum ImportError {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Theme {
     /// `theme=places` — points of interest. Default kind = poi.
+    /// CLI aliases parsed by [`Theme::parse`]: `places`, `place`,
+    /// `poi`, `pois` (case-insensitive).
     Places,
     /// `theme=addresses` — house-number / street / postcode points.
-    /// Default kind = address.
+    /// Default kind = address. CLI aliases parsed by
+    /// [`Theme::parse`]: `addresses`, `address` (case-insensitive).
     Addresses,
 }
 
 impl Theme {
-    /// Parse a CLI-friendly token. Accepts `places` / `addresses`.
+    /// Parse a CLI-friendly token. Whitespace-trimmed, lowercased, then
+    /// matched against:
+    /// - [`Theme::Places`] → `places`, `place`, `poi`, `pois`
+    /// - [`Theme::Addresses`] → `addresses`, `address`
+    ///
+    /// Returns `None` for any other input — callers surface that as a
+    /// usage error rather than guessing.
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
             "places" | "place" | "poi" | "pois" => Some(Self::Places),
@@ -148,26 +157,11 @@ pub fn import(path: &Path, theme: Theme) -> Result<Vec<Place>, ImportError> {
 
 /// Like [`import`] but lets the caller override individual fields of
 /// the theme's default column mapping (e.g. point at a custom
-/// `display_name` column instead of `name`).
+/// `display_name` column instead of `name`). Overlay rules are
+/// centralized in [`Config::fill_defaults_from`] so adding a new
+/// `Config` field doesn't require editing this wrapper.
 pub fn import_with(path: &Path, theme: Theme, mut cfg: Config) -> Result<Vec<Place>, ImportError> {
-    let preset = theme.parquet_config();
-    // Overlay caller config on top of preset — caller-set fields win,
-    // unset fields fall back to the theme defaults.
-    if cfg.map.geometry.is_empty() {
-        cfg.map.geometry = preset.map.geometry;
-    }
-    if cfg.map.name.is_empty() {
-        cfg.map.name = preset.map.name;
-    }
-    if cfg.map.kind.is_none() {
-        cfg.map.kind = preset.map.kind;
-    }
-    if cfg.defaults.kind.is_empty() {
-        cfg.defaults.kind = preset.defaults.kind;
-    }
-    if cfg.tags.keep.is_empty() {
-        cfg.tags.keep = preset.tags.keep;
-    }
+    cfg.fill_defaults_from(theme.parquet_config());
     Ok(cairn_import_parquet::import(path, &cfg)?)
 }
 

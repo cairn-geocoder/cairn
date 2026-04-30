@@ -181,11 +181,12 @@ pub struct Place {
 }
 
 /// Maximum distance between two Place centroids that still counts as
-/// the same physical entity for dedup purposes. 100 m comfortably
+/// the same physical entity for dedup purposes. 150 m comfortably
 /// covers OSM's common "entrance node a few dozen meters off the
 /// building polygon centroid" pattern (e.g. "Post Vaduz" at 56 m apart)
-/// without merging genuinely distinct same-name POIs in dense cities,
-/// which are typically separated by hundreds of meters.
+/// plus the larger drift seen between WoF/OSM sources for the same
+/// neighborhood, without merging genuinely distinct same-name POIs in
+/// dense cities, which are typically separated by hundreds of meters.
 const DEDUP_RADIUS_M: f64 = 150.0;
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 
@@ -249,6 +250,15 @@ pub fn dedupe_places(items: Vec<(Place, SourceKind)>, priority: &[SourceKind]) -
             kept.extend(members.into_iter().map(|(idx, p, _)| (idx, p)));
             continue;
         }
+        // `absorbed[k]` means "k has been folded into some earlier
+        // cluster — skip it as an outer-loop seed". Both losers AND
+        // the winner end up with `absorbed = true` after the cluster
+        // closes; that's intentional. The surviving Place is captured
+        // independently by cloning `members[winner].1` into `kept`,
+        // so absorbing the winner only prevents it from re-seeding a
+        // new cluster on a later iteration. Skipping the
+        // absorbed-on-self mark would let the winner appear again as
+        // an outer-loop seed and re-emit duplicates.
         let mut absorbed = vec![false; members.len()];
         for i in 0..members.len() {
             if absorbed[i] {

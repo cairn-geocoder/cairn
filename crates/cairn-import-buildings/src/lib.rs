@@ -251,7 +251,7 @@ pub fn decode_wkb_polygons(bytes: &[u8]) -> Result<Vec<Vec<[f64; 2]>>, ImportErr
                 // Each sub-polygon has its own byte-order + type prefix.
                 let mut sub = WkbCursor::sub(&mut cur)?;
                 let (sub_type, _) = sub.read_header()?;
-                if (sub_type & 0xFFFF) != 3 {
+                if sub_type != 3 {
                     return Err(ImportError::Wkb(format!(
                         "MultiPolygon entry not a Polygon (got {sub_type})"
                     )));
@@ -347,8 +347,11 @@ impl<'a> WkbCursor<'a> {
     }
 
     /// Read byte-order + geometry-type. Strips the EWKB SRID flag
-    /// (we trust WGS84). Returns the masked geometry type and the
-    /// byte order as captured.
+    /// (we trust WGS84) and the high-bit Z/M flags. Rejects Z/M
+    /// types outright — building footprints in the wild are 2D and
+    /// the per-vertex reader below assumes 16-byte (x,y) records,
+    /// so accepting a PolygonZ here would mis-align every vertex.
+    /// Returns the planar 2D geometry type and the byte order.
     fn read_header(&mut self) -> Result<(u32, bool), ImportError> {
         let bo = self.read_byte()?;
         self.le = match bo {
@@ -362,15 +365,28 @@ impl<'a> WkbCursor<'a> {
         };
         let mut t = self.read_u32()?;
         const EWKB_SRID_FLAG: u32 = 0x2000_0000;
+        const EWKB_Z_FLAG: u32 = 0x8000_0000;
+        const EWKB_M_FLAG: u32 = 0x4000_0000;
         if t & EWKB_SRID_FLAG != 0 {
             // Skip 4-byte SRID we don't use.
             let _ = self.read_u32()?;
             t &= !EWKB_SRID_FLAG;
         }
-        // Mask off Z/M dimension flags (0x80000000, 0x40000000) and
-        // PostGIS-style "1000+type" Z/M variants — we only care about
-        // the planar ring shape.
-        Ok((t & 0xFFFF, self.le))
+        if t & (EWKB_Z_FLAG | EWKB_M_FLAG) != 0 {
+            return Err(ImportError::Wkb(format!(
+                "Z/M-flagged WKB rejected (type=0x{t:08x}); 2D only"
+            )));
+        }
+        // ISO and PostGIS 2D types fit in the low byte. PostGIS Z/M
+        // variants encode as `1000+type` / `2000+type` / `3000+type`
+        // — those are caught here too because the type lands above
+        // 0xFF.
+        if t > 0xFF {
+            return Err(ImportError::Wkb(format!(
+                "non-2D WKB type rejected (type={t})"
+            )));
+        }
+        Ok((t, self.le))
     }
 
     /// Read a Polygon body (post-header): num_rings + each ring's

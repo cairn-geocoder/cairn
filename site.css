@@ -120,6 +120,10 @@ img, svg { display: block; max-width: 100%; }
   color: var(--ink-3);
   padding: 6px 10px;
 }
+/* gap:1px is intentional — keeps adjacent active/hover backgrounds
+   from touching while preserving the dense-stack rhythm used by
+   Linear / Notion sidebars. Larger gaps (2-4px) feel airy and break
+   the column flow at this row height (~28px). */
 .sb-list {
   list-style: none;
   padding: 0;
@@ -175,6 +179,7 @@ img, svg { display: block; max-width: 100%; }
   padding: 0 10px;
   font-weight: 500;
 }
+/* gap:1px matches the sidebar list — same visual rhythm reasoning. */
 .toc ul {
   list-style: none;
   padding: 0;
@@ -296,6 +301,11 @@ img, svg { display: block; max-width: 100%; }
   margin-left: 4px;
 }
 .hero-stat-foot a:hover { border-bottom-style: solid; }
+/* Hero-stats-only breakpoint: collapses 4-up to 2-up before the
+   global layout switches to single-column at 820px. The 4-up grid
+   starts crowding around 720px (each cell <140px wide), well before
+   the rest of the page wants to reflow — kept separate from the
+   shared 820/1180 breakpoints below for that reason. */
 @media (max-width: 720px) {
   .hero-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -565,8 +575,10 @@ img, svg { display: block; max-width: 100%; }
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 14px;
-  /* Required so long code lines inside .ex don't inflate the
-     grid track and bleed across the right-hand TOC. */
+  /* Allow the grid track to shrink below content width so long
+     code lines inside `.ex` don't inflate the column and overflow
+     into adjacent layout areas (e.g. the docs TOC, when the strip
+     is rendered inside a 3-column docs layout). */
   min-width: 0;
 }
 .ex {
@@ -726,7 +738,21 @@ table.api code { font-family: var(--mono); }
   margin: 16px 0;
 }
 
-/* Responsive — collapse sidebars below ~1100px */
+/* Responsive — collapse sidebars below ~1100px.
+
+   Accessibility note: `display: none` on `.toc` at <1180px is
+   acceptable: in-page anchors stay reachable via screen-reader
+   heading rotor + scroll, and the same anchor IDs are linked
+   from the sidebar that's still visible.
+
+   At <820px the topnav primary nav, sidebar, and TOC are *all*
+   hidden — that's a real navigation gap on phones (only the brand
+   link + GitHub badge survive). We don't have a dedicated mobile
+   drawer yet; tracked as a TODO in the v0.4 polish backlog. The
+   page itself remains readable in single-column flow, but inter-page
+   navigation requires browser back/forward or known URLs. The
+   GitHub link in the topnav also acts as an explicit "leave the
+   site" affordance for assistive tech. */
 @media (max-width: 1180px) {
   .layout { grid-template-columns: 240px 1fr; }
   .toc { display: none; }
