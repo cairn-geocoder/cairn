@@ -88,6 +88,7 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Build a bundle from configured sources.
     Build {
@@ -119,6 +120,17 @@ enum Command {
         /// first outer ring.
         #[arg(long)]
         geojson: Vec<PathBuf>,
+        /// Phase 7b lane J — GeoParquet files. WKB Point geometries
+        /// in the `geometry` column (default), with `name` + optional
+        /// `kind` columns. Pass repeatedly for batch ingest. Foundation
+        /// for Overture Maps (lane K).
+        #[arg(long)]
+        parquet: Vec<PathBuf>,
+        /// Phase 7b lane J — TOML config file describing column
+        /// mapping for the `--parquet` inputs. Optional; defaults
+        /// match the GeoParquet convention (`geometry`, `name`).
+        #[arg(long)]
+        parquet_config: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
         #[arg(long, default_value = "alpha-bundle")]
@@ -323,6 +335,8 @@ fn main() -> Result<()> {
             postcodes,
             csv,
             geojson,
+            parquet,
+            parquet_config,
             out,
             bundle_id,
             no_zstd,
@@ -338,6 +352,8 @@ fn main() -> Result<()> {
             postcodes,
             csv,
             geojson,
+            parquet,
+            parquet_config,
             out,
             bundle_id,
             source_priority: parse_source_priority(&source_priority)?,
@@ -776,6 +792,8 @@ struct BuildArgs {
     postcodes: Option<PathBuf>,
     csv: Vec<PathBuf>,
     geojson: Vec<PathBuf>,
+    parquet: Vec<PathBuf>,
+    parquet_config: Option<PathBuf>,
     out: PathBuf,
     bundle_id: String,
     compression: TileCompression,
@@ -994,6 +1012,38 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             version: path.display().to_string(),
             blake3: hash_file(path)?,
         });
+    }
+
+    // Phase 7b lane J — GeoParquet inputs. Single TOML config file
+    // applies to every --parquet path; separate per-file configs are
+    // possible by passing one parquet at a time.
+    if !args.parquet.is_empty() {
+        let parquet_cfg = match args.parquet_config.as_ref() {
+            Some(p) => cairn_import_parquet::Config {
+                ..toml::from_str(
+                    &std::fs::read_to_string(p)
+                        .with_context(|| format!("read parquet config {}", p.display()))?,
+                )
+                .with_context(|| format!("parse parquet config {}", p.display()))?
+            },
+            None => cairn_import_parquet::Config::default(),
+        };
+        for path in &args.parquet {
+            tracing::info!(path = %path.display(), "ingesting GeoParquet");
+            let imported = cairn_import_parquet::import(path, &parquet_cfg)
+                .with_context(|| format!("GeoParquet import failed: {}", path.display()))?;
+            tracing::info!(count = imported.len(), "GeoParquet places imported");
+            places.extend(
+                imported
+                    .into_iter()
+                    .map(|p| (p, cairn_place::SourceKind::Generic)),
+            );
+            sources.push(SourceVersion {
+                name: format!("parquet:{}", path.display()),
+                version: path.display().to_string(),
+                blake3: hash_file(path)?,
+            });
+        }
     }
 
     if !args.source_priority.is_empty() {

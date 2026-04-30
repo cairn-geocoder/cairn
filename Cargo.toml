@@ -13,6 +13,7 @@ members = [
     "crates/cairn-import-oa",
     "crates/cairn-import-geonames",
     "crates/cairn-import-generic",
+    "crates/cairn-import-parquet",
     "crates/cairn-api",
     "bins/cairn-build",
     "bins/cairn-serve",
@@ -40,6 +41,7 @@ cairn-import-wof = { version = "0.1.0", path = "crates/cairn-import-wof" }
 cairn-import-oa = { version = "0.1.0", path = "crates/cairn-import-oa" }
 cairn-import-geonames = { version = "0.1.0", path = "crates/cairn-import-geonames" }
 cairn-import-generic = { version = "0.1.0", path = "crates/cairn-import-generic" }
+cairn-import-parquet = { version = "0.1.0", path = "crates/cairn-import-parquet" }
 
 # Core
 serde = { version = "1", features = ["derive"] }
@@ -59,6 +61,14 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 
 # Storage / mmap / serialization
 memmap2 = "0.9"
+# Phase 7b lane J — GeoParquet loader. parquet's `arrow` feature
+# pulls a chunk of the arrow ecosystem (record-batch readers,
+# column-typed cast paths). Worth the deps cost: GeoParquet is the
+# ingest path Overture + Foursquare OS Places + Source Cooperative
+# all standardize on, and arrow's column readers are an order of
+# magnitude faster than the row-by-row API.
+parquet = { version = "54", features = ["arrow"] }
+arrow-array = "54"
 arc-swap = "1"
 rkyv = { version = "0.7", features = ["validation"] }
 bytecheck = "0.6"
