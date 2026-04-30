@@ -693,6 +693,7 @@ dependencies = [
  "cairn-place",
  "cairn-tile",
  "flate2",
+ "memchr",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
