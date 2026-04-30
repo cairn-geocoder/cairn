@@ -923,6 +923,7 @@ dependencies = [
  "fastembed",
  "fst",
  "rphonetic",
+ "rustc-hash",
  "serde",
  "serde_json",
  "tantivy",

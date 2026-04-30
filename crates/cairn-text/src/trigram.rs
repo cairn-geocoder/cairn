@@ -19,6 +19,8 @@
 //! `vienna` produces `^vi`, `vie`, `ien`, `enn`, `nna`, `na$`). That
 //! padding lifts recall on short tokens and prefix-typed queries.
 
+use rustc_hash::FxHashSet;
+#[cfg(test)]
 use std::collections::HashSet;
 
 const PAD: char = '\x01'; // non-printable boundary marker
@@ -55,8 +57,16 @@ fn extract(s: &str) -> Vec<String> {
     if chars.len() < TRIGRAM_LEN {
         return Vec::new();
     }
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut out: Vec<String> = Vec::new();
+    // Capacity hint: at most `chars.len() - TRIGRAM_LEN + 1` distinct
+    // trigrams. Pre-sizing both the seen-set and the output Vec
+    // skips a few rehash + realloc passes on long names. FxHashSet
+    // avoids the cryptographic SipHash for trigram strings — these
+    // aren't keyed on user input adversarially, so the security
+    // guarantee is wasted budget.
+    let cap = chars.len().saturating_sub(TRIGRAM_LEN - 1);
+    let mut seen: FxHashSet<String> =
+        FxHashSet::with_capacity_and_hasher(cap, Default::default());
+    let mut out: Vec<String> = Vec::with_capacity(cap);
     for w in chars.windows(TRIGRAM_LEN) {
         let mut buf = String::with_capacity(TRIGRAM_LEN * 4);
         buf.extend(w.iter());
