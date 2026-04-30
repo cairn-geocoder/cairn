@@ -522,9 +522,14 @@ impl AdminIndex {
         }
     }
 
-    /// Open a partitioned admin index with the default LRU cache size.
+    /// Open a partitioned admin index with an adaptively-sized LRU
+    /// cache. Cap is `DEFAULT_TILE_CACHE_ENTRIES` (1024) but the cache
+    /// shrinks to `entries.len()` for small bundles — a country
+    /// bundle with 12 admin tiles allocates 12 LRU slots, not 1024.
+    /// Pass `open_with_cache` directly to override.
     pub fn open(bundle_root: &Path, entries: Vec<SpatialTileEntry>) -> Self {
-        Self::open_with_cache(bundle_root, entries, DEFAULT_TILE_CACHE_ENTRIES)
+        let cache = entries.len().clamp(1, DEFAULT_TILE_CACHE_ENTRIES);
+        Self::open_with_cache(bundle_root, entries, cache)
     }
 
     /// Open a partitioned admin index with a custom LRU cache size.
@@ -720,8 +725,12 @@ impl NearestIndex {
         }
     }
 
+    /// Open a partitioned nearest-fallback index with an adaptive
+    /// LRU cache (capped at `DEFAULT_TILE_CACHE_ENTRIES = 1024`,
+    /// shrunk to `entries.len()` for small bundles).
     pub fn open(bundle_root: &Path, entries: Vec<SpatialTileEntry>) -> Self {
-        Self::open_with_cache(bundle_root, entries, DEFAULT_TILE_CACHE_ENTRIES)
+        let cache = entries.len().clamp(1, DEFAULT_TILE_CACHE_ENTRIES);
+        Self::open_with_cache(bundle_root, entries, cache)
     }
 
     pub fn open_with_cache(

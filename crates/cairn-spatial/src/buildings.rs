@@ -432,9 +432,11 @@ impl BuildingIndex {
 
     /// Open a partitioned building index from a manifest entry list
     /// rooted at `bundle_root`. Tile blobs load lazily on first
-    /// query touch.
+    /// query touch. LRU cache adaptively sized to
+    /// `min(entries.len(), DEFAULT_BUILDING_CACHE_ENTRIES = 256)`.
     pub fn open(bundle_root: &Path, entries: Vec<SpatialTileEntry>) -> Self {
-        Self::open_with_cache(bundle_root, entries, DEFAULT_BUILDING_CACHE_ENTRIES)
+        let cache = entries.len().clamp(1, DEFAULT_BUILDING_CACHE_ENTRIES);
+        Self::open_with_cache(bundle_root, entries, cache)
     }
 
     pub fn open_with_cache(
