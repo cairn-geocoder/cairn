@@ -349,7 +349,7 @@ impl RTreeObject for BuildingTileEnvelope {
 }
 
 enum BuildingTileSource {
-    Eager(Arc<Vec<Building>>),
+    Eager(Arc<[Building]>),
     Disk(PathBuf),
 }
 
@@ -360,13 +360,13 @@ enum BuildingTileSource {
 pub struct BuildingIndex {
     slots: Vec<BuildingTileSource>,
     tree: RTree<BuildingTileEnvelope>,
-    cache: Mutex<LruCache<usize, Arc<Vec<Building>>>>,
+    cache: Mutex<LruCache<usize, Arc<[Building]>>>,
     total_items: u64,
 }
 
-fn read_building_tile(path: &Path) -> Arc<Vec<Building>> {
+fn read_building_tile(path: &Path) -> Arc<[Building]> {
     match read_layer(path) {
-        Ok(layer) => Arc::new(
+        Ok(layer) => Arc::from(
             layer
                 .buildings
                 .iter()
@@ -375,13 +375,13 @@ fn read_building_tile(path: &Path) -> Arc<Vec<Building>> {
         ),
         Err(err) => {
             debug!(?err, ?path, "building tile read failed");
-            Arc::new(Vec::new())
+            Arc::from(Vec::new())
         }
     }
 }
 
 impl BuildingIndex {
-    fn load_slot(&self, idx: usize) -> Arc<Vec<Building>> {
+    fn load_slot(&self, idx: usize) -> Arc<[Building]> {
         match &self.slots[idx] {
             BuildingTileSource::Eager(arc) => arc.clone(),
             BuildingTileSource::Disk(path) => {
@@ -418,7 +418,7 @@ impl BuildingIndex {
             }
             AABB::from_corners([mn_lon, mn_lat], [mx_lon, mx_lat])
         };
-        let slot = BuildingTileSource::Eager(Arc::new(layer.buildings));
+        let slot = BuildingTileSource::Eager(Arc::from(layer.buildings));
         let tree = RTree::bulk_load(vec![BuildingTileEnvelope { aabb, slot_idx: 0 }]);
         Self {
             slots: vec![slot],

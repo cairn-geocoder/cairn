@@ -650,35 +650,35 @@ fn archived_ref_bbox_area(
 // ============================================================
 
 enum PointTileSource {
-    Eager(Arc<Vec<PlacePoint>>),
+    Eager(Arc<[PlacePoint]>),
     Disk(PathBuf),
 }
 
 pub struct NearestIndex {
     slots: Vec<PointTileSource>,
     tree: RTree<TileEnvelope>,
-    cache: Mutex<LruCache<usize, Arc<Vec<PlacePoint>>>>,
+    cache: Mutex<LruCache<usize, Arc<[PlacePoint]>>>,
     total_items: u64,
 }
 
-fn read_point_tile(path: &Path) -> Arc<Vec<PlacePoint>> {
+fn read_point_tile(path: &Path) -> Arc<[PlacePoint]> {
     match std::fs::read(path) {
         Ok(bytes) => match bincode::deserialize::<PointLayer>(&bytes) {
-            Ok(layer) => Arc::new(layer.points),
+            Ok(layer) => Arc::from(layer.points),
             Err(err) => {
                 debug!(?err, ?path, "point tile decode failed");
-                Arc::new(Vec::new())
+                Arc::from(Vec::new())
             }
         },
         Err(err) => {
             debug!(?err, ?path, "point tile read failed");
-            Arc::new(Vec::new())
+            Arc::from(Vec::new())
         }
     }
 }
 
 impl NearestIndex {
-    fn load_slot(&self, idx: usize) -> Arc<Vec<PlacePoint>> {
+    fn load_slot(&self, idx: usize) -> Arc<[PlacePoint]> {
         match &self.slots[idx] {
             PointTileSource::Eager(arc) => arc.clone(),
             PointTileSource::Disk(path) => {
@@ -713,7 +713,7 @@ impl NearestIndex {
             }
             AABB::from_corners([min_lon, min_lat], [max_lon, max_lat])
         };
-        let slot = PointTileSource::Eager(Arc::new(layer.points));
+        let slot = PointTileSource::Eager(Arc::from(layer.points));
         let tree = RTree::bulk_load(vec![TileEnvelope { aabb, slot_idx: 0 }]);
         Self {
             slots: vec![slot],
