@@ -24,7 +24,7 @@
 //!
 //! ## Why polygon-only here, not in `cairn-import-parquet`?
 //!
-//! Lane J's parquet loader emits [`Place`] rows (point semantics).
+//! Lane J's parquet loader emits `Place` rows (point semantics).
 //! Buildings are not Places — they are an **augmenter layer** that
 //! rides alongside Places in the bundle. Mixing a polygon-emitting
 //! path into the Place loader would force every caller to filter,

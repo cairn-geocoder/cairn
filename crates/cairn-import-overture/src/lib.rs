@@ -2,7 +2,7 @@
 //!
 //! Phase 7b lane K. Wraps [`cairn_import_parquet`] with the column
 //! mapping conventions Overture's monthly drops use, and stamps
-//! [`SourceKind::Overture`] on every emitted record so downstream
+//! [`cairn_place::SourceKind::Overture`] on every emitted record so downstream
 //! dedup + license attribution stays correct.
 //!
 //! ## Supported themes
