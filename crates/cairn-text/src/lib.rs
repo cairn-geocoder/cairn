@@ -524,7 +524,18 @@ where
                 trigrams_seen.insert(tg);
             }
             if !n.lang.is_empty() {
-                langs_seen.insert(n.lang.clone());
+                // Wikidata aliases land here as `<lang>_alt` (e.g.
+                // `en_alt` for an English alias of a French Place).
+                // Normalize to the canonical lang so a `?lang=en`
+                // query still boosts Places that only carry English
+                // via aliases. The `_alt` form itself is dropped from
+                // `lang_codes`; the alias *value* is still indexed in
+                // every name field above, so it remains searchable.
+                let canonical = n
+                    .lang
+                    .strip_suffix("_alt")
+                    .unwrap_or(n.lang.as_str());
+                langs_seen.insert(canonical.to_string());
             }
         }
         for code in phonetic_seen {
@@ -2092,6 +2103,55 @@ mod tests {
             "lang=de must promote the German-tagged record, got {hits:?}"
         );
         assert!(hits[0].langs.iter().any(|l| l == "de"));
+    }
+
+    #[test]
+    fn alias_alt_lang_normalizes_into_canonical_lang_codes() {
+        // A Place tagged `wikidata=Q...` whose enrichment ships an
+        // English alias must surface for `?lang=en` queries even
+        // though the canonical name carries no `en` LocalizedName.
+        // The wikidata augmenter writes aliases as `<lang>_alt`; the
+        // indexer must strip `_alt` when populating `lang_codes`.
+        let dir = tempdir_for_test();
+        let place = Place {
+            id: PlaceId::new(1, 1, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![
+                LocalizedName {
+                    lang: "default".into(),
+                    value: "München".into(),
+                },
+                LocalizedName {
+                    lang: "en_alt".into(),
+                    value: "Munich".into(),
+                },
+            ],
+            centroid: Coord {
+                lon: 11.58,
+                lat: 48.13,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        build_index(&dir, vec![place]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+        // Search hits via the alias text.
+        let opts = SearchOptions {
+            prefer_lang: Some("en".into()),
+            ..Default::default()
+        };
+        let hits = idx.search("Munich", &opts).unwrap();
+        assert_eq!(hits.len(), 1);
+        // Crucially: lang_codes carries `en` (canonical), not `en_alt`.
+        assert!(
+            hits[0].langs.iter().any(|l| l == "en"),
+            "expected canonical `en` in langs, got {:?}",
+            hits[0].langs
+        );
+        assert!(
+            !hits[0].langs.iter().any(|l| l == "en_alt"),
+            "`_alt` suffix must be stripped before indexing"
+        );
     }
 
     #[test]
