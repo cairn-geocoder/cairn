@@ -36,8 +36,9 @@
 use cairn_place::{LocalizedName, Place, PlaceKind};
 use flate2::read::GzDecoder;
 use memchr::memmem;
+pub use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -139,8 +140,8 @@ pub struct AugmentStats {
 /// Walk a `Vec<Place>` (one tile's contents) and extract every Q-id
 /// from `tags`. The OSM importer stamps `wikidata=Q1234` on POIs +
 /// admin areas that carry the upstream tag.
-pub fn collect_qids(places: &[Place]) -> HashSet<String> {
-    let mut out = HashSet::new();
+pub fn collect_qids(places: &[Place]) -> FxHashSet<String> {
+    let mut out = FxHashSet::default();
     for p in places {
         for (k, v) in &p.tags {
             if k == "wikidata" && v.starts_with('Q') {
@@ -160,8 +161,8 @@ pub fn collect_qids(places: &[Place]) -> HashSet<String> {
 /// and skipped — partial dumps are common in operator workflows.
 pub fn stream_dump(
     path: &Path,
-    wanted: &HashSet<String>,
-) -> Result<HashMap<String, WikidataEntry>, WikidataError> {
+    wanted: &FxHashSet<String>,
+) -> Result<FxHashMap<String, WikidataEntry>, WikidataError> {
     info!(path = %path.display(), wanted = wanted.len(), "streaming Wikidata dump");
     let f = File::open(path)?;
     let reader: Box<dyn Read> = if path
@@ -185,7 +186,8 @@ pub fn stream_dump(
     let id_needle = memmem::Finder::new(b"\"id\":\"");
     let quote_needle = memmem::Finder::new(b"\"");
 
-    let mut out: HashMap<String, WikidataEntry> = HashMap::with_capacity(wanted.len().min(1 << 20));
+    let mut out: FxHashMap<String, WikidataEntry> =
+        FxHashMap::with_capacity_and_hasher(wanted.len().min(1 << 20), Default::default());
     let mut lines_seen: u64 = 0;
     let mut lines_kept: u64 = 0;
     for line in buffered.lines() {
@@ -245,7 +247,7 @@ pub fn stream_dump(
 /// SIMD `memmem::Finder` for both substring lookups.
 fn line_qid_in_set(
     line: &str,
-    wanted: &HashSet<String>,
+    wanted: &FxHashSet<String>,
     id_needle: &memmem::Finder<'_>,
     quote_needle: &memmem::Finder<'_>,
 ) -> bool {
@@ -270,7 +272,7 @@ fn line_qid_in_set(
 /// individual edits the caller can sum into `AugmentStats`.
 pub fn apply_to_places(
     places: &mut [Place],
-    entries: &HashMap<String, WikidataEntry>,
+    entries: &FxHashMap<String, WikidataEntry>,
     stats: &mut AugmentStats,
 ) {
     for p in places.iter_mut() {
@@ -550,7 +552,7 @@ mod tests {
 
     #[test]
     fn line_qid_in_set_finds_id_quickly() {
-        let mut wanted = HashSet::new();
+        let mut wanted: FxHashSet<String> = FxHashSet::default();
         wanted.insert("Q42".to_string());
         let id_needle = memmem::Finder::new(b"\"id\":\"");
         let quote_needle = memmem::Finder::new(b"\"");
@@ -600,7 +602,7 @@ mod tests {
             p131_parent: Some("Q5".into()),
             p31_types: vec![],
         };
-        let mut entries = HashMap::new();
+        let mut entries: FxHashMap<String, WikidataEntry> = FxHashMap::default();
         entries.insert("Q42".to_string(), entry);
         let mut stats = AugmentStats::default();
         let mut places = vec![p.clone()];
@@ -638,7 +640,7 @@ mod tests {
             // First non-mapped Q-id ignored, second matches the table.
             p31_types: vec!["Q9999999".into(), "Q515".into()], // Q515 = city
         };
-        let mut entries = HashMap::new();
+        let mut entries: FxHashMap<String, WikidataEntry> = FxHashMap::default();
         entries.insert("Q42".to_string(), entry);
         let mut stats = AugmentStats::default();
         let mut places = vec![p.clone()];
@@ -665,7 +667,7 @@ mod tests {
             p131_parent: None,
             p31_types: vec!["Q515".into()], // city — would demote Country to City
         };
-        let mut entries = HashMap::new();
+        let mut entries: FxHashMap<String, WikidataEntry> = FxHashMap::default();
         entries.insert("Q42".to_string(), entry);
         let mut stats = AugmentStats::default();
         let mut places = vec![p];

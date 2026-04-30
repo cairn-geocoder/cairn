@@ -19,5 +19,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 flate2 = { workspace = true }
 memchr = "2"
+rustc-hash = "2"
 thiserror = { workspace = true }
 tracing = { workspace = true }

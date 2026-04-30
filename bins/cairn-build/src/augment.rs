@@ -33,7 +33,7 @@ use cairn_spatial::buildings as bspatial;
 use cairn_tile::{
     encode_tile, read_manifest, read_tile, write_manifest, Level, Manifest, TileEntry,
 };
-use std::collections::HashSet;
+use cairn_augment_wikidata::FxHashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
@@ -249,7 +249,7 @@ fn run_wikidata(bundle: &Path, dump_path: &Path, manifest: &mut Manifest) -> Res
     );
 
     // Pass 1: collect Q-ids.
-    let mut wanted: HashSet<String> = HashSet::new();
+    let mut wanted: FxHashSet<String> = FxHashSet::default();
     for entry in &manifest.tiles {
         let path = bundle.join(rel_tile_path(entry));
         let places = match read_tile(&path) {

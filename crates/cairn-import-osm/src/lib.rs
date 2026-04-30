@@ -30,7 +30,7 @@ use cairn_tile::{Level, TileCoord};
 use geo_types::{LineString, MultiPolygon, Polygon};
 use osmpbf::{BlobDecode, BlobReader, DenseNode, Element, ElementReader, Node, Relation, Way};
 use rayon::iter::{ParallelBridge, ParallelIterator};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::{debug, info};
@@ -158,7 +158,7 @@ impl NodeCoords {
     /// Empty inline-strategy cache.
     pub fn new_inline() -> Self {
         NodeCoords {
-            inner: NodeCoordsInner::Inline(HashMap::new()),
+            inner: NodeCoordsInner::Inline(HashMap::default()),
         }
     }
 
@@ -399,7 +399,7 @@ fn parallel_node_places(pbf_path: &Path) -> Result<(Vec<Place>, Counters), Impor
                 }
                 BlobDecode::OsmData(block) => {
                     let mut places = Vec::new();
-                    let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
+                    let mut local_counters: HashMap<(u8, u32), u64> = HashMap::default();
                     let mut counters = Counters::default();
                     for elem in block.elements() {
                         match elem {
@@ -462,12 +462,12 @@ fn parallel_way_places(
                 let blob = blob?;
                 match blob.decode()? {
                     BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
-                        Ok((Vec::new(), HashMap::new(), Counters::default()))
+                        Ok((Vec::new(), HashMap::default(), Counters::default()))
                     }
                     BlobDecode::OsmData(block) => {
                         let mut places = Vec::new();
-                        let mut way_nodes: WayNodes = HashMap::new();
-                        let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
+                        let mut way_nodes: WayNodes = HashMap::default();
+                        let mut local_counters: HashMap<(u8, u32), u64> = HashMap::default();
                         let mut counters = Counters::default();
                         for elem in block.elements() {
                             if let Element::Way(w) = elem {
@@ -499,7 +499,7 @@ fn parallel_way_places(
             },
         )
         .reduce(
-            || Ok((Vec::new(), HashMap::new(), Counters::default())),
+            || Ok((Vec::new(), HashMap::default(), Counters::default())),
             |a, b| match (a, b) {
                 (Ok((mut ap, aw, mut ac)), Ok((bp, bw, bc))) => {
                     ap.extend(bp);
@@ -545,7 +545,7 @@ fn parallel_admin_relations(
                     }
                     BlobDecode::OsmData(block) => {
                         let mut features: Vec<AdminFeature> = Vec::new();
-                        let mut local_counters: HashMap<(u8, u32), u64> = HashMap::new();
+                        let mut local_counters: HashMap<(u8, u32), u64> = HashMap::default();
                         let mut counters = Counters::default();
                         for elem in block.elements() {
                             if let Element::Relation(r) = elem {
@@ -596,7 +596,7 @@ fn renumber_places(mut places: Vec<Place>) -> Vec<Place> {
             .then_with(|| ((a.centroid.lon * 1e6) as i64).cmp(&((b.centroid.lon * 1e6) as i64)))
             .then_with(|| ((a.centroid.lat * 1e6) as i64).cmp(&((b.centroid.lat * 1e6) as i64)))
     });
-    let mut counters: HashMap<(u8, u32), u64> = HashMap::new();
+    let mut counters: HashMap<(u8, u32), u64> = HashMap::default();
     for p in &mut places {
         let key = (p.id.level(), p.id.tile());
         let local = counters.entry(key).or_insert(0);
@@ -627,7 +627,7 @@ fn renumber_admin_features(mut feats: Vec<AdminFeature>) -> Vec<AdminFeature> {
     });
     // AdminFeature::place_id encodes a tile from the centroid. Pull
     // (level, tile) from the original place_id by decoding it.
-    let mut counters: HashMap<(u8, u32), u64> = HashMap::new();
+    let mut counters: HashMap<(u8, u32), u64> = HashMap::default();
     for f in &mut feats {
         let id = cairn_place::PlaceId(f.place_id);
         let key = (id.level(), id.tile());
@@ -680,11 +680,11 @@ fn load_node_caches_inline(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs), I
                 let blob = blob?;
                 match blob.decode()? {
                     BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
-                        Ok((HashMap::new(), HashMap::new()))
+                        Ok((HashMap::default(), HashMap::default()))
                     }
                     BlobDecode::OsmData(block) => {
-                        let mut coords: HashMap<i64, [f64; 2]> = HashMap::new();
-                        let mut addrs: NodeAddrs = HashMap::new();
+                        let mut coords: HashMap<i64, [f64; 2]> = HashMap::default();
+                        let mut addrs: NodeAddrs = HashMap::default();
                         for elem in block.elements() {
                             match elem {
                                 Element::Node(n) => {
@@ -708,7 +708,7 @@ fn load_node_caches_inline(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs), I
             },
         )
         .reduce(
-            || Ok((HashMap::new(), HashMap::new())),
+            || Ok((HashMap::default(), HashMap::default())),
             |a, b| match (a, b) {
                 (Ok((ac, aa)), Ok((bc, ba))) => {
                     // Always extend the larger map with entries from
@@ -747,9 +747,9 @@ fn collect_relation_way_refs(pbf_path: &Path) -> Result<HashSet<i64>, ImportErro
         .map(|blob| -> Result<HashSet<i64>, ImportError> {
             let blob = blob?;
             match blob.decode()? {
-                BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => Ok(HashSet::new()),
+                BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => Ok(HashSet::default()),
                 BlobDecode::OsmData(block) => {
-                    let mut ids: HashSet<i64> = HashSet::new();
+                    let mut ids: HashSet<i64> = HashSet::default();
                     for elem in block.elements() {
                         if let Element::Relation(r) = elem {
                             for m in r.members() {
@@ -764,7 +764,7 @@ fn collect_relation_way_refs(pbf_path: &Path) -> Result<HashSet<i64>, ImportErro
             }
         })
         .reduce(
-            || Ok(HashSet::new()),
+            || Ok(HashSet::default()),
             |a, b| match (a, b) {
                 (Ok(aa), Ok(bb)) => {
                     let (mut big, small) = if aa.len() >= bb.len() {
@@ -791,9 +791,9 @@ fn collect_referenced_node_ids(pbf_path: &Path) -> Result<HashSet<i64>, ImportEr
         .map(|blob| -> Result<HashSet<i64>, ImportError> {
             let blob = blob?;
             match blob.decode()? {
-                BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => Ok(HashSet::new()),
+                BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => Ok(HashSet::default()),
                 BlobDecode::OsmData(block) => {
-                    let mut ids: HashSet<i64> = HashSet::new();
+                    let mut ids: HashSet<i64> = HashSet::default();
                     for elem in block.elements() {
                         match elem {
                             Element::Way(w) => {
@@ -816,7 +816,7 @@ fn collect_referenced_node_ids(pbf_path: &Path) -> Result<HashSet<i64>, ImportEr
             }
         })
         .reduce(
-            || Ok(HashSet::new()),
+            || Ok(HashSet::default()),
             |a, b| match (a, b) {
                 (Ok(aa), Ok(bb)) => {
                     // Extend the larger set with the smaller.
@@ -848,11 +848,11 @@ fn load_node_caches_sorted_vec(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs
             let blob = blob?;
             match blob.decode()? {
                 BlobDecode::OsmHeader(_) | BlobDecode::Unknown(_) => {
-                    Ok((Vec::new(), HashMap::new()))
+                    Ok((Vec::new(), HashMap::default()))
                 }
                 BlobDecode::OsmData(block) => {
                     let mut coords: Vec<(i64, [i32; 2])> = Vec::new();
-                    let mut addrs: NodeAddrs = HashMap::new();
+                    let mut addrs: NodeAddrs = HashMap::default();
                     for elem in block.elements() {
                         match elem {
                             Element::Node(n) => {
@@ -879,7 +879,7 @@ fn load_node_caches_sorted_vec(pbf_path: &Path) -> Result<(NodeCoords, NodeAddrs
             }
         })
         .reduce(
-            || Ok((Vec::new(), HashMap::new())),
+            || Ok((Vec::new(), HashMap::default())),
             |a, b| match (a, b) {
                 (Ok((mut av, aa)), Ok((bv, ba))) => {
                     av.extend(bv);
@@ -958,7 +958,7 @@ fn load_node_caches_flatnode(
     );
 
     let mut writer = flatnode::FlatnodeWriter::create(out_path, max_id)?;
-    let mut addrs: NodeAddrs = HashMap::new();
+    let mut addrs: NodeAddrs = HashMap::default();
 
     // Sequential write pass — node-write to mmap'd slot is cheap, and
     // ElementReader::for_each handles the parallel decompression
@@ -1948,7 +1948,7 @@ mod tests {
         let mut coords = NodeCoords::new_inline();
         coords.insert_inline(1, [9.0, 47.0]);
         coords.insert_inline(2, [9.0, 47.5]);
-        let mut addrs: NodeAddrs = HashMap::new();
+        let mut addrs: NodeAddrs = HashMap::default();
         addrs.insert(
             1,
             NodeAddr {
@@ -1977,7 +1977,7 @@ mod tests {
         let mut coords = NodeCoords::new_inline();
         coords.insert_inline(1, [10.0, 50.0]);
         coords.insert_inline(2, [10.0, 50.0]);
-        let mut addrs: NodeAddrs = HashMap::new();
+        let mut addrs: NodeAddrs = HashMap::default();
         addrs.insert(
             1,
             NodeAddr {
@@ -2002,7 +2002,7 @@ mod tests {
         let mut coords = NodeCoords::new_inline();
         coords.insert_inline(1, [0.0, 0.0]);
         coords.insert_inline(2, [0.0, 0.0]);
-        let mut addrs: NodeAddrs = HashMap::new();
+        let mut addrs: NodeAddrs = HashMap::default();
         addrs.insert(
             1,
             NodeAddr {
@@ -2034,7 +2034,7 @@ mod tests {
         coords.insert_inline(1, [0.0, 0.0]);
         coords.insert_inline(2, [10.0, 0.0]);
         coords.insert_inline(3, [10.0, 10.0]);
-        let mut addrs: NodeAddrs = HashMap::new();
+        let mut addrs: NodeAddrs = HashMap::default();
         addrs.insert(
             1,
             NodeAddr {
@@ -2067,7 +2067,7 @@ mod tests {
         let mut coords = NodeCoords::new_inline();
         coords.insert_inline(1, [0.0, 0.0]);
         coords.insert_inline(2, [0.0, 0.0]);
-        let mut addrs: NodeAddrs = HashMap::new();
+        let mut addrs: NodeAddrs = HashMap::default();
         addrs.insert(
             1,
             NodeAddr {
