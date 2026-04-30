@@ -74,6 +74,7 @@ pub struct AugmentStats {
     pub qids_found_in_dump: u64,
     pub places_enriched: u64,
     pub labels_added: u64,
+    pub aliases_added: u64,
     pub crossrefs_added: u64,
 }
 
@@ -230,6 +231,31 @@ pub fn apply_to_places(
                 value: value.clone(),
             });
             stats.labels_added += 1;
+            touched = true;
+        }
+        // Aliases: also feed Wikidata's `aliases` map into Place.names
+        // under `<lang>_alt`. The text indexer searches every name field
+        // verbatim, so an alias becomes a hit even though it doesn't
+        // displace the canonical label. The lang-suffix isolates them
+        // from the primary label so future per-language ranking can
+        // weight aliases lower if needed.
+        for (lang, value) in &entry.aliases {
+            if value.trim().is_empty() {
+                continue;
+            }
+            let alt_lang = format!("{lang}_alt");
+            let already = p
+                .names
+                .iter()
+                .any(|n| n.lang == alt_lang && &n.value == value);
+            if already {
+                continue;
+            }
+            p.names.push(LocalizedName {
+                lang: alt_lang,
+                value: value.clone(),
+            });
+            stats.aliases_added += 1;
             touched = true;
         }
         // Cross-refs: append on the place's tags. Skip duplicates so
@@ -439,7 +465,10 @@ mod tests {
                 ("en".into(), "Adams".into()),
                 ("fr".into(), "Adams".into()),
             ],
-            aliases: vec![],
+            aliases: vec![
+                ("en".into(), "Douglas Adams".into()),
+                ("en".into(), "DNA".into()),
+            ],
             geonames_id: Some("12345".into()),
             iso_3166_2: None,
             fips_10_4: None,
@@ -450,7 +479,11 @@ mod tests {
         let mut stats = AugmentStats::default();
         let mut places = vec![p.clone()];
         apply_to_places(&mut places, &entries, &mut stats);
-        assert_eq!(places[0].names.len(), 3); // default + en + fr
+        // default + en + fr labels + 2 en_alt aliases = 5 names total.
+        assert_eq!(places[0].names.len(), 5);
+        assert_eq!(stats.labels_added, 2);
+        assert_eq!(stats.aliases_added, 2);
+        assert!(places[0].names.iter().any(|n| n.lang == "en_alt" && n.value == "Douglas Adams"));
         assert!(places[0].tags.iter().any(|(k, _)| k == "geonames_id"));
         assert!(places[0].tags.iter().any(|(k, _)| k == "wikidata_parent"));
         // Re-run is idempotent: same counts.

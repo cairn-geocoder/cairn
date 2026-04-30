@@ -312,6 +312,7 @@ fn run_wikidata(bundle: &Path, dump_path: &Path, manifest: &mut Manifest) -> Res
         matched = stats.qids_found_in_dump,
         enriched = stats.places_enriched,
         labels_added = stats.labels_added,
+        aliases_added = stats.aliases_added,
         crossrefs_added = stats.crossrefs_added,
         tiles_rewritten = updated_tiles,
         "wikidata augment apply done"
