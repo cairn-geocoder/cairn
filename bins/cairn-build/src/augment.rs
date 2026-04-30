@@ -57,6 +57,12 @@ pub fn cmd_augment(args: AugmentArgs) -> Result<()> {
 
     if !args.buildings.is_empty() {
         run_buildings(&args.bundle, &args.buildings, &mut manifest)?;
+        // Bundle just gained building_tiles → bump the manifest
+        // version so downstream tooling can gate on it. Existing v3
+        // bundles being augmented in place jump straight to v4.
+        if manifest.schema_version < 4 {
+            manifest.schema_version = 4;
+        }
     }
     if let Some(dump) = args.wikidata.as_deref() {
         run_wikidata(&args.bundle, dump, &mut manifest)?;

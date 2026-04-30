@@ -592,6 +592,37 @@ mod tests {
         assert_eq!(report.failures.len(), 1);
     }
 
+    #[test]
+    fn v3_manifest_loads_with_empty_building_tiles() {
+        // A pre-v0.3 bundle would write a manifest with no
+        // `building_tiles = [...]` block. Confirm we round-trip
+        // it: deserialize, observe the field defaults to empty,
+        // re-serialize, deserialize again unchanged.
+        let dir = tempdir_for_test();
+        let v3_toml = r#"
+schema_version = 3
+built_at = "2026-04-28T00:00:00Z"
+bundle_id = "v3-fixture"
+sources = []
+tiles = []
+admin_tiles = []
+point_tiles = []
+text_files = []
+"#;
+        let manifest_path = dir.join("manifest.toml");
+        std::fs::write(&manifest_path, v3_toml).unwrap();
+        let m = read_manifest(&manifest_path).unwrap();
+        assert_eq!(m.schema_version, 3);
+        assert!(m.building_tiles.is_empty());
+
+        // Round-trip: writing back is byte-stable for the
+        // building_tiles default (still serializes as empty list).
+        write_manifest(&manifest_path, &m).unwrap();
+        let m2 = read_manifest(&manifest_path).unwrap();
+        assert_eq!(m2.schema_version, 3);
+        assert!(m2.building_tiles.is_empty());
+    }
+
     fn tempdir_for_test() -> std::path::PathBuf {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);

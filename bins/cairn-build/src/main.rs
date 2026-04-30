@@ -1415,8 +1415,12 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     let text_files = walk_text_files(&text_dir, &args.out)?;
     tracing::info!(count = text_files.len(), "text index files hashed");
 
+    // schema v4 adds `building_tiles` (v0.3 lane A). v3 readers
+    // tolerate it via `#[serde(default)]` on the struct field, so
+    // bump-and-forget is safe; the version bump is purely a signal
+    // for tooling that wants to gate features on the field.
     let manifest = Manifest {
-        schema_version: 3,
+        schema_version: 4,
         built_at: now_iso8601(),
         bundle_id: args.bundle_id,
         sources,
