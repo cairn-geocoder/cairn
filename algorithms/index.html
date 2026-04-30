@@ -53,9 +53,10 @@
           <a href="#build">1 · Build pipeline</a>
           <a href="#search">2 · Search pipeline</a>
           <a href="#reverse">3 · Reverse pipeline</a>
-          <a href="#bundle">4 · Bundle format</a>
-          <a href="#differentiators">5 · Differentiators</a>
-          <a href="#perf">6 · Performance characteristics</a>
+          <a href="#augmenters">4 · Augmenters</a>
+          <a href="#bundle">5 · Bundle format</a>
+          <a href="#differentiators">6 · Differentiators</a>
+          <a href="#perf">7 · Performance characteristics</a>
         </div>
       </div>
     </section>
@@ -395,8 +396,137 @@ JSON response
     </section>
 
     <!-- ─────────────────────────────────────────────────────────── -->
-    <section class="algo-section" id="bundle">
+    <section class="algo-section" id="augmenters">
       <div class="section-num">04</div>
+      <h2>Augmenters</h2>
+      <p class="section-lede">
+        v0.3 introduced a second class of pipeline alongside the
+        ground-up build: <strong>augmenters</strong> rewrite an existing
+        bundle in place with new sources. Same on-disk layout, same
+        manifest, same signature contract — just additional layers
+        and richer Place tags. Two ship today: building footprints
+        (lane A) and Wikidata enrichment (lane I).
+      </p>
+
+      <h3>Lane A · Microsoft Building Footprints</h3>
+      <p>
+        ~1.4 B polygons under ODbL on Source Cooperative. The
+        importer (<code>cairn-import-buildings</code>) reads
+        GeoParquet via <code>parquet</code> + <code>arrow-array</code>'s
+        <code>ParquetRecordBatchReaderBuilder</code> and decodes WKB
+        polygon geometries with a hand-rolled cursor. Why hand-rolled:
+        the Place loader's <code>decode_wkb_point</code> only handles
+        type 1; polygons need type 3 (single ring iteration) and
+        type 6 (MultiPolygon recursion into N type-3 sub-polygons).
+        Both paths reject Z/M-flagged inputs (PostGIS
+        <code>1000+type</code> / <code>2000+type</code> /
+        <code>3000+type</code>) outright — the per-vertex reader
+        assumes 16-byte (x, y) records, so silently accepting PolygonZ
+        would mis-align every coordinate after the first.
+      </p>
+      <p>
+        Per-row output: <code>BuildingFootprint { id, centroid, bbox,
+        outer_ring, height }</code>. Centroid is the area-weighted
+        shoelace centroid of the largest polygon's outer ring (or the
+        bbox center as fallback for degenerate rings). Holes are
+        dropped at parse time — they're &lt; 0.1 % of rows in the wild
+        and doubling on-disk footprint isn't worth the geometry
+        fidelity.
+      </p>
+      <p>
+        Per-tile <code>BuildingLayer</code> writes mirror the existing
+        <code>AdminLayer</code> rkyv pattern: 16-byte aligned header
+        + rkyv body, magic <code>CRBL</code>. Replication factor is
+        ~1.0 (most buildings are smaller than a tile by orders of
+        magnitude). Runtime <code>BuildingIndex</code> is an R*-tree
+        of tile envelopes with an LRU cache (default 256 entries —
+        smaller than admin/nearest 1024 because building tiles are
+        denser; pinning every loaded tile would balloon RSS at planet
+        scale). Two query modes: <code>at(coord)</code> returns
+        bbox-containing buildings finest-first by area;
+        <code>nearest_k(coord, k)</code> ranks tile slots by
+        bbox-distance, gathers <code>k * 4</code> candidates, and
+        re-sorts globally.
+      </p>
+      <p>
+        Spatial join during <code>cairn-build augment --buildings</code>
+        walks every Place tile, queries the in-memory BuildingIndex
+        for each Place's centroid, and stamps <code>building_id</code>
+        + <code>building_height</code> tags on hits. Idempotent —
+        the apply step dedups <code>(key, value)</code> before
+        insertion, so re-running on the same data leaves Place
+        tiles byte-identical.
+      </p>
+
+      <h3>Lane I · Wikidata enrichment</h3>
+      <p>
+        The canonical Wikidata JSONL dump is ~120 GB compressed.
+        Streaming it once is cheap; streaming it twice or holding
+        even 1 % of it in memory is not. The augmenter
+        (<code>cairn-augment-wikidata</code>) does a single
+        memory-bounded pass with two stages:
+      </p>
+      <ol class="algo-list">
+        <li>
+          <strong>Pass 1 — collect Q-ids.</strong> Walk every place
+          tile, scan <code>Place.tags</code> for
+          <code>wikidata=Q…</code> entries, deposit into a
+          <code>HashSet&lt;String&gt;</code>. OSM imports already
+          carry the tag for ~1-3 M Places per planet bundle. RSS
+          stays at ~30-200 MB depending on coverage.
+        </li>
+        <li>
+          <strong>Pass 2 — stream the dump.</strong>
+          <code>BufReader</code> with an 8 MB buffer wraps a
+          <code>GzDecoder</code> (or plain <code>File</code> when
+          <code>.json</code> not <code>.json.gz</code>). For each line,
+          a <strong>substring pre-filter</strong> looks for
+          <code>"id":"Q…"</code> near the front — entire entity bodies
+          are skipped without invoking <code>serde_json</code> when
+          the Q-id isn't in the wanted set. With ~3 M tracked Q-ids
+          out of ~100 M entities total, only ~3 % of lines hit the
+          full parser. Saves ~40 minutes wall-clock on a planet dump.
+        </li>
+      </ol>
+      <p>
+        Distill output per matched entity: labels by language,
+        aliases by language, and a curated set of cross-ref claims
+        (P1566 GeoNames ID, P300 ISO 3166-2, P901 FIPS, P131 admin
+        parent, P31 instance-of). The P31 list is conservatively
+        mapped to <code>PlaceKind</code> via a static table —
+        Q515 → City, Q484170 → County, Q34442 → Street, etc. The
+        table only covers ~25 well-known Q-ids on purpose:
+        Wikidata's P31 graph has &gt; 100 K types and a wider table
+        would let typo-Q-ids reclassify Places.
+      </p>
+      <p>
+        Apply step rewrites only modified Place tiles, preserving
+        each tile's existing compression scheme (zstd or raw).
+        Aliases land under <code>lang = "&lt;canonical&gt;_alt"</code>
+        so they remain searchable but stay separable from the
+        canonical label for future per-language ranking weights.
+        <code>PlaceKind</code> promotion is one-way: Places already
+        classified more specifically by upstream (e.g. an OSM admin
+        polygon → Country) are trusted; we never demote.
+      </p>
+
+      <h3>Idempotency contract</h3>
+      <p>
+        Both lanes guarantee a re-run on the same inputs produces a
+        byte-identical bundle. The augmenter dedups labels by
+        <code>(lang, value)</code> and tags by
+        <code>(key, value)</code> before insertion, hashes the
+        per-tile content signature pre/post, and skips the
+        <code>encode_tile</code> + <code>fs::write</code> roundtrip
+        when the signature matches. Re-running
+        <code>cairn-build augment</code> on a fully-augmented bundle
+        is a no-op — same blake3, same byte_size, same signature.
+      </p>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="algo-section" id="bundle">
+      <div class="section-num">05</div>
       <h2>Bundle format</h2>
       <p class="section-lede">
         Everything Cairn needs to serve queries lives in one
@@ -407,16 +537,18 @@ JSON response
 
       <pre class="algo-tree">
 &lt;bundle&gt;/
-├── manifest.toml       schema_v3, blake3 of every artifact, bundle_id
+├── manifest.toml       schema_v4, blake3 of every artifact, bundle_id
 ├── manifest.toml.sig   ed25519 detached signature (optional)
 ├── sbom.json           CycloneDX 1.5 — Cargo.lock + datasets
 ├── tiles/
 │   └── &lt;level&gt;/&lt;id&gt;.bin    rkyv-archived Place vector + ZSTD
 ├── index/
 │   └── text/           tantivy segments + admin_names sidecar
+│                       (gid field indexed for /v1/place lookups)
 └── spatial/
-    ├── admin/&lt;tile&gt;.rk      rkyv-archived AdminFeature, mmap zero-copy
-    └── points/&lt;tile&gt;.bin    bincode PlacePoint, linear scan
+    ├── admin/&lt;tile&gt;.rk      rkyv AdminFeature, magic CRAD, mmap zero-copy
+    ├── points/&lt;tile&gt;.bin    bincode PlacePoint, linear scan
+    └── buildings/&lt;tile&gt;.bin  rkyv ArchivedBuilding, magic CRBL  (v0.3 lane A)
       </pre>
 
       <p>
@@ -429,14 +561,37 @@ JSON response
         outside-bbox (the bbox prefilter rejects in cache).
       </p>
       <p>
-        Manifest schema is at version <strong>3</strong>; any breaking
-        change bumps the version and ships a reader for both shapes.
+        Building tiles share the rkyv-archive pattern with a distinct
+        magic (<code>CRBL</code>) so the loader can't confuse them
+        with admin tiles, and a per-feature bbox so the runtime
+        <code>BuildingIndex.at(coord)</code> can prefilter without
+        touching ring vertices for the 99% of buildings whose bboxes
+        miss the query.
+      </p>
+      <p>
+        Each Place carries a Pelias-compatible <code>gid</code> tag
+        (<code>osm:way:12345</code>,
+        <code>wof:locality:101748479</code>,
+        <code>overture:place:08bb…</code>) stamped at import time
+        by the source-specific importer. Sources without an upstream
+        stable id (OpenAddresses, generic CSV) get a deterministic
+        hash of <code>(kind, normalized name, ~100 m centroid)</code>
+        so bookmarks survive rebuilds. The text index registers
+        <code>gid</code> as a STRING (whole-token) field for direct
+        TermQuery lookup via <code>/v1/place?ids=…</code>.
+      </p>
+      <p>
+        Manifest schema is at version <strong>4</strong> as of v0.3
+        (the bump signals the additive <code>building_tiles</code>
+        field). v3 readers tolerate v4 manifests via
+        <code>#[serde(default)]</code>; any future breaking change
+        bumps the version and ships a reader for both shapes.
       </p>
     </section>
 
     <!-- ─────────────────────────────────────────────────────────── -->
     <section class="algo-section" id="differentiators">
-      <div class="section-num">05</div>
+      <div class="section-num">06</div>
       <h2>Differentiators</h2>
 
       <div class="diff-grid">
@@ -585,7 +740,7 @@ JSON response
 
     <!-- ─────────────────────────────────────────────────────────── -->
     <section class="algo-section" id="perf">
-      <div class="section-num">06</div>
+      <div class="section-num">07</div>
       <h2>Performance characteristics</h2>
 
       <h3>Microbench (Apple Silicon, criterion)</h3>
