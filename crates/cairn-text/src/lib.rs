@@ -66,6 +66,14 @@ const POPULATION_BOOST_RATE: f32 = 0.1;
 /// but should cleanly break ties between two equivalently-matching
 /// hits (one in German, one in French) for a German-preferring user.
 const LANG_PREFERENCE_BOOST: f32 = 1.5;
+/// Minimum query token length before the phonetic OR clause kicks
+/// in. DoubleMetaphone produces overly-broad codes on 1-2 char
+/// tokens — "a" and "an" collapse to single-letter codes that
+/// match thousands of corpus docs, polluting the rerank set.
+/// 3 is the empirical floor where the encoder produces
+/// specific-enough codes for the OR-widen to be net-positive on
+/// precision/recall.
+const PHONETIC_MIN_TOKEN_LEN: usize = 3;
 
 /// ASCII-fold + script transliterate a string via `deunicode`.
 /// Returns `None` when the result equals the input (already ASCII)
@@ -1049,6 +1057,18 @@ impl TextIndex {
         let mut code_clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for tok in tokens {
+            // DoubleMetaphone produces noisy codes on short tokens
+            // (1-2 chars often collapse to a single letter that
+            // matches a wide swath of the corpus). Skip them on the
+            // query side — the index still carries the codes; we
+            // just don't OR them into the rerank widening clause for
+            // these tokens. ≥ 3 chars threshold is the empirical
+            // floor where the encoder produces specific-enough
+            // codes for the precision/recall tradeoff to favor
+            // including the clause.
+            if tok.chars().count() < PHONETIC_MIN_TOKEN_LEN {
+                continue;
+            }
             for code in phonetic_codes(tok) {
                 if seen.insert(code.clone()) {
                     let term = Term::from_field_text(self.schema.name_phonetic, &code);
