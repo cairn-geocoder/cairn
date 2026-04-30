@@ -171,6 +171,12 @@ pub struct Manifest {
     /// only on degenerate bundles with zero places.
     #[serde(default)]
     pub point_tiles: Vec<SpatialTileEntry>,
+    /// Per-tile building footprint files. Populated by
+    /// `cairn-build augment --buildings` (v0.3 lane A); empty on
+    /// bundles built without the augmenter. Schema-additive: bundles
+    /// without this field still load via `#[serde(default)]`.
+    #[serde(default)]
+    pub building_tiles: Vec<SpatialTileEntry>,
     /// Per-file blake3 hashes for the tantivy text index segment files.
     /// Populated by `cairn-build build` and recomputed by `cairn-build
     /// verify` so a corrupt segment fails the integrity check.
@@ -571,6 +577,7 @@ mod tests {
             }],
             admin_tiles: vec![],
             point_tiles: vec![],
+            building_tiles: vec![],
             text_files: vec![],
         };
         write_manifest(&dir.join("manifest.toml"), &manifest).unwrap();

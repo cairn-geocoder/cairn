@@ -687,11 +687,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "cairn-augment-wikidata"
+version = "0.1.0"
+dependencies = [
+ "cairn-place",
+ "cairn-tile",
+ "flate2",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "cairn-build"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "cairn-augment-wikidata",
+ "cairn-import-buildings",
  "cairn-import-generic",
  "cairn-import-geonames",
  "cairn-import-oa",
@@ -728,6 +743,18 @@ dependencies = [
  "cairn-spatial",
  "cairn-text",
  "cairn-tile",
+]
+
+[[package]]
+name = "cairn-import-buildings"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "parquet",
+ "serde",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

@@ -34,6 +34,7 @@ use thiserror::Error;
 use tracing::debug;
 
 pub mod archived;
+pub mod buildings;
 
 /// Default LRU capacity (per index) when the caller doesn't pick one.
 /// Each entry holds one tile's feature/point list. Country-scale bundles

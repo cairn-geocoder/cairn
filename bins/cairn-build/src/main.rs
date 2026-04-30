@@ -5,6 +5,7 @@
 //! phases.
 
 use anyhow::{Context, Result};
+mod augment;
 mod osc;
 mod replication;
 mod sbom;
@@ -299,6 +300,29 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Augment an existing bundle with v0.3 enrichers. Adds Microsoft
+    /// Building Footprints (lane A) under `spatial/buildings/` and/or
+    /// applies Wikidata enrichment (lane I) to existing place tiles.
+    /// Re-signs the manifest if `--key` is supplied.
+    Augment {
+        #[arg(long)]
+        bundle: PathBuf,
+        /// Building-footprint GeoParquet drops (one or more). Polygons
+        /// are partitioned to per-tile rkyv blobs at L2 and recorded
+        /// in `manifest.building_tiles`. Repeatable.
+        #[arg(long)]
+        buildings: Vec<PathBuf>,
+        /// Wikidata JSONL dump (`.json[.gz]`). Two-pass: collect Q-ids
+        /// from existing place tags, then stream the dump to extract
+        /// labels + cross-refs and rewrite affected tiles in place.
+        #[arg(long)]
+        wikidata: Option<PathBuf>,
+        /// Optional ed25519 secret key. After augment, re-sign
+        /// `manifest.toml` so downstream verifiers see a fresh
+        /// signature over the new manifest contents.
+        #[arg(long)]
+        key: Option<PathBuf>,
+    },
     /// Generate a fresh ed25519 signing keypair into `<dir>/cairn.key`
     /// (secret, mode 0600) + `<dir>/cairn.pub` (public). Refuses to
     /// overwrite an existing key.
@@ -410,6 +434,17 @@ fn main() -> Result<()> {
             dry_run,
         } => cmd_replicate_apply(&bundle, max, dry_run),
         Command::Keygen { out } => sign::cmd_keygen(&out),
+        Command::Augment {
+            bundle,
+            buildings,
+            wikidata,
+            key,
+        } => augment::cmd_augment(augment::AugmentArgs {
+            bundle,
+            buildings,
+            wikidata,
+            key,
+        }),
         Command::Sign { bundle, key } => sign::cmd_sign(&bundle, &key).map(|_| ()),
         Command::SignVerify { bundle, pubkey } => sign::cmd_verify(&bundle, &pubkey),
     }
@@ -1388,6 +1423,7 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         tiles: entries,
         admin_tiles: admin_tile_entries,
         point_tiles: point_tile_entries,
+        building_tiles: Vec::new(),
         text_files,
     };
     let manifest_path = args.out.join("manifest.toml");
@@ -1574,6 +1610,7 @@ fn cmd_extract(bundle: &Path, bbox_arg: &[f64], out: &Path, write_tar: bool) -> 
         tiles: new_tiles,
         admin_tiles: kept_admin_tiles,
         point_tiles: kept_point_tiles,
+        building_tiles: Vec::new(),
         text_files: new_text_files,
     };
     let dst_manifest = out.join("manifest.toml");

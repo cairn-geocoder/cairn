@@ -1,0 +1,21 @@
+[package]
+name = "cairn-import-buildings"
+description = "Microsoft Building Footprints (and other GeoParquet polygon drops) importer for the Cairn geocoder."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["geocoding", "buildings", "footprints", "import", "geoparquet"]
+categories = ["science::geo", "parser-implementations"]
+
+[dependencies]
+arrow-array = { workspace = true }
+arrow-schema = "54"
+parquet = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
