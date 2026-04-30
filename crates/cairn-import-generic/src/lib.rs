@@ -39,7 +39,9 @@
 //!   adds localized variants (`name:de`, `name:fr-CH`, …).
 //! - All other properties become tags.
 
-use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
+use cairn_place::{
+    stable_hash_gid, synthesize_gid, Coord, LocalizedName, Place, PlaceId, PlaceKind, GID_TAG,
+};
 use cairn_tile::{Level, TileCoord};
 use std::collections::HashMap;
 use std::path::Path;
@@ -184,11 +186,14 @@ pub fn import_csv(path: &Path) -> Result<(Vec<Place>, Counters), ImportError> {
         *local += 1;
         let id = PlaceId::new(level.as_u8(), tile.id(), local_id)?;
 
+        let centroid = Coord { lon, lat };
+        let gid = generic_gid(&tags, kind, &name, centroid);
+        tags.push((GID_TAG.into(), gid));
         places.push(Place {
             id,
             kind,
             names: vec![LocalizedName { lang, value: name }],
-            centroid: Coord { lon, lat },
+            centroid,
             admin_path: vec![],
             tags,
         });
@@ -301,6 +306,14 @@ pub fn import_geojson(path: &Path) -> Result<(Vec<Place>, Counters), ImportError
         *local += 1;
         let id = PlaceId::new(level.as_u8(), tile.id(), local_id)?;
 
+        let primary_name = names
+            .iter()
+            .find(|n| n.lang == "default")
+            .or_else(|| names.first())
+            .map(|n| n.value.clone())
+            .unwrap_or_default();
+        let gid = generic_gid(&tags, kind, &primary_name, coord);
+        tags.push((GID_TAG.into(), gid));
         places.push(Place {
             id,
             kind,
@@ -325,6 +338,44 @@ pub fn import_geojson(path: &Path) -> Result<(Vec<Place>, Counters), ImportError
 /// geometries fall back to the first vertex of the first outer ring
 /// (operators should pre-compute proper centroids when precision
 /// matters).
+/// Pelias-compatible gid for a generic CSV / GeoJSON row. Prefers
+/// the operator-supplied `id` tag (when the source file ships a
+/// stable identifier column); otherwise hashes (kind, name, ~100 m
+/// centroid quantize) so bookmarks survive rebuilds when the row
+/// itself is unchanged.
+fn generic_gid(
+    tags: &[(String, String)],
+    kind: PlaceKind,
+    name: &str,
+    centroid: Coord,
+) -> String {
+    let upstream = tags
+        .iter()
+        .find(|(k, _)| k == "id")
+        .map(|(_, v)| v.as_str());
+    if let Some(id) = upstream {
+        if let Some(gid) = synthesize_gid("generic", kind_slug(kind), id) {
+            return gid;
+        }
+    }
+    stable_hash_gid("generic", kind_slug(kind), name, centroid)
+}
+
+fn kind_slug(kind: PlaceKind) -> &'static str {
+    match kind {
+        PlaceKind::Country => "country",
+        PlaceKind::Region => "region",
+        PlaceKind::County => "county",
+        PlaceKind::City => "locality",
+        PlaceKind::District => "borough",
+        PlaceKind::Neighborhood => "neighbourhood",
+        PlaceKind::Street => "street",
+        PlaceKind::Address => "address",
+        PlaceKind::Postcode => "postalcode",
+        PlaceKind::Poi => "venue",
+    }
+}
+
 fn centroid_of(geometry: &geojson::Geometry) -> Option<Coord> {
     use geojson::Value;
     match &geometry.value {

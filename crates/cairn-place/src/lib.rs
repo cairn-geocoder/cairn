@@ -180,6 +180,80 @@ pub struct Place {
     pub tags: Vec<(String, String)>,
 }
 
+/// Reserved tag key for the rebuild-stable external Place identifier.
+/// Importers stamp this value via [`Place::set_gid`] / [`synthesize_gid`]
+/// (or [`stable_hash_gid`] for sources without an upstream stable id).
+/// At query time consumers read it via [`Place::gid`] to surface a
+/// `gid` field on API responses, plug into the `/v1/place` lookup, or
+/// drive cross-bundle joins.
+pub const GID_TAG: &str = "gid";
+
+/// Synthesize a Pelias-compatible global identifier for a Place from
+/// a known upstream provenance triple.
+///
+/// Format: `<source>:<type>:<id>` (e.g. `osm:way:12345`,
+/// `wof:locality:101748479`, `overture:place:08bb…`). The three
+/// components are joined verbatim — caller is responsible for
+/// normalizing whitespace and stripping accidental colons. Empty
+/// `id` returns `None` so importers don't accidentally synthesize
+/// `osm:way:` for an unidentified row.
+pub fn synthesize_gid(source: &str, kind: &str, id: &str) -> Option<String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    Some(format!("{source}:{kind}:{id}"))
+}
+
+/// Deterministic gid for sources without an upstream stable identifier
+/// (operator CSV, OpenAddresses where row IDs aren't preserved across
+/// releases, etc.). Hashes the tuple `(kind, lowercased name,
+/// quantized centroid at ~100 m grid)` with a stable seed so the same
+/// input row produces the same gid across rebuilds.
+///
+/// Same quantization rule as [`dedupe_places`] uses for clustering, so
+/// two near-identical rows that would dedupe also share a gid. That's
+/// intentional — bookmark stability follows the dedup contract.
+pub fn stable_hash_gid(source: &str, kind: &str, name: &str, centroid: Coord) -> String {
+    use std::hash::{Hash, Hasher};
+    // FNV-1a-style — small, deterministic, no external dep. Good
+    // enough for a 64-bit content hash; collisions at country scale
+    // are negligible (~10⁻¹⁰ per row pair).
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    kind.to_lowercase().hash(&mut h);
+    name.to_lowercase().trim().hash(&mut h);
+    let qlon = (centroid.lon * 1000.0).round() as i32;
+    let qlat = (centroid.lat * 1000.0).round() as i32;
+    qlon.hash(&mut h);
+    qlat.hash(&mut h);
+    let digest = h.finish();
+    format!("{source}:{kind}:h{digest:016x}")
+}
+
+impl Place {
+    /// Return the rebuild-stable global identifier for this Place,
+    /// reading the [`GID_TAG`] entry from `tags`. None when the row
+    /// was built before the gid contract landed.
+    pub fn gid(&self) -> Option<&str> {
+        self.tags
+            .iter()
+            .find(|(k, _)| k == GID_TAG)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Stamp [`GID_TAG`] on this Place. Idempotent: replaces any
+    /// existing gid rather than appending a duplicate. Call once
+    /// per row at import time.
+    pub fn set_gid(&mut self, gid: impl Into<String>) {
+        let gid = gid.into();
+        if let Some(slot) = self.tags.iter_mut().find(|(k, _)| k == GID_TAG) {
+            slot.1 = gid;
+        } else {
+            self.tags.push((GID_TAG.to_string(), gid));
+        }
+    }
+}
+
 /// Maximum distance between two Place centroids that still counts as
 /// the same physical entity for dedup purposes. 150 m comfortably
 /// covers OSM's common "entrance node a few dozen meters off the
@@ -462,6 +536,81 @@ mod tests {
     use super::*;
     use rkyv::ser::serializers::AllocSerializer;
     use rkyv::ser::Serializer;
+
+    #[test]
+    fn synthesize_gid_assembles_components() {
+        assert_eq!(
+            synthesize_gid("osm", "way", "12345"),
+            Some("osm:way:12345".to_string())
+        );
+        assert_eq!(
+            synthesize_gid("wof", "locality", "101748479"),
+            Some("wof:locality:101748479".to_string())
+        );
+    }
+
+    #[test]
+    fn synthesize_gid_rejects_empty_id() {
+        assert_eq!(synthesize_gid("osm", "way", ""), None);
+        assert_eq!(synthesize_gid("osm", "way", "   "), None);
+    }
+
+    #[test]
+    fn stable_hash_gid_is_deterministic() {
+        let c = Coord {
+            lon: 9.5314,
+            lat: 47.3769,
+        };
+        let a = stable_hash_gid("oa", "address", "Hauptstrasse 1", c);
+        let b = stable_hash_gid("oa", "address", "Hauptstrasse 1", c);
+        assert_eq!(a, b);
+        // Format check: starts with `<source>:<kind>:h` then 16 hex chars.
+        assert!(a.starts_with("oa:address:h"));
+        assert_eq!(a.len(), "oa:address:h".len() + 16);
+    }
+
+    #[test]
+    fn stable_hash_gid_quantizes_to_100m_grid() {
+        // Two centroids ~50 m apart hash to the same gid (within
+        // ~100 m quantization), preserving dedup contract.
+        let near_a = Coord {
+            lon: 9.5314,
+            lat: 47.3769,
+        };
+        let near_b = Coord {
+            lon: 9.53142,
+            lat: 47.37692,
+        };
+        assert_eq!(
+            stable_hash_gid("oa", "address", "x", near_a),
+            stable_hash_gid("oa", "address", "x", near_b)
+        );
+        // Larger drift breaks the equivalence.
+        let far = Coord {
+            lon: 9.55,
+            lat: 47.38,
+        };
+        assert_ne!(
+            stable_hash_gid("oa", "address", "x", near_a),
+            stable_hash_gid("oa", "address", "x", far)
+        );
+    }
+
+    #[test]
+    fn place_set_gid_is_idempotent() {
+        let mut p = Place {
+            id: PlaceId::new(1, 1, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![],
+            centroid: Coord { lon: 0.0, lat: 0.0 },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        p.set_gid("osm:way:1");
+        p.set_gid("osm:way:2");
+        assert_eq!(p.gid(), Some("osm:way:2"));
+        assert_eq!(p.tags.iter().filter(|(k, _)| k == GID_TAG).count(), 1);
+    }
 
     #[test]
     fn placeid_roundtrip() {

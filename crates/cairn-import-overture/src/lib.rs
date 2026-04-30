@@ -48,7 +48,7 @@
 //! downstream attribution stays auditable.
 
 use cairn_import_parquet::{ColumnMap, Config, Defaults, ImportError as ParquetError, TagPolicy};
-use cairn_place::Place;
+use cairn_place::{stable_hash_gid, synthesize_gid, Place};
 use std::path::Path;
 use thiserror::Error;
 use tracing::info;
@@ -148,11 +148,21 @@ impl Theme {
 
 /// Read a flattened Overture parquet drop into a `Vec<Place>` per
 /// the supplied theme preset. Caller stamps `SourceKind::Overture`
-/// downstream.
+/// downstream. Each emitted Place receives a Pelias-compatible
+/// `gid` tag derived from the row's `id` column when present
+/// (Overture publishes a stable per-feature id), or a deterministic
+/// hash of `(kind, name, centroid)` as a fallback for sources whose
+/// flattening dropped the column.
 pub fn import(path: &Path, theme: Theme) -> Result<Vec<Place>, ImportError> {
     info!(path = %path.display(), ?theme, "importing Overture drop");
     let cfg = theme.parquet_config();
-    Ok(cairn_import_parquet::import(path, &cfg)?)
+    let mut places = cairn_import_parquet::import(path, &cfg)?;
+    let gid_kind = match theme {
+        Theme::Places => "place",
+        Theme::Addresses => "address",
+    };
+    stamp_gids(&mut places, gid_kind);
+    Ok(places)
 }
 
 /// Like [`import`] but lets the caller override individual fields of
@@ -162,7 +172,43 @@ pub fn import(path: &Path, theme: Theme) -> Result<Vec<Place>, ImportError> {
 /// `Config` field doesn't require editing this wrapper.
 pub fn import_with(path: &Path, theme: Theme, mut cfg: Config) -> Result<Vec<Place>, ImportError> {
     cfg.fill_defaults_from(theme.parquet_config());
-    Ok(cairn_import_parquet::import(path, &cfg)?)
+    let mut places = cairn_import_parquet::import(path, &cfg)?;
+    let gid_kind = match theme {
+        Theme::Places => "place",
+        Theme::Addresses => "address",
+    };
+    stamp_gids(&mut places, gid_kind);
+    Ok(places)
+}
+
+/// Stamp a Pelias-style `gid` tag on every Place. Prefers the
+/// upstream Overture row id (parquet `id` column folded into tags
+/// by the generic loader); falls back to the centroid-quantized
+/// hash so flattened drops missing the column still produce stable
+/// gids across rebuilds.
+fn stamp_gids(places: &mut [Place], gid_kind: &str) {
+    for p in places.iter_mut() {
+        let upstream = p
+            .tags
+            .iter()
+            .find(|(k, _)| k == "id")
+            .map(|(_, v)| v.clone());
+        let gid = match upstream.as_deref().and_then(|id| synthesize_gid("overture", gid_kind, id))
+        {
+            Some(g) => g,
+            None => {
+                let primary = p
+                    .names
+                    .iter()
+                    .find(|n| n.lang == "default")
+                    .or_else(|| p.names.first())
+                    .map(|n| n.value.as_str())
+                    .unwrap_or("");
+                stable_hash_gid("overture", gid_kind, primary, p.centroid)
+            }
+        };
+        p.set_gid(gid);
+    }
 }
 
 #[cfg(test)]

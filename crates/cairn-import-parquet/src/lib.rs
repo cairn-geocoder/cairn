@@ -27,7 +27,9 @@
 //! - Parquet metadata-driven CRS handling (today we trust WGS84).
 
 use arrow_array::{Array, BinaryArray, Float64Array, StringArray};
-use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
+use cairn_place::{
+    stable_hash_gid, synthesize_gid, Coord, LocalizedName, Place, PlaceId, PlaceKind, GID_TAG,
+};
 use cairn_tile::{Level, TileCoord};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Deserialize;
@@ -527,6 +529,25 @@ fn build_place(
     *local += 1;
     let id = PlaceId::new(level.as_u8(), tile.id(), local_id)?;
     debug!(?id, "emit place");
+    let mut tags = tags.to_vec();
+    // Generic GeoParquet → Pelias-compatible gid. Prefer the upstream
+    // `id` column (folded into tags by the row mapper) when present;
+    // otherwise hash (kind, name, centroid) so bookmarks are still
+    // stable across rebuilds. Source slug = "parquet" — narrower
+    // wrappers (e.g. cairn-import-overture) overwrite this with
+    // their own source slug downstream.
+    let upstream_id = tags
+        .iter()
+        .find(|(k, _)| k == "id")
+        .map(|(_, v)| v.clone());
+    let gid = match upstream_id
+        .as_deref()
+        .and_then(|raw| synthesize_gid("parquet", "place", raw))
+    {
+        Some(g) => g,
+        None => stable_hash_gid("parquet", "place", name, centroid),
+    };
+    tags.push((GID_TAG.into(), gid));
     Ok(Some(Place {
         id,
         kind,
@@ -536,7 +557,7 @@ fn build_place(
         }],
         centroid,
         admin_path: Vec::new(),
-        tags: tags.to_vec(),
+        tags,
     }))
 }
 

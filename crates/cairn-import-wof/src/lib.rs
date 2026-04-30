@@ -7,7 +7,7 @@
 //! Polygon geometry stays on disk; Phase 3 reverse-geocoding wires it up
 //! through the `geojson` table.
 
-use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
+use cairn_place::{synthesize_gid, Coord, LocalizedName, Place, PlaceId, PlaceKind, GID_TAG};
 use cairn_spatial::{AdminFeature, AdminLayer};
 use cairn_tile::{Level, TileCoord};
 use geo_types::{LineString, MultiPolygon, Polygon};
@@ -132,7 +132,15 @@ pub fn import(sqlite_path: &Path) -> Result<WofImport, ImportError> {
                 tags.push(("ISO3166-1".into(), c.to_string()));
             }
         }
-        tags.push(("placetype".into(), row.placetype));
+        tags.push(("placetype".into(), row.placetype.clone()));
+        // Pelias-compatible global identifier. WoF placetype is the
+        // upstream "kind" and `wof_id` is the upstream stable id, so
+        // the gid is identical to what Pelias emits for the same row.
+        if let Some(gid) =
+            synthesize_gid("wof", &row.placetype, &row.wof_id.to_string())
+        {
+            tags.push((GID_TAG.into(), gid));
+        }
 
         places.push(Place {
             id: place_id,

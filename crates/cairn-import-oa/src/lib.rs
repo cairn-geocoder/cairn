@@ -9,7 +9,9 @@
 //!
 //! Interpolation along OSM ways arrives in a follow-up phase.
 
-use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
+use cairn_place::{
+    stable_hash_gid, Coord, LocalizedName, Place, PlaceId, PlaceKind, GID_TAG,
+};
 use cairn_tile::{Level, TileCoord};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -148,6 +150,16 @@ pub fn import(csv_path: &Path) -> Result<Vec<Place>, ImportError> {
             }
         }
 
+        // OpenAddresses rows don't carry a stable upstream id —
+        // each per-municipality CSV decides its own scheme and the
+        // values churn across releases. Use the deterministic hash
+        // of (kind, normalized name, ~100m centroid quantize) so a
+        // bookmark survives rebuilds at least when the underlying
+        // address point doesn't move.
+        tags.push((
+            GID_TAG.into(),
+            stable_hash_gid("oa", "address", &display, centroid),
+        ));
         places.push(Place {
             id,
             kind: PlaceKind::Address,

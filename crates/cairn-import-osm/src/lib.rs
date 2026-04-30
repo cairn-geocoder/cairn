@@ -22,7 +22,9 @@
 
 pub mod flatnode;
 
-use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
+use cairn_place::{
+    stable_hash_gid, synthesize_gid, Coord, LocalizedName, Place, PlaceId, PlaceKind, GID_TAG,
+};
 use cairn_spatial::{AdminFeature, AdminLayer};
 use cairn_tile::{Level, TileCoord};
 use geo_types::{LineString, MultiPolygon, Polygon};
@@ -1010,7 +1012,10 @@ fn node_to_place(
     counters: &mut Counters,
 ) -> Option<Place> {
     let tags = collect_tags(node.tags());
-    build_place_from_centroid(node.lon(), node.lat(), &tags, local_counters, counters)
+    let mut place =
+        build_place_from_centroid(node.lon(), node.lat(), &tags, local_counters, counters)?;
+    stamp_osm_gid(&mut place, "node", node.id());
+    Some(place)
 }
 
 fn dense_node_to_place(
@@ -1019,7 +1024,24 @@ fn dense_node_to_place(
     counters: &mut Counters,
 ) -> Option<Place> {
     let tags = collect_tags(node.tags());
-    build_place_from_centroid(node.lon(), node.lat(), &tags, local_counters, counters)
+    let mut place =
+        build_place_from_centroid(node.lon(), node.lat(), &tags, local_counters, counters)?;
+    stamp_osm_gid(&mut place, "node", node.id);
+    Some(place)
+}
+
+/// Push a Pelias-compatible `gid` tag describing the OSM upstream
+/// stable identifier (`osm:<node|way|relation>:<id>`). Pelias's OSM
+/// importer emits the same shape, so a Cairn `gid` round-trips
+/// against any Pelias-aware client.
+fn stamp_osm_gid(place: &mut Place, osm_type: &str, osm_id: i64) {
+    if let Some(gid) = synthesize_gid("osm", osm_type, &osm_id.to_string()) {
+        place.tags.push((GID_TAG.into(), gid));
+    }
+    // Also stash the raw `osm_id` / `osm_type` so downstream tools
+    // (replication, diff, debug) don't have to re-parse the gid.
+    place.tags.push(("osm_type".into(), osm_type.into()));
+    place.tags.push(("osm_id".into(), osm_id.to_string()));
 }
 
 fn way_to_place(
@@ -1061,14 +1083,16 @@ fn way_to_place(
     };
 
     counters.ways_emitted += 1;
-    Some(Place {
+    let mut place = Place {
         id,
         kind,
         names,
         centroid,
         admin_path: vec![],
         tags: filter_tags(&tags),
-    })
+    };
+    stamp_osm_gid(&mut place, "way", way.id());
+    Some(place)
 }
 
 fn way_centroid(way: &Way<'_>, node_coords: &NodeCoords) -> Option<Coord> {
@@ -1315,6 +1339,14 @@ fn interpolate_way_addresses(
         if let Some(street) = s.street.as_deref() {
             tags.push(("addr:street".into(), street.to_string()));
         }
+        // Interpolated points have no upstream OSM id (they're
+        // synthesized between two real address nodes), so fall back
+        // to the deterministic content hash so bookmarks survive
+        // across rebuilds.
+        tags.push((
+            GID_TAG.into(),
+            stable_hash_gid("osm", "address", &s.display_name, s.centroid),
+        ));
         places.push(Place {
             id,
             kind: PlaceKind::Address,

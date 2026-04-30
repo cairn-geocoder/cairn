@@ -13,7 +13,9 @@
 //! comma-separated `alternatenames` column has no language tags). The
 //! richer `alternateNamesV2.zip` dump is a follow-up.
 
-use cairn_place::{Coord, LocalizedName, Place, PlaceId, PlaceKind};
+use cairn_place::{
+    synthesize_gid, Coord, LocalizedName, Place, PlaceId, PlaceKind, GID_TAG,
+};
 use cairn_tile::{Level, TileCoord};
 use std::collections::HashMap;
 use std::path::Path;
@@ -39,6 +41,7 @@ struct Counters {
     skipped_unknown_code: u64,
 }
 
+const COL_GEONAMEID: usize = 0;
 const COL_NAME: usize = 1;
 const COL_ASCII: usize = 2;
 const COL_LAT: usize = 4;
@@ -145,6 +148,21 @@ pub fn import(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
         {
             if pop > 0 {
                 tags.push(("population".into(), pop.to_string()));
+            }
+        }
+        if let Some(geonameid) = row
+            .get(COL_GEONAMEID)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            tags.push(("geonameid".into(), geonameid.to_string()));
+            // Pelias ships geonames features as `geonames:venue:<id>`
+            // for POIs and `geonames:locality:<id>` for cities. Use
+            // the importer's already-resolved PlaceKind for the type
+            // slot so the gid carries the same semantic as the row's
+            // place classification.
+            if let Some(gid) = synthesize_gid("geonames", kind_slug(kind), geonameid) {
+                tags.push((GID_TAG.into(), gid));
             }
         }
 
@@ -265,12 +283,12 @@ pub fn import_postcodes(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
         }
 
         let mut tags: Vec<(String, String)> = vec![("source".into(), "geonames".into())];
-        if let Some(country) = row
+        let country = row
             .get(COL_COUNTRY)
             .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            tags.push(("ISO3166-1".into(), country.to_string()));
+            .filter(|s| !s.is_empty());
+        if let Some(c) = country {
+            tags.push(("ISO3166-1".into(), c.to_string()));
         }
         if !place_name.is_empty() {
             tags.push(("addr:city".into(), place_name.to_string()));
@@ -289,6 +307,18 @@ pub fn import_postcodes(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
         {
             tags.push(("accuracy".into(), accuracy.to_string()));
         }
+        // Postcode TSV has no upstream stable id; the stable
+        // composite key is `<country>-<postal_code>` (geonames keeps
+        // postal codes country-scoped). Synthesize a Pelias-style
+        // gid from that — same shape Pelias's Geonames postal
+        // importer produces.
+        if let Some(c) = country {
+            if let Some(gid) =
+                synthesize_gid("geonames", "postalcode", &format!("{c}-{postal}"))
+            {
+                tags.push((GID_TAG.into(), gid));
+            }
+        }
 
         places.push(Place {
             id,
@@ -306,6 +336,25 @@ pub fn import_postcodes(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
         emitted, skipped_no_centroid, skipped_no_postal, "Geonames postcode import done"
     );
     Ok(places)
+}
+
+/// PlaceKind slug used in [`cairn_place::GID_TAG`] values for
+/// Geonames rows. Picks Pelias-style layer names so a Cairn-emitted
+/// gid is interchangeable with a Pelias-emitted one for the same
+/// underlying record.
+fn kind_slug(kind: PlaceKind) -> &'static str {
+    match kind {
+        PlaceKind::Country => "country",
+        PlaceKind::Region => "region",
+        PlaceKind::County => "county",
+        PlaceKind::City => "locality",
+        PlaceKind::District => "borough",
+        PlaceKind::Neighborhood => "neighbourhood",
+        PlaceKind::Street => "street",
+        PlaceKind::Address => "address",
+        PlaceKind::Postcode => "postalcode",
+        PlaceKind::Poi => "venue",
+    }
 }
 
 fn map_feature_code(code: &str) -> Option<PlaceKind> {
