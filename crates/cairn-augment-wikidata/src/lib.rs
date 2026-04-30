@@ -302,10 +302,7 @@ pub fn apply_to_places(
             if value.trim().is_empty() {
                 continue;
             }
-            let already = p
-                .names
-                .iter()
-                .any(|n| &n.lang == lang && &n.value == value);
+            let already = p.names.iter().any(|n| &n.lang == lang && &n.value == value);
             if already {
                 continue;
             }
@@ -592,10 +589,7 @@ mod tests {
         let p = place_with_qid("Q42");
         let entry = WikidataEntry {
             qid: "Q42".into(),
-            labels: vec![
-                ("en".into(), "Adams".into()),
-                ("fr".into(), "Adams".into()),
-            ],
+            labels: vec![("en".into(), "Adams".into()), ("fr".into(), "Adams".into())],
             aliases: vec![
                 ("en".into(), "Douglas Adams".into()),
                 ("en".into(), "DNA".into()),
@@ -615,7 +609,10 @@ mod tests {
         assert_eq!(places[0].names.len(), 5);
         assert_eq!(stats.labels_added, 2);
         assert_eq!(stats.aliases_added, 2);
-        assert!(places[0].names.iter().any(|n| n.lang == "en_alt" && n.value == "Douglas Adams"));
+        assert!(places[0]
+            .names
+            .iter()
+            .any(|n| n.lang == "en_alt" && n.value == "Douglas Adams"));
         assert!(places[0].tags.iter().any(|(k, _)| k == "geonames_id"));
         assert!(places[0].tags.iter().any(|(k, _)| k == "wikidata_parent"));
         // Re-run is idempotent: same counts.

@@ -569,10 +569,7 @@ where
                 // via aliases. The `_alt` form itself is dropped from
                 // `lang_codes`; the alias *value* is still indexed in
                 // every name field above, so it remains searchable.
-                let canonical = n
-                    .lang
-                    .strip_suffix("_alt")
-                    .unwrap_or(n.lang.as_str());
+                let canonical = n.lang.strip_suffix("_alt").unwrap_or(n.lang.as_str());
                 langs_seen.insert(canonical.to_string());
             }
         }
@@ -877,10 +874,7 @@ impl TextIndex {
                 hits_by_gid.insert(gid.clone(), self.hit_from_doc(score, &doc));
             }
         }
-        Ok(gids
-            .iter()
-            .filter_map(|g| hits_by_gid.remove(g))
-            .collect())
+        Ok(gids.iter().filter_map(|g| hits_by_gid.remove(g)).collect())
     }
 
     /// Resolve a list of `place_id` values to [`Hit`]s. Used by Pelias's
@@ -2239,9 +2233,7 @@ mod tests {
         assert_eq!(hits[0].gid, "osm:way:12345");
 
         // gid resolver finds the hit by gid alone.
-        let resolved = idx
-            .lookup_by_gids(&["osm:way:12345".to_string()])
-            .unwrap();
+        let resolved = idx.lookup_by_gids(&["osm:way:12345".to_string()]).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].name, "Vaduz");
         // Result order matches input order; missing gids dropped.

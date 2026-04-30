@@ -223,7 +223,10 @@ pub fn write_buildings_partitioned(
         for row in lo_tile.row..=hi_tile.row {
             for col in lo_tile.col..=hi_tile.col {
                 let tc = TileCoord { level, row, col };
-                buckets.entry((tc.level.as_u8(), tc.id())).or_default().push(b);
+                buckets
+                    .entry((tc.level.as_u8(), tc.id()))
+                    .or_default()
+                    .push(b);
             }
         }
     }
@@ -235,7 +238,8 @@ pub fn write_buildings_partitioned(
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let archived: Vec<ArchivedBuilding> = bs.iter().map(|b| ArchivedBuilding::from(*b)).collect();
+        let archived: Vec<ArchivedBuilding> =
+            bs.iter().map(|b| ArchivedBuilding::from(*b)).collect();
         let layer = ArchivedBuildingLayer {
             buildings: archived,
         };

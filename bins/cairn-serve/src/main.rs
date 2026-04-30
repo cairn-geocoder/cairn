@@ -89,7 +89,10 @@ fn load_bundle(path: &std::path::Path) -> Result<LoadedBundle> {
     let buildings = match manifest.as_ref() {
         Some(m) if !m.building_tiles.is_empty() => {
             let entries = m.building_tiles.clone();
-            tracing::info!(tiles = entries.len(), "opening building layer (partitioned)");
+            tracing::info!(
+                tiles = entries.len(),
+                "opening building layer (partitioned)"
+            );
             let index = BuildingIndex::open(path, entries);
             tracing::info!(buildings = index.len(), "building index ready");
             Some(Arc::new(index))

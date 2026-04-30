@@ -9,9 +9,7 @@
 //!
 //! Interpolation along OSM ways arrives in a follow-up phase.
 
-use cairn_place::{
-    stable_hash_gid, Coord, LocalizedName, Place, PlaceId, PlaceKind, GID_TAG,
-};
+use cairn_place::{stable_hash_gid, Coord, LocalizedName, Place, PlaceId, PlaceKind, GID_TAG};
 use cairn_tile::{Level, TileCoord};
 use serde::Deserialize;
 use std::collections::HashMap;

@@ -13,9 +13,7 @@
 //! comma-separated `alternatenames` column has no language tags). The
 //! richer `alternateNamesV2.zip` dump is a follow-up.
 
-use cairn_place::{
-    synthesize_gid, Coord, LocalizedName, Place, PlaceId, PlaceKind, GID_TAG,
-};
+use cairn_place::{synthesize_gid, Coord, LocalizedName, Place, PlaceId, PlaceKind, GID_TAG};
 use cairn_tile::{Level, TileCoord};
 use std::collections::HashMap;
 use std::path::Path;
@@ -313,9 +311,7 @@ pub fn import_postcodes(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
         // gid from that — same shape Pelias's Geonames postal
         // importer produces.
         if let Some(c) = country {
-            if let Some(gid) =
-                synthesize_gid("geonames", "postalcode", &format!("{c}-{postal}"))
-            {
+            if let Some(gid) = synthesize_gid("geonames", "postalcode", &format!("{c}-{postal}")) {
                 tags.push((GID_TAG.into(), gid));
             }
         }

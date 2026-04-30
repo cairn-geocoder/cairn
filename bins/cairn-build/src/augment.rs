@@ -27,13 +27,13 @@
 
 use anyhow::{Context, Result};
 use cairn_augment_wikidata as wikidata;
+use cairn_augment_wikidata::FxHashSet;
 use cairn_import_buildings as buildings_import;
 use cairn_place::Place;
 use cairn_spatial::buildings as bspatial;
 use cairn_tile::{
     encode_tile, read_manifest, read_tile, write_manifest, Level, Manifest, TileEntry,
 };
-use cairn_augment_wikidata::FxHashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
@@ -194,11 +194,7 @@ fn run_building_attach(
             // the Place. Building IDs are stable across MS Building
             // Footprints releases, so a second run with the same data
             // produces a byte-identical tile.
-            if !p
-                .tags
-                .iter()
-                .any(|(k, v)| k == "building_id" && v == &b.id)
-            {
+            if !p.tags.iter().any(|(k, v)| k == "building_id" && v == &b.id) {
                 p.tags.push(("building_id".into(), b.id.clone()));
                 touched = true;
                 places_attached += 1;
@@ -223,8 +219,7 @@ fn run_building_attach(
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).ok();
         }
-        fs::write(&path, &bytes)
-            .with_context(|| format!("rewriting tile {}", path.display()))?;
+        fs::write(&path, &bytes).with_context(|| format!("rewriting tile {}", path.display()))?;
         entry.byte_size = bytes.len() as u64;
         entry.blake3 = blake3::hash(&bytes).to_hex().to_string();
         entry.place_count = places.len() as u32;
@@ -299,8 +294,7 @@ fn run_wikidata(bundle: &Path, dump_path: &Path, manifest: &mut Manifest) -> Res
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).ok();
         }
-        fs::write(&path, &bytes)
-            .with_context(|| format!("rewriting tile {}", path.display()))?;
+        fs::write(&path, &bytes).with_context(|| format!("rewriting tile {}", path.display()))?;
         entry.byte_size = bytes.len() as u64;
         entry.blake3 = blake3::hash(&bytes).to_hex().to_string();
         entry.place_count = places.len() as u32;
@@ -335,16 +329,17 @@ fn rel_tile_path(entry: &TileEntry) -> String {
 /// the full Place list would be a sounder check but `(name count, tag
 /// count)` per place is enough — apply_to_places only ever inserts.)
 fn signature(places: &[Place]) -> Vec<(usize, usize)> {
-    places.iter().map(|p| (p.names.len(), p.tags.len())).collect()
+    places
+        .iter()
+        .map(|p| (p.names.len(), p.tags.len()))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use cairn_place::{Coord, LocalizedName, PlaceId, PlaceKind};
-    use cairn_tile::{
-        write_tile, Level, Manifest, TileCoord, TileCompression, TileEntry,
-    };
+    use cairn_tile::{write_tile, Level, Manifest, TileCompression, TileCoord, TileEntry};
 
     fn tempdir() -> std::path::PathBuf {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -384,9 +379,12 @@ mod tests {
         let p_outside = poi(1, 9.6, 47.4);
         let coord = TileCoord::from_coord(Level::L2, p_inside.centroid);
         let path = dir.join(coord.relative_path());
-        let (hash, size) =
-            write_tile(&path, &[p_inside.clone(), p_outside.clone()], TileCompression::None)
-                .unwrap();
+        let (hash, size) = write_tile(
+            &path,
+            &[p_inside.clone(), p_outside.clone()],
+            TileCompression::None,
+        )
+        .unwrap();
         let entry = TileEntry {
             level: coord.level.as_u8(),
             tile_id: coord.id(),
@@ -427,7 +425,10 @@ mod tests {
             .iter()
             .find(|p| p.id == p_inside.id)
             .expect("inside place still present");
-        assert!(stamped.tags.iter().any(|(k, v)| k == "building_id" && v == "b1"));
+        assert!(stamped
+            .tags
+            .iter()
+            .any(|(k, v)| k == "building_id" && v == "b1"));
         assert!(stamped
             .tags
             .iter()
@@ -444,7 +445,11 @@ mod tests {
         let places2 = read_tile(&path).unwrap();
         let stamped2 = places2.iter().find(|p| p.id == p_inside.id).unwrap();
         assert_eq!(
-            stamped2.tags.iter().filter(|(k, _)| k == "building_id").count(),
+            stamped2
+                .tags
+                .iter()
+                .filter(|(k, _)| k == "building_id")
+                .count(),
             1,
             "re-run must not duplicate the tag"
         );

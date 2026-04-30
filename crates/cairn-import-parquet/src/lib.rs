@@ -536,10 +536,7 @@ fn build_place(
     // stable across rebuilds. Source slug = "parquet" — narrower
     // wrappers (e.g. cairn-import-overture) overwrite this with
     // their own source slug downstream.
-    let upstream_id = tags
-        .iter()
-        .find(|(k, _)| k == "id")
-        .map(|(_, v)| v.clone());
+    let upstream_id = tags.iter().find(|(k, _)| k == "id").map(|(_, v)| v.clone());
     let gid = match upstream_id
         .as_deref()
         .and_then(|raw| synthesize_gid("parquet", "place", raw))

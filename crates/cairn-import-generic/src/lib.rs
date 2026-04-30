@@ -343,12 +343,7 @@ pub fn import_geojson(path: &Path) -> Result<(Vec<Place>, Counters), ImportError
 /// stable identifier column); otherwise hashes (kind, name, ~100 m
 /// centroid quantize) so bookmarks survive rebuilds when the row
 /// itself is unchanged.
-fn generic_gid(
-    tags: &[(String, String)],
-    kind: PlaceKind,
-    name: &str,
-    centroid: Coord,
-) -> String {
+fn generic_gid(tags: &[(String, String)], kind: PlaceKind, name: &str, centroid: Coord) -> String {
     let upstream = tags
         .iter()
         .find(|(k, _)| k == "id")

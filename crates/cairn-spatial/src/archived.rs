@@ -534,11 +534,7 @@ pub fn pip_archived_ref(
 /// math per edge avoids the divide in the legacy `ring_crossings`
 /// path because both endpoints' x are precomputed.
 #[inline]
-fn archived_edge_crossings(
-    edges: &<Vec<[f64; 4]> as Archive>::Archived,
-    px: f64,
-    py: f64,
-) -> u32 {
+fn archived_edge_crossings(edges: &<Vec<[f64; 4]> as Archive>::Archived, px: f64, py: f64) -> u32 {
     // partition_point returns the first idx where predicate fails;
     // edges with min_y <= py form a contiguous prefix.
     let n = edges.len();
@@ -710,7 +706,7 @@ mod tests {
         // counts it) and the rest must end up sorted by min_y.
         let ring = vec![
             [0.0, 0.0],
-            [10.0, 0.0],   // horizontal — strip
+            [10.0, 0.0], // horizontal — strip
             [10.0, 4.0],
             [10.0, 8.0],
             [0.0, 8.0],

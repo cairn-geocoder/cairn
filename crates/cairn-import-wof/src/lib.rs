@@ -136,9 +136,7 @@ pub fn import(sqlite_path: &Path) -> Result<WofImport, ImportError> {
         // Pelias-compatible global identifier. WoF placetype is the
         // upstream "kind" and `wof_id` is the upstream stable id, so
         // the gid is identical to what Pelias emits for the same row.
-        if let Some(gid) =
-            synthesize_gid("wof", &row.placetype, &row.wof_id.to_string())
-        {
+        if let Some(gid) = synthesize_gid("wof", &row.placetype, &row.wof_id.to_string()) {
             tags.push((GID_TAG.into(), gid));
         }
 

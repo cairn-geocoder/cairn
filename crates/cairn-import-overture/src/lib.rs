@@ -193,7 +193,9 @@ fn stamp_gids(places: &mut [Place], gid_kind: &str) {
             .iter()
             .find(|(k, _)| k == "id")
             .map(|(_, v)| v.clone());
-        let gid = match upstream.as_deref().and_then(|id| synthesize_gid("overture", gid_kind, id))
+        let gid = match upstream
+            .as_deref()
+            .and_then(|id| synthesize_gid("overture", gid_kind, id))
         {
             Some(g) => g,
             None => {

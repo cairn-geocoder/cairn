@@ -64,8 +64,7 @@ fn extract(s: &str) -> Vec<String> {
     // aren't keyed on user input adversarially, so the security
     // guarantee is wasted budget.
     let cap = chars.len().saturating_sub(TRIGRAM_LEN - 1);
-    let mut seen: FxHashSet<String> =
-        FxHashSet::with_capacity_and_hasher(cap, Default::default());
+    let mut seen: FxHashSet<String> = FxHashSet::with_capacity_and_hasher(cap, Default::default());
     let mut out: Vec<String> = Vec::with_capacity(cap);
     for w in chars.windows(TRIGRAM_LEN) {
         let mut buf = String::with_capacity(TRIGRAM_LEN * 4);
