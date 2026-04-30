@@ -1517,9 +1517,12 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     // schema v4 adds `building_tiles` (v0.3 lane A). v3 readers
     // tolerate it via `#[serde(default)]` on the struct field, so
     // bump-and-forget is safe; the version bump is purely a signal
-    // for tooling that wants to gate features on the field.
+    // for tooling that wants to gate features on the field. v5
+    // additionally signals the new archived admin-tile rkyv layout
+    // (sorted edge list per ring); v4 readers can still parse the
+    // manifest but will fail to load the per-tile blobs.
     let manifest = Manifest {
-        schema_version: 4,
+        schema_version: 5,
         built_at: now_iso8601(),
         bundle_id: args.bundle_id,
         sources,

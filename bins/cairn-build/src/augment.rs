@@ -74,8 +74,8 @@ pub fn cmd_augment(args: AugmentArgs) -> Result<()> {
         // Bundle just gained building_tiles → bump the manifest
         // version so downstream tooling can gate on it. Existing v3
         // bundles being augmented in place jump straight to v4.
-        if manifest.schema_version < 4 {
-            manifest.schema_version = 4;
+        if manifest.schema_version < 5 {
+            manifest.schema_version = 5;
         }
     }
     if let Some(dump) = args.wikidata.as_deref() {
@@ -397,7 +397,7 @@ mod tests {
         };
 
         let mut manifest = Manifest {
-            schema_version: 4,
+            schema_version: 5,
             built_at: "2026-04-30T00:00:00Z".into(),
             bundle_id: "attach-test".into(),
             sources: vec![],

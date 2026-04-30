@@ -25,7 +25,13 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 const MAGIC: &[u8; 4] = b"CRAD";
-const VERSION_RAW: u32 = 1;
+/// On-disk version of the archived admin tile format.
+/// - v1 — original layout: `polygon_rings` + `polygon_bboxes` only.
+/// - v2 — adds `polygon_edges` per ring (sorted by min-y) so PIP
+///   can binary-search the y-range instead of scanning every edge.
+///   Existing v1 tiles fail to load with `ArchivedError::Header("v1
+///   tile rejected — rebuild bundle for the v0.5 schema")`.
+const VERSION_RAW: u32 = 2;
 const HEADER_LEN: usize = 16;
 
 /// Flat mirror of [`AdminFeature`] suitable for `#[derive(Archive)]`.
@@ -47,6 +53,13 @@ pub struct ArchivedAdminFeature {
     /// Lets the PIP fast-path skip whole polygons without sweeping vertices.
     /// Same length as `polygon_rings`.
     pub polygon_bboxes: Vec<[f64; 4]>,
+    /// Per-ring sorted edge records, parallel to `polygon_rings`:
+    /// `polygon_edges[poly_idx][ring_idx][edge_idx] = [min_y, max_y, x_at_min_y, x_at_max_y]`.
+    /// Sorted by `min_y` ascending. PIP binary-searches the upper
+    /// bound of `min_y <= py`, then scans backward filtering by
+    /// `max_y > py` — the dense-polygon hot path examines roughly
+    /// `O(sqrt(V))` edges instead of `O(V)`.
+    pub polygon_edges: Vec<Vec<Vec<[f64; 4]>>>,
 }
 
 #[derive(Archive, Serialize, Deserialize, Clone, Debug, Default)]
@@ -83,6 +96,11 @@ pub fn to_archived(f: &AdminFeature) -> ArchivedAdminFeature {
         })
         .collect();
 
+    let polygon_edges: Vec<Vec<Vec<[f64; 4]>>> = polygon_rings
+        .iter()
+        .map(|poly| poly.iter().map(|ring| build_sorted_edges(ring)).collect())
+        .collect();
+
     ArchivedAdminFeature {
         place_id: f.place_id,
         level: f.level,
@@ -92,7 +110,37 @@ pub fn to_archived(f: &AdminFeature) -> ArchivedAdminFeature {
         admin_path: f.admin_path.clone(),
         polygon_rings,
         polygon_bboxes,
+        polygon_edges,
     }
+}
+
+/// Build the sorted-by-min-y edge list for one ring. Each entry is
+/// `[min_y, max_y, x_at_min_y, x_at_max_y]`. Used by `pip_archived_ref`'s
+/// fast path: binary-search the `min_y` ordering for the upper bound
+/// where `min_y <= py`, scan backward filtering on `max_y > py`.
+fn build_sorted_edges(ring: &[[f64; 2]]) -> Vec<[f64; 4]> {
+    if ring.len() < 2 {
+        return Vec::new();
+    }
+    let mut edges: Vec<[f64; 4]> = Vec::with_capacity(ring.len() - 1);
+    for i in 0..ring.len() - 1 {
+        let (ax, ay) = (ring[i][0], ring[i][1]);
+        let (bx, by) = (ring[i + 1][0], ring[i + 1][1]);
+        if ay == by {
+            // Horizontal edge — ray-cast crossings rule never counts
+            // it (the strict inequality `(ay > py) != (by > py)` is
+            // never satisfied). Skip to keep the edge list tight.
+            continue;
+        }
+        let (min_y, max_y, x_at_min_y, x_at_max_y) = if ay < by {
+            (ay, by, ax, bx)
+        } else {
+            (by, ay, bx, ax)
+        };
+        edges.push([min_y, max_y, x_at_min_y, x_at_max_y]);
+    }
+    edges.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal));
+    edges
 }
 
 /// Convert a flat archived feature back into the runtime form. Used when
@@ -420,6 +468,20 @@ fn parse_header(raw: &[u8], expected_magic: &[u8; 4]) -> Result<(usize, usize), 
 /// rkyv-archived form, skipping the runtime hydration into
 /// `ArchivedAdminFeature`. This is the zero-copy hot path used by
 /// [`AdminTileArchive::archived()`].
+///
+/// Two-stage filter per polygon:
+/// 1. **Polygon bbox prefilter** (`polygon_bboxes`) skips whole
+///    polygons that don't contain the query — most PIP candidates
+///    miss here on small bbox-misaligned queries.
+/// 2. **Edge-list ray-cast.** Each ring's `polygon_edges` list is
+///    sorted by `min_y` ascending. Binary-search for the upper bound
+///    of edges with `min_y <= py`; the prefix is the candidate set.
+///    Scan it filtering on `max_y > py` (constant per-edge cost) and
+///    counting `x_at_py > px` crossings.
+///
+/// For dense polygons (1000s of vertices) the prefix scan visits
+/// only the edges whose y-interval brackets `py` — typically
+/// O(sqrt(V)) — instead of every edge. Holes use the same fast path.
 pub fn pip_archived_ref(
     feat: &<ArchivedAdminFeature as Archive>::Archived,
     point: [f64; 2],
@@ -434,19 +496,27 @@ pub fn pip_archived_ref(
                 continue;
             }
         }
-        let outer_ref: &[[f64; 2]] = poly[0].as_slice();
-        if ring_crossings(outer_ref, px, py) % 2 == 0 {
+        let edges_for_poly = feat.polygon_edges.get(poly_idx);
+        let outer_crossings = match edges_for_poly.and_then(|p| p.first()) {
+            Some(edges) => archived_edge_crossings(edges, px, py),
+            None => ring_crossings(poly[0].as_slice(), px, py),
+        };
+        if outer_crossings % 2 == 0 {
             continue;
         }
         let mut in_hole = false;
-        for hole_archived in poly.iter().skip(1) {
+        for (ring_idx, hole_archived) in poly.iter().enumerate().skip(1) {
             let hole: &[[f64; 2]] = hole_archived.as_slice();
             if let Some(hbbox) = ring_bbox(hole) {
                 if !point_in_bbox(&hbbox, px, py) {
                     continue;
                 }
             }
-            if ring_crossings(hole, px, py) % 2 == 1 {
+            let hole_crossings = match edges_for_poly.and_then(|p| p.get(ring_idx)) {
+                Some(edges) => archived_edge_crossings(edges, px, py),
+                None => ring_crossings(hole, px, py),
+            };
+            if hole_crossings % 2 == 1 {
                 in_hole = true;
                 break;
             }
@@ -456,6 +526,41 @@ pub fn pip_archived_ref(
         }
     }
     false
+}
+
+/// Edge-list crossings count using the rkyv-archived sorted form.
+/// Binary-search for the upper bound of `min_y <= py`, then sweep
+/// candidates filtering on `max_y > py`. Constant-time crossing
+/// math per edge avoids the divide in the legacy `ring_crossings`
+/// path because both endpoints' x are precomputed.
+#[inline]
+fn archived_edge_crossings(
+    edges: &<Vec<[f64; 4]> as Archive>::Archived,
+    px: f64,
+    py: f64,
+) -> u32 {
+    // partition_point returns the first idx where predicate fails;
+    // edges with min_y <= py form a contiguous prefix.
+    let n = edges.len();
+    let upper = edges.partition_point(|e| e[0] <= py);
+    let mut crossings: u32 = 0;
+    for i in 0..upper {
+        let e = &edges[i];
+        let (min_y, max_y, x_at_min_y, x_at_max_y) = (e[0], e[1], e[2], e[3]);
+        if max_y <= py {
+            continue;
+        }
+        // Linear interpolation in y between (min_y, x_at_min_y) and
+        // (max_y, x_at_max_y). max_y > py and min_y <= py guarantee
+        // the denominator is non-zero.
+        let dy = max_y - min_y;
+        let x_at_py = x_at_min_y + (x_at_max_y - x_at_min_y) * (py - min_y) / dy;
+        if x_at_py > px {
+            crossings += 1;
+        }
+    }
+    let _ = n;
+    crossings
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -599,6 +704,87 @@ mod tests {
     }
 
     #[test]
+    fn build_sorted_edges_strips_horizontals_and_sorts_by_min_y() {
+        // Closed unit square + one horizontal edge inside the
+        // sequence. The horizontal must be skipped (ray-cast never
+        // counts it) and the rest must end up sorted by min_y.
+        let ring = vec![
+            [0.0, 0.0],
+            [10.0, 0.0],   // horizontal — strip
+            [10.0, 4.0],
+            [10.0, 8.0],
+            [0.0, 8.0],
+            [0.0, 4.0],
+            [0.0, 0.0],
+        ];
+        let edges = build_sorted_edges(&ring);
+        // 6 segments total: (0,0)→(10,0) and (10,8)→(0,8) are both
+        // horizontal — strip. 4 vertical edges remain.
+        assert_eq!(edges.len(), 4);
+        // min_y monotonic ascending.
+        for w in edges.windows(2) {
+            assert!(w[0][0] <= w[1][0], "edges out of order: {:?}", edges);
+        }
+    }
+
+    #[test]
+    fn pip_archived_ref_handles_concave_polygon() {
+        // U-shape: bbox (0..10, 0..10) covers the inside-the-notch
+        // region, but the polygon does not. Tests that the edge-list
+        // ray-cast (not just the bbox prefilter) returns the right
+        // answer.
+        //
+        //  10  *--------*
+        //      |        |
+        //   8  |  *--*  |
+        //      |  |  |  |   ← notch is OUTSIDE the polygon
+        //   2  |  *--*  |
+        //      |        |
+        //   0  *--------*
+        //      0  3  7  10
+        let outer = LineString::from(vec![
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let hole = LineString::from(vec![
+            (3.0, 2.0),
+            (7.0, 2.0),
+            (7.0, 8.0),
+            (3.0, 8.0),
+            (3.0, 2.0),
+        ]);
+        let f = AdminFeature {
+            place_id: 7,
+            level: 0,
+            kind: "country".into(),
+            name: "U".into(),
+            centroid: Coord { lon: 5.0, lat: 5.0 },
+            admin_path: vec![],
+            polygon: MultiPolygon(vec![Polygon::new(outer, vec![hole])]),
+        };
+        let archived = to_archived(&f);
+        let blob = serialize_layer(&ArchivedAdminLayer {
+            features: vec![archived],
+        })
+        .unwrap();
+        let tile = AdminTileArchive::from_aligned(blob).unwrap();
+        let layer = tile.archived();
+        let feat = &layer.features[0];
+
+        // Inside the polygon (above the hole).
+        assert!(pip_archived_ref(feat, [5.0, 9.0]));
+        // Inside the polygon (below the hole).
+        assert!(pip_archived_ref(feat, [5.0, 1.0]));
+        // Inside the hole (which is outside the polygon).
+        assert!(!pip_archived_ref(feat, [5.0, 5.0]));
+        // Outside the bbox entirely.
+        assert!(!pip_archived_ref(feat, [11.0, 11.0]));
+    }
+
+    #[test]
     fn pip_empty_multipolygon() {
         let a = ArchivedAdminFeature {
             place_id: 0,
@@ -609,6 +795,7 @@ mod tests {
             admin_path: vec![],
             polygon_rings: vec![],
             polygon_bboxes: vec![],
+            polygon_edges: vec![],
         };
         assert!(!pip_archived(&a, [0.0, 0.0]));
     }
