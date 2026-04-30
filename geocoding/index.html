@@ -442,13 +442,14 @@
 
         <article class="offer">
           <div class="offer-bullet">·</div>
-          <h3>Pelias-compatible API</h3>
+          <h3>Familiar HTTP API</h3>
           <p>
-            Drop-in shape for code that already calls Pelias —
-            <code>/v1/search</code>, <code>/v1/reverse</code>,
-            <code>/v1/structured</code>, <code>?text=</code>,
-            <code>?focus.point.lon</code>. Migration is usually a
-            DNS swap.
+            Standard REST shape: <code>/v1/search</code>,
+            <code>/v1/reverse</code>, <code>/v1/structured</code>,
+            <code>?text=</code>, <code>?focus.point.lon</code>. Each
+            endpoint returns a clean JSON envelope you can hit with
+            curl, Postman, or any HTTP client. Teams already running
+            an open-source geocoder typically migrate with a DNS swap.
           </p>
         </article>
 
@@ -456,7 +457,8 @@
           <div class="offer-bullet">·</div>
           <h3>Stable bookmark IDs</h3>
           <p>
-            Every Place ships a Pelias-style <code>gid</code>
+            Every Place ships a global identifier (<code>gid</code>)
+            of shape <code>&lt;source&gt;:&lt;type&gt;:&lt;id&gt;</code>
             (<code>osm:way:12345</code>,
             <code>wof:locality:101748479</code>) that survives bundle
             rebuilds and federation hops. Save a record once;

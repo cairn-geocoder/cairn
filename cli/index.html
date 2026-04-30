@@ -471,9 +471,10 @@ cairn-build inspect-building-tile --bundle ./bundle-li --tile 2:49509</code></pr
         by gid or u64 (<code>/v1/place?ids=…</code>), buildings
         (<code>/v1/buildings</code>), layers metadata
         (<code>/v1/layers</code>), bundle info (<code>/v1/info</code>),
-        SBOM (<code>/v1/sbom</code>), Pelias-compatible aliases
-        (<code>/search</code>, <code>/autocomplete</code>,
-        <code>/reverse</code>, <code>/place</code>), ops endpoints
+        SBOM (<code>/v1/sbom</code>), unprefixed aliases of the same
+        endpoints (<code>/search</code>, <code>/autocomplete</code>,
+        <code>/reverse</code>, <code>/place</code>) for clients that
+        target the unversioned path, ops endpoints
         (<code>/healthz</code>, <code>/readyz</code>,
         <code>/metrics</code>, <code>/openapi.json</code>), and admin
         hot-reload (<code>POST /admin/reload</code>).

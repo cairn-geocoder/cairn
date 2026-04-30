@@ -330,9 +330,9 @@
             <p>
               Two recent landings layer on top of the v0.2 build pipeline:
               <strong>augmenters</strong> that enrich an existing bundle in
-              place (no rebuild needed), and a <strong>Pelias-compatible
-              <code>gid</code></strong> on every Place so bookmarks survive
-              rebuilds and federation hops.
+              place (no rebuild needed), and a <strong>stable global
+              identifier (<code>gid</code>)</strong> on every Place so
+              bookmarks survive rebuilds and federation hops.
             </p>
           </div>
           <div class="r"><a href="cli/#cmd-augment">CLI reference →</a></div>
@@ -364,13 +364,18 @@
           </a>
           <a class="tile" href="#api">
             <span class="lbl">v0.4 · NEW</span>
-            <h4>Pelias-style gid</h4>
+            <h4>Stable global identifier</h4>
             <p>
-              Every Place ships a stable <code>gid</code> field
+              Every Place ships a <code>gid</code> field that survives
+              bundle rebuilds and federation hops
               (<code>osm:way:12345</code>, <code>wof:locality:101748479</code>,
-              <code>overture:place:08bb…</code>). Resolves through
-              <code>/v1/place?ids=…</code> after rebuilds + across
-              federation members. Pelias clients pick it up unchanged.
+              <code>overture:place:08bb…</code>). Bookmark a record once;
+              resolve it years later via
+              <code>/v1/place?ids=…</code>. Format is
+              <code>&lt;source&gt;:&lt;type&gt;:&lt;id&gt;</code> — the
+              same shape several open-source geocoders converge on, so
+              existing client code that already deserializes a
+              <code>gid</code> field works unchanged.
             </p>
             <span class="arrow">GET /v1/place?ids=osm:way:1 →</span>
           </a>
@@ -416,7 +421,7 @@
           </div>
           <div class="ex">
             <div class="ex-hd"><span class="num">ii.</span><h4>Lookup by gid</h4></div>
-            <div class="code"><pre><code><span class="tk-c"># Pelias-style /v1/place. Mix gids and u64 place_ids freely;</span>
+            <div class="code"><pre><code><span class="tk-c"># Lookup by stable gid. Mix gids and u64 place_ids freely;</span>
 <span class="tk-c"># missing identifiers return empty (not 404).</span>
 <span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/place \
     ?ids=osm:way:12345,wof:locality:101748479'</span></code></pre></div>
@@ -467,7 +472,7 @@
           <div class="l">
             <div class="num">07 — Reference</div>
             <h2>The HTTP API at a glance.</h2>
-            <p>Pelias-compatible endpoint shape. Same curl, same JSON envelope; substitute <code>localhost:8080</code> for whatever <code>cairn-serve</code> binds.</p>
+            <p>Each endpoint shows a one-line plain description plus the technical knobs available. Substitute <code>localhost:8080</code> for whatever <code>cairn-serve</code> binds.</p>
           </div>
           <div class="r"><a href="https://github.com/cairn-geocoder/cairn/blob/main/crates/cairn-api/src/lib.rs">Source →</a></div>
         </div>
@@ -478,55 +483,82 @@
           <div class="api-row">
             <span class="method get">GET</span>
             <span class="endpoint">/v1/search</span>
-            <span class="desc">Forward + autocomplete + fuzzy + phonetic + semantic + layer + focus + bbox.</span>
+            <span class="desc">
+              <span class="desc-plain">"What place am I looking for?" — type a name or address, get a ranked list back.</span>
+              <span class="desc-tech">Forward + autocomplete + fuzzy + phonetic + semantic + layer + focus + bbox.</span>
+            </span>
             <span class="since">v0.0.1</span>
           </div>
           <div class="api-row">
             <span class="method get">GET</span>
             <span class="endpoint">/v1/structured</span>
-            <span class="desc">Field-by-field address search with auto layer hint.</span>
+            <span class="desc">
+              <span class="desc-plain">"I have address fields, find matches" — pass street, city, postcode separately for tighter ranking.</span>
+              <span class="desc-tech">Field-by-field address search with auto layer hint.</span>
+            </span>
             <span class="since">v0.0.1</span>
           </div>
           <div class="api-row">
             <span class="method get">GET</span>
             <span class="endpoint">/v1/reverse</span>
-            <span class="desc">Point-in-polygon with nearest-centroid fallback.</span>
+            <span class="desc">
+              <span class="desc-plain">"What is at this point on the map?" — give it lat/lon, get the city / district / country containing it (with the closest POI as a fallback).</span>
+              <span class="desc-tech">Point-in-polygon with nearest-centroid fallback.</span>
+            </span>
             <span class="since">v0.0.1</span>
           </div>
           <div class="api-row">
             <span class="method get">GET</span>
             <span class="endpoint">/v1/parse</span>
-            <span class="desc">Free-text address → ParsedAddress (heuristic + libpostal).</span>
+            <span class="desc">
+              <span class="desc-plain">"Split this messy address into parts" — input one string, get back house number / street / city / postcode separately.</span>
+              <span class="desc-tech">Free-text address → ParsedAddress (heuristic + libpostal).</span>
+            </span>
             <span class="since">v0.0.1</span>
           </div>
           <div class="api-row">
             <span class="method get">GET</span>
             <span class="endpoint">/v1/expand</span>
-            <span class="desc">Free-text address → normalized variants.</span>
+            <span class="desc">
+              <span class="desc-plain">"Give me alternate spellings" — turn one address into the normalized variants ("St" ↔ "Saint", abbreviations expanded) for better recall.</span>
+              <span class="desc-tech">Free-text address → normalized variants.</span>
+            </span>
             <span class="since">v0.0.1</span>
           </div>
           <div class="api-row">
             <span class="method get">GET</span>
             <span class="endpoint">/v1/place</span>
-            <span class="desc">Lookup by Pelias-style <code>gid</code> (<code>osm:way:12345</code>) or legacy bundle-local u64. Comma-separated list. Stable across rebuilds.</span>
+            <span class="desc">
+              <span class="desc-plain">"I saved this place yesterday — find it again" — pass a stable identifier (or several) and get the full record. Bookmark-friendly: identifiers survive bundle rebuilds.</span>
+              <span class="desc-tech">Lookup by stable <code>gid</code> (<code>osm:way:12345</code>) or legacy bundle-local u64. Comma-separated list.</span>
+            </span>
             <span class="since">v0.4 · UPDATED</span>
           </div>
           <div class="api-row">
             <span class="method get">GET</span>
             <span class="endpoint">/v1/buildings</span>
-            <span class="desc">v0.3 lane A — building footprints at lon/lat. <code>?mode=at</code> (bbox-contains, default) or <code>?mode=nearest</code>.</span>
+            <span class="desc">
+              <span class="desc-plain">"Which building is at this point?" — returns the building footprint(s) covering a coordinate, or the closest N if you ask for the nearest mode.</span>
+              <span class="desc-tech">Building footprints at lon/lat. <code>?mode=at</code> (bbox-contains, default) or <code>?mode=nearest</code>.</span>
+            </span>
             <span class="since">v0.3 · NEW</span>
           </div>
           <div class="api-row">
             <span class="method get">GET</span>
             <span class="endpoint">/v1/info</span>
-            <span class="desc">Bundle metadata, federation IDs, uptime.</span>
+            <span class="desc">
+              <span class="desc-plain">"What's this server running?" — version, bundle ID, uptime, federation members. Useful for debugging and dashboards.</span>
+              <span class="desc-tech">Bundle metadata, federation IDs, uptime.</span>
+            </span>
             <span class="since">v0.1.0</span>
           </div>
           <div class="api-row">
             <span class="method get">GET</span>
             <span class="endpoint">/v1/sbom</span>
-            <span class="desc">CycloneDX 1.5 SBOM for the running bundle.</span>
+            <span class="desc">
+              <span class="desc-plain">"Show me the bill of materials" — every dependency, every dataset, every version. For audit, supply-chain scanning, vulnerability triage.</span>
+              <span class="desc-tech">CycloneDX 1.5 SBOM for the running bundle.</span>
+            </span>
             <span class="since">v0.1.0</span>
           </div>
           <div class="api-row">

@@ -16,7 +16,7 @@
     { "name": "reverse", "description": "Reverse geocoding." },
     { "name": "parse", "description": "Address parsing utilities." },
     { "name": "ops", "description": "Health + metrics." },
-    { "name": "pelias", "description": "Pelias-compatible aliases." }
+    { "name": "pelias", "description": "Unprefixed alias paths (`/search`, `/autocomplete`, `/reverse`, `/place`) for clients targeting the unversioned shape used by some open-source geocoders." }
   ],
   "paths": {
     "/healthz": {
@@ -129,12 +129,12 @@
       "get": {
         "tags": ["search"],
         "summary": "Resolve one or more bookmarks to full Place records.",
-        "description": "Comma-separated `ids`. Each token is either a Pelias-style global identifier (`<source>:<type>:<id>`, e.g. `osm:way:12345`, `wof:locality:101748479`) or a legacy bundle-local u64 `place_id`. Tokens containing a colon are routed through the gid resolver; bare digits use the legacy path. Both fan out across federation members. Returns a Pelias FeatureCollection. Missing identifiers are silently skipped — partial results are not an error.",
+        "description": "Comma-separated `ids`. Each token is either a global identifier of shape `<source>:<type>:<id>` (e.g. `osm:way:12345`, `wof:locality:101748479`) or a legacy bundle-local u64 `place_id`. Tokens containing a colon are routed through the gid resolver; bare digits use the legacy path. Both fan out across federation members. Returns a GeoJSON FeatureCollection envelope. Missing identifiers are silently skipped — partial results are not an error.",
         "parameters": [
           { "name": "ids", "in": "query", "required": true, "description": "Comma-separated gids and/or u64 place_ids.", "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "Pelias FeatureCollection" },
+          "200": { "description": "GeoJSON FeatureCollection" },
           "400": { "description": "Bad request — missing or malformed `ids`." },
           "503": { "description": "Text index not loaded." }
         }
@@ -143,17 +143,17 @@
     "/place": {
       "get": {
         "tags": ["pelias"],
-        "summary": "Pelias-compatible alias of /v1/place.",
+        "summary": "Unprefixed alias of /v1/place.",
         "parameters": [
-          { "name": "ids", "in": "query", "required": true, "description": "Comma-separated Pelias `gid` values, e.g. `osm:way:12345,wof:locality:101748479`. Bundle-local u64 place_ids are also accepted.", "schema": { "type": "string" } }
+          { "name": "ids", "in": "query", "required": true, "description": "Comma-separated `gid` values, e.g. `osm:way:12345,wof:locality:101748479`. Bundle-local u64 place_ids are also accepted.", "schema": { "type": "string" } }
         ],
-        "responses": { "200": { "description": "Pelias FeatureCollection" } }
+        "responses": { "200": { "description": "GeoJSON FeatureCollection" } }
       }
     },
     "/search": {
       "get": {
         "tags": ["pelias"],
-        "summary": "Pelias-compatible forward search.",
+        "summary": "Forward search via the unprefixed path used by some open-source geocoder clients.",
         "parameters": [
           { "name": "text",  "in": "query", "required": true, "schema": { "type": "string" } },
           { "name": "size",  "in": "query", "schema": { "type": "integer" } },
@@ -161,38 +161,38 @@
           { "name": "focus.point.lat", "in": "query", "schema": { "type": "number" } },
           { "name": "focus.point.lon", "in": "query", "schema": { "type": "number" } }
         ],
-        "responses": { "200": { "description": "Pelias FeatureCollection" } }
+        "responses": { "200": { "description": "GeoJSON FeatureCollection" } }
       }
     },
     "/autocomplete": {
       "get": {
         "tags": ["pelias"],
-        "summary": "Pelias-compatible autocomplete.",
+        "summary": "Autocomplete via the unprefixed path.",
         "parameters": [
           { "name": "text", "in": "query", "required": true, "schema": { "type": "string" } },
           { "name": "size", "in": "query", "schema": { "type": "integer" } }
         ],
-        "responses": { "200": { "description": "Pelias FeatureCollection" } }
+        "responses": { "200": { "description": "GeoJSON FeatureCollection" } }
       }
     },
     "/v1/autocomplete": {
       "get": {
         "tags": ["pelias"],
-        "summary": "Pelias-compatible autocomplete (alternate path).",
+        "summary": "Autocomplete (alternate versioned path).",
         "parameters": [{ "name": "text", "in": "query", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Pelias FeatureCollection" } }
+        "responses": { "200": { "description": "GeoJSON FeatureCollection" } }
       }
     },
     "/reverse": {
       "get": {
         "tags": ["pelias"],
-        "summary": "Pelias-compatible reverse geocoding.",
+        "summary": "Reverse geocoding via the unprefixed path.",
         "parameters": [
           { "name": "point.lat", "in": "query", "required": true, "schema": { "type": "number" } },
           { "name": "point.lon", "in": "query", "required": true, "schema": { "type": "number" } },
           { "name": "size",      "in": "query", "schema": { "type": "integer" } }
         ],
-        "responses": { "200": { "description": "Pelias FeatureCollection" } }
+        "responses": { "200": { "description": "GeoJSON FeatureCollection" } }
       }
     }
   },
@@ -210,7 +210,7 @@
         "type": "object",
         "properties": {
           "place_id":    { "type": "integer", "format": "uint64" },
-          "gid":         { "type": "string", "description": "Pelias-style global identifier (`<source>:<type>:<id>`). Stable across rebuilds; resolvable via /v1/place." },
+          "gid":         { "type": "string", "description": "Stable global identifier of shape `<source>:<type>:<id>` (e.g. `osm:way:12345`, `wof:locality:101748479`). Survives bundle rebuilds; resolvable via /v1/place." },
           "name":        { "type": "string" },
           "kind":        { "type": "string" },
           "level":       { "type": "integer" },
@@ -233,7 +233,7 @@
         "type": "object",
         "properties": {
           "place_id":    { "type": "integer", "format": "uint64" },
-          "gid":         { "type": "string", "description": "Pelias-style global identifier (`<source>:<type>:<id>`)." },
+          "gid":         { "type": "string", "description": "Stable global identifier of shape `<source>:<type>:<id>`." },
           "name":        { "type": "string" },
           "kind":        { "type": "string" },
           "level":       { "type": "integer" },

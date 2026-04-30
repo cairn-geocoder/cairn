@@ -50,6 +50,7 @@
           that's enough — and how each layer earns its place.
         </p>
         <div class="algo-toc">
+          <a href="#vocab">0 · Vocabulary</a>
           <a href="#build">1 · Build pipeline</a>
           <a href="#search">2 · Search pipeline</a>
           <a href="#reverse">3 · Reverse pipeline</a>
@@ -59,6 +60,125 @@
           <a href="#perf">7 · Performance characteristics</a>
         </div>
       </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="algo-section" id="vocab">
+      <div class="section-num">00</div>
+      <h2>Vocabulary</h2>
+      <p class="section-lede">
+        Performance and indexing terms used throughout the rest of
+        this page. Skim once, then forward; every term below shows up
+        repeatedly in the build / search / reverse / perf sections.
+      </p>
+
+      <dl class="vocab-list">
+        <dt>p50 / p95 / p99 latency</dt>
+        <dd>
+          Sort every request's response time low-to-high. <strong>p50</strong> is
+          the median: half of requests beat it. <strong>p99</strong> is the
+          slowest 1 % cut-off — only 1 in 100 requests is worse. We
+          report p99 because real systems are judged by their bad
+          days, not their averages.
+        </dd>
+
+        <dt>RPS (requests per second)</dt>
+        <dd>
+          Throughput. <em>Peak RPS</em> is the highest sustained load
+          the server handled before tail latency degrades past target.
+          Reported alongside latency so a number can't lie about one
+          without admitting the other.
+        </dd>
+
+        <dt>RSS (resident set size)</dt>
+        <dd>
+          The amount of physical RAM the process is actively using.
+          Smaller is better for fitting on cheap hosts and packing
+          multiple shards onto one box.
+        </dd>
+
+        <dt>mmap</dt>
+        <dd>
+          Memory-mapping a file: ask the kernel to expose disk bytes
+          as if they were already in RAM, with the OS paging them in
+          on demand. Reads avoid a copy and benefit from the
+          page cache; cold queries touch disk, hot ones don't.
+        </dd>
+
+        <dt>BM25</dt>
+        <dd>
+          The classic relevance score for text search — like TF-IDF
+          but with diminishing returns on term frequency. Tantivy
+          (the search engine library Cairn uses) ranks results with
+          BM25 by default.
+        </dd>
+
+        <dt>PIP (point-in-polygon)</dt>
+        <dd>
+          Given a coordinate and a set of polygons, decide which
+          polygons contain the point. Reverse geocoding's core
+          operation: "I'm at lat 47.14, lon 9.52 — what city is that
+          inside?".
+        </dd>
+
+        <dt>k-NN (k nearest neighbors)</dt>
+        <dd>
+          Given a query point, return the <em>k</em> closest items.
+          Used as a fallback for reverse when no polygon contains the
+          query coordinate (e.g. you're a kilometre off the coast of
+          Liechtenstein — return the closest few villages).
+        </dd>
+
+        <dt>R*-tree</dt>
+        <dd>
+          A spatial index that organizes bounding boxes hierarchically
+          so PIP and k-NN queries skip irrelevant regions instead of
+          scanning every polygon. Used to sort tile envelopes, then to
+          decide which tile blobs to mmap.
+        </dd>
+
+        <dt>tile</dt>
+        <dd>
+          A bounded geographic cell. Cairn stores Place data partitioned
+          per Valhalla-style tile (4° at level 0, 1° at level 1,
+          0.25° at level 2) so a query touches only the tiles its
+          bounding box overlaps — not the whole planet.
+        </dd>
+
+        <dt>rkyv</dt>
+        <dd>
+          A Rust serialization format that lays bytes out exactly as
+          the program sees them in memory. Combined with mmap, it
+          lets queries read structured data with zero parsing — the
+          file <em>is</em> the in-memory representation.
+        </dd>
+
+        <dt>blake3</dt>
+        <dd>
+          A modern cryptographic hash. The bundle's
+          <code>manifest.toml</code> records a blake3 digest of every
+          tile and index file, so verification is one fast pass over
+          the directory.
+        </dd>
+
+        <dt>Place / AdminFeature / BuildingFootprint</dt>
+        <dd>
+          The three on-disk row types. <strong>Place</strong> = point
+          (city centre, POI, address). <strong>AdminFeature</strong> = polygon
+          (country, region, district). <strong>BuildingFootprint</strong> = polygon
+          + height (Microsoft Building Footprints output).
+        </dd>
+
+        <dt>gid / place_id</dt>
+        <dd>
+          Two identifiers per Place. <code>place_id</code> is a packed
+          u64 — cheap, but rebuilds change it. <code>gid</code> is a
+          structured string of shape <code>&lt;source&gt;:&lt;type&gt;:&lt;id&gt;</code>
+          (e.g. <code>osm:way:12345</code>) that survives bundle
+          rebuilds. Bookmark the gid; reload via
+          <code>/v1/place?ids=…</code>.
+        </dd>
+      </dl>
     </section>
 
     <!-- ─────────────────────────────────────────────────────────── -->
@@ -569,7 +689,8 @@ JSON response
         miss the query.
       </p>
       <p>
-        Each Place carries a Pelias-compatible <code>gid</code> tag
+        Each Place carries a stable global identifier (<code>gid</code>)
+        tag of shape <code>&lt;source&gt;:&lt;type&gt;:&lt;id&gt;</code>
         (<code>osm:way:12345</code>,
         <code>wof:locality:101748479</code>,
         <code>overture:place:08bb…</code>) stamped at import time
@@ -684,7 +805,7 @@ JSON response
         </article>
 
         <article class="diff-card">
-          <h3>Pelias-style stable gid (v0.4)</h3>
+          <h3>Stable global identifier (v0.4)</h3>
           <p>
             Two identifiers per Place — both intentional, both useful:
           </p>
@@ -697,8 +818,9 @@ JSON response
               counter.
             </li>
             <li>
-              <code>gid: String</code> — Pelias-compatible global
-              identifier (<code>osm:way:12345</code>,
+              <code>gid: String</code> — global identifier of shape
+              <code>&lt;source&gt;:&lt;type&gt;:&lt;id&gt;</code>
+              (<code>osm:way:12345</code>,
               <code>wof:locality:101748479</code>,
               <code>overture:place:08bb…</code>). Built at import time
               from upstream stable IDs; sources without one
@@ -711,8 +833,10 @@ JSON response
             Stamped on a reserved <code>gid</code> tag at import time,
             indexed as a tantivy <code>STRING</code> field, surfaced
             on every <code>Hit</code> and resolvable via
-            <code>/v1/place?ids=…</code>. Pelias clients pick up the
-            field unchanged — no SDK change required.
+            <code>/v1/place?ids=…</code>. Format converges with what
+            several open-source geocoders already emit, so existing
+            client code that already deserializes a <code>gid</code>
+            field works unchanged.
           </p>
         </article>
 

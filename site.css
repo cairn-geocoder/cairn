@@ -567,7 +567,19 @@ img, svg { display: block; max-width: 100%; }
 .api-row .method.get { background: var(--ok); }
 .api-row .method.post { background: #5283b6; }
 .api-row .endpoint { font-family: var(--mono); font-size: 13px; color: var(--ink); }
-.api-row .desc { font-size: 13px; color: var(--ink-2); }
+.api-row .desc { font-size: 13px; color: var(--ink-2); display: flex; flex-direction: column; gap: 3px; }
+.api-row .desc .desc-plain {
+  font-family: var(--sans);
+  font-size: 13.5px;
+  color: var(--ink);
+  line-height: 1.45;
+}
+.api-row .desc .desc-tech {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  line-height: 1.4;
+}
 .api-row .since { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
 
 /* ── EXAMPLES STRIP ────────────────────────────────────────────────── */

@@ -325,3 +325,59 @@
   color: var(--accent);
   border-color: var(--accent);
 }
+
+/* ── VOCABULARY DEFINITION LIST ──────────────────────────────────── */
+
+.vocab-list {
+  display: grid;
+  grid-template-columns: minmax(200px, 22%) 1fr;
+  gap: 8px 28px;
+  margin: 24px 0 0;
+  padding: 0;
+  max-width: 920px;
+}
+.vocab-list dt {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  color: var(--accent);
+  font-weight: 500;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule-soft);
+}
+.vocab-list dt:first-of-type,
+.vocab-list dd:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+.vocab-list dd {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  padding-top: 14px;
+  border-top: 1px solid var(--rule-soft);
+}
+.vocab-list dd code {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--rule-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+.vocab-list dd em { color: var(--ink); font-style: italic; }
+.vocab-list dd strong { color: var(--ink); font-weight: 600; }
+@media (max-width: 720px) {
+  .vocab-list {
+    grid-template-columns: 1fr;
+    gap: 4px 0;
+  }
+  .vocab-list dd {
+    border-top: 0;
+    padding-top: 4px;
+    padding-bottom: 14px;
+  }
+  .vocab-list dt:not(:first-of-type) {
+    margin-top: 14px;
+  }
+}
