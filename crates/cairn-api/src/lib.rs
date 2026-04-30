@@ -22,7 +22,7 @@ use cairn_spatial::{AdminIndex, NearestIndex};
 use cairn_text::{Bbox, Hit, SearchMode, SearchOptions, TextError, TextIndex};
 
 mod federated;
-pub use federated::{FederatedAdmin, FederatedNearest, FederatedText};
+pub use federated::{FederatedAdmin, FederatedBuildings, FederatedNearest, FederatedText};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -83,6 +83,7 @@ pub struct AppState {
     text_swap: Arc<arc_swap::ArcSwapOption<FederatedText>>,
     admin_swap: Arc<arc_swap::ArcSwapOption<FederatedAdmin>>,
     nearest_swap: Arc<arc_swap::ArcSwapOption<FederatedNearest>>,
+    buildings_swap: Arc<arc_swap::ArcSwapOption<FederatedBuildings>>,
     bundle_ids_swap: Arc<arc_swap::ArcSwap<Vec<String>>>,
     pub metrics: Arc<Metrics>,
     /// Optional API key. When `Some`, every request to `/v1/*` must
@@ -113,6 +114,9 @@ pub struct BundleSnapshot {
     pub text: Option<Arc<FederatedText>>,
     pub admin: Option<Arc<FederatedAdmin>>,
     pub nearest: Option<Arc<FederatedNearest>>,
+    /// v0.3 lane A — building footprints. `None` on bundles built
+    /// without `cairn-build augment --buildings`.
+    pub buildings: Option<Arc<FederatedBuildings>>,
     pub bundle_ids: Vec<String>,
 }
 
@@ -135,6 +139,7 @@ impl AppState {
             text_swap: Arc::new(arc_swap::ArcSwapOption::from(snapshot.text)),
             admin_swap: Arc::new(arc_swap::ArcSwapOption::from(snapshot.admin)),
             nearest_swap: Arc::new(arc_swap::ArcSwapOption::from(snapshot.nearest)),
+            buildings_swap: Arc::new(arc_swap::ArcSwapOption::from(snapshot.buildings)),
             bundle_ids_swap: Arc::new(arc_swap::ArcSwap::from(Arc::new(snapshot.bundle_ids))),
             metrics,
             api_key,
@@ -153,6 +158,7 @@ impl AppState {
         self.text_swap.store(snapshot.text);
         self.admin_swap.store(snapshot.admin);
         self.nearest_swap.store(snapshot.nearest);
+        self.buildings_swap.store(snapshot.buildings);
         self.bundle_ids_swap.swap(Arc::new(snapshot.bundle_ids))
     }
 
@@ -168,6 +174,10 @@ impl AppState {
 
     pub fn nearest(&self) -> Option<Arc<FederatedNearest>> {
         self.nearest_swap.load_full()
+    }
+
+    pub fn buildings(&self) -> Option<Arc<FederatedBuildings>> {
+        self.buildings_swap.load_full()
     }
 
     pub fn bundle_ids(&self) -> Arc<Vec<String>> {
@@ -440,6 +450,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/parse", get(parse_addr))
         .route("/v1/expand", get(expand_addr))
         .route("/v1/place", get(place_lookup))
+        .route("/v1/buildings", get(buildings_endpoint))
         .route("/v1/layers", get(layers_metadata))
         // Pelias-compatible aliases share the same handlers.
         .route("/v1/autocomplete", get(pelias_autocomplete))
@@ -695,6 +706,15 @@ pub fn load_bundle_snapshot(path: &std::path::Path) -> Result<BundleSnapshot, st
         _ => None,
     };
 
+    let buildings = match manifest.as_ref() {
+        Some(m) if !m.building_tiles.is_empty() => {
+            let entries = m.building_tiles.clone();
+            let idx = cairn_spatial::buildings::BuildingIndex::open(path, entries);
+            Some(Arc::new(FederatedBuildings::from_single(Arc::new(idx))))
+        }
+        _ => None,
+    };
+
     let bundle_id = manifest
         .as_ref()
         .map(|m| m.bundle_id.clone())
@@ -704,6 +724,7 @@ pub fn load_bundle_snapshot(path: &std::path::Path) -> Result<BundleSnapshot, st
         text,
         admin,
         nearest,
+        buildings,
         bundle_ids: vec![bundle_id],
     })
 }
@@ -1202,6 +1223,90 @@ fn reverse_full(state: AppState, lat: f64, lon: f64, probe: Coord) -> Response {
         nearest_poi: nearest_for("poi"),
         nearest_address: nearest_for("address"),
     })
+    .into_response()
+}
+
+// ============================================================
+// /v1/buildings — v0.3 lane A
+// ============================================================
+
+#[derive(Debug, serde::Deserialize)]
+struct BuildingsQuery {
+    lon: Option<f64>,
+    lat: Option<f64>,
+    /// Output mode. `at` (default) returns buildings whose bbox
+    /// contains the point — useful for "what's at this address?".
+    /// `nearest` returns the closest `limit` building centroids
+    /// regardless of overlap.
+    mode: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn buildings_endpoint(
+    State(state): State<AppState>,
+    Query(params): Query<BuildingsQuery>,
+) -> impl IntoResponse {
+    let (lat, lon) = match (params.lat, params.lon) {
+        (Some(lat), Some(lon)) => (lat, lon),
+        _ => {
+            state.metrics.bad_request.fetch_add(1, Ordering::Relaxed);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "lat and lon are required"})),
+            )
+                .into_response();
+        }
+    };
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        state.metrics.bad_request.fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "lat must be in [-90, 90] and lon in [-180, 180]"
+            })),
+        )
+            .into_response();
+    }
+    let limit = params.limit.unwrap_or(10).clamp(1, 200);
+    let probe = Coord { lon, lat };
+    let buildings = match state.buildings() {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "this bundle has no building footprints; \
+                              run `cairn-build augment --buildings`"
+                })),
+            )
+                .into_response();
+        }
+    };
+    let hits = match params.mode.as_deref() {
+        Some("nearest") => buildings.nearest_k(probe, limit),
+        _ => {
+            let all = buildings.at(probe);
+            all.into_iter().take(limit).collect()
+        }
+    };
+    let count = hits.len();
+    let json: Vec<serde_json::Value> = hits
+        .into_iter()
+        .map(|b| {
+            serde_json::json!({
+                "id": b.id,
+                "centroid": [b.centroid[0], b.centroid[1]],
+                "bbox": [b.bbox[0], b.bbox[1], b.bbox[2], b.bbox[3]],
+                "outer_ring": b.outer_ring,
+                "height": b.height,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "query": {"lon": lon, "lat": lat, "mode": params.mode.unwrap_or_else(|| "at".into()), "limit": limit},
+        "count": count,
+        "buildings": json,
+    }))
     .into_response()
 }
 

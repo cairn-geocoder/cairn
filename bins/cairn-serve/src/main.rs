@@ -1,7 +1,10 @@
 //! `cairn-serve` — airgap-ready HTTP geocoder runtime.
 
 use anyhow::{Context, Result};
-use cairn_api::{router, AppState, FederatedAdmin, FederatedNearest, FederatedText, Metrics};
+use cairn_api::{
+    router, AppState, FederatedAdmin, FederatedBuildings, FederatedNearest, FederatedText, Metrics,
+};
+use cairn_spatial::buildings::BuildingIndex;
 use cairn_spatial::{AdminIndex, NearestIndex};
 use cairn_text::TextIndex;
 use cairn_tile::read_manifest;
@@ -36,6 +39,7 @@ struct LoadedBundle {
     text: Option<Arc<TextIndex>>,
     admin: Option<Arc<AdminIndex>>,
     nearest: Option<Arc<NearestIndex>>,
+    buildings: Option<Arc<BuildingIndex>>,
     admin_features: u64,
     point_count: u64,
 }
@@ -82,6 +86,17 @@ fn load_bundle(path: &std::path::Path) -> Result<LoadedBundle> {
         }
     };
 
+    let buildings = match manifest.as_ref() {
+        Some(m) if !m.building_tiles.is_empty() => {
+            let entries = m.building_tiles.clone();
+            tracing::info!(tiles = entries.len(), "opening building layer (partitioned)");
+            let index = BuildingIndex::open(path, entries);
+            tracing::info!(buildings = index.len(), "building index ready");
+            Some(Arc::new(index))
+        }
+        _ => None,
+    };
+
     let bundle_id = manifest
         .as_ref()
         .map(|m| m.bundle_id.clone())
@@ -94,6 +109,7 @@ fn load_bundle(path: &std::path::Path) -> Result<LoadedBundle> {
         text,
         admin,
         nearest,
+        buildings,
         admin_features,
         point_count,
     })
@@ -153,6 +169,13 @@ async fn main() -> Result<()> {
         None
     } else {
         Some(Arc::new(FederatedNearest::from_many(nearests)))
+    };
+    let buildings_indexes: Vec<Arc<BuildingIndex>> =
+        loaded.iter().filter_map(|b| b.buildings.clone()).collect();
+    let buildings = if buildings_indexes.is_empty() {
+        None
+    } else {
+        Some(Arc::new(FederatedBuildings::from_many(buildings_indexes)))
     };
 
     let bundle_ids: Vec<String> = loaded.iter().map(|b| b.bundle_id.clone()).collect();
@@ -251,6 +274,7 @@ async fn main() -> Result<()> {
             text,
             admin,
             nearest,
+            buildings,
             bundle_ids: bundle_ids.clone(),
         },
         metrics,

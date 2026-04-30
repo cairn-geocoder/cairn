@@ -20,13 +20,17 @@
 
 use cairn_place::Coord;
 use cairn_tile::{Level, SpatialTileEntry, TileCoord};
+use lru::LruCache;
 use rkyv::ser::serializers::AllocSerializer;
 use rkyv::ser::Serializer;
 use rkyv::{AlignedVec, Archive, Deserialize, Infallible, Serialize};
+use rstar::{RTree, RTreeObject, AABB};
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tracing::debug;
 
@@ -256,6 +260,238 @@ pub fn write_buildings_partitioned(
     Ok(entries)
 }
 
+// ============================================================
+// BuildingIndex (R*-tree of tile bboxes + lazy per-tile load)
+// ============================================================
+
+/// LRU capacity per BuildingIndex when the caller doesn't specify.
+/// Buildings are denser than admin per tile (10k–500k rows for an
+/// urban L2 tile vs ~1 admin polygon), so we cap memory with a
+/// smaller default than [`crate::DEFAULT_TILE_CACHE_ENTRIES`]; an
+/// LRU of 256 tiles covers a continent-scale working set without
+/// pinning every loaded tile in RAM.
+pub const DEFAULT_BUILDING_CACHE_ENTRIES: usize = 256;
+
+/// Squared distance from a coord to a tile bbox. 0 if inside the box.
+fn point_to_bbox_dist2(q: Coord, env: &AABB<[f64; 2]>) -> f64 {
+    let cx = q.lon.clamp(env.lower()[0], env.upper()[0]);
+    let cy = q.lat.clamp(env.lower()[1], env.upper()[1]);
+    let dx = q.lon - cx;
+    let dy = q.lat - cy;
+    dx * dx + dy * dy
+}
+
+#[derive(Clone, Debug)]
+struct BuildingTileEnvelope {
+    aabb: AABB<[f64; 2]>,
+    slot_idx: usize,
+}
+
+impl RTreeObject for BuildingTileEnvelope {
+    type Envelope = AABB<[f64; 2]>;
+    fn envelope(&self) -> Self::Envelope {
+        self.aabb
+    }
+}
+
+enum BuildingTileSource {
+    Eager(Arc<Vec<Building>>),
+    Disk(PathBuf),
+}
+
+/// Runtime index over per-tile building blobs. R*-tree of tile
+/// envelopes + lazy load on first touch (mmap → rkyv validate →
+/// hydrate to `Vec<Building>`). Mirrors [`crate::NearestIndex`] for
+/// the API surface but operates on building centroids + bboxes.
+pub struct BuildingIndex {
+    slots: Vec<BuildingTileSource>,
+    tree: RTree<BuildingTileEnvelope>,
+    cache: Mutex<LruCache<usize, Arc<Vec<Building>>>>,
+    total_items: u64,
+}
+
+fn read_building_tile(path: &Path) -> Arc<Vec<Building>> {
+    match read_layer(path) {
+        Ok(layer) => Arc::new(
+            layer
+                .buildings
+                .iter()
+                .map(Building::from)
+                .collect::<Vec<_>>(),
+        ),
+        Err(err) => {
+            debug!(?err, ?path, "building tile read failed");
+            Arc::new(Vec::new())
+        }
+    }
+}
+
+impl BuildingIndex {
+    fn load_slot(&self, idx: usize) -> Arc<Vec<Building>> {
+        match &self.slots[idx] {
+            BuildingTileSource::Eager(arc) => arc.clone(),
+            BuildingTileSource::Disk(path) => {
+                {
+                    let mut cache = self.cache.lock().expect("building cache poisoned");
+                    if let Some(arc) = cache.get(&idx) {
+                        return arc.clone();
+                    }
+                }
+                let arc = read_building_tile(path);
+                let mut cache = self.cache.lock().expect("building cache poisoned");
+                cache.put(idx, arc.clone());
+                arc
+            }
+        }
+    }
+
+    /// Build an in-memory index from a fully loaded layer. Tests +
+    /// small callers; production uses [`Self::open`] against a bundle.
+    pub fn build(layer: BuildingLayer) -> Self {
+        let total_items = layer.buildings.len() as u64;
+        let aabb = if layer.buildings.is_empty() {
+            AABB::from_corners([-180.0, -90.0], [180.0, 90.0])
+        } else {
+            let mut mn_lon = f64::INFINITY;
+            let mut mn_lat = f64::INFINITY;
+            let mut mx_lon = f64::NEG_INFINITY;
+            let mut mx_lat = f64::NEG_INFINITY;
+            for b in &layer.buildings {
+                mn_lon = mn_lon.min(b.bbox[0]);
+                mn_lat = mn_lat.min(b.bbox[1]);
+                mx_lon = mx_lon.max(b.bbox[2]);
+                mx_lat = mx_lat.max(b.bbox[3]);
+            }
+            AABB::from_corners([mn_lon, mn_lat], [mx_lon, mx_lat])
+        };
+        let slot = BuildingTileSource::Eager(Arc::new(layer.buildings));
+        let tree = RTree::bulk_load(vec![BuildingTileEnvelope { aabb, slot_idx: 0 }]);
+        Self {
+            slots: vec![slot],
+            tree,
+            cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(DEFAULT_BUILDING_CACHE_ENTRIES).unwrap(),
+            )),
+            total_items,
+        }
+    }
+
+    /// Open a partitioned building index from a manifest entry list
+    /// rooted at `bundle_root`. Tile blobs load lazily on first
+    /// query touch.
+    pub fn open(bundle_root: &Path, entries: Vec<SpatialTileEntry>) -> Self {
+        Self::open_with_cache(bundle_root, entries, DEFAULT_BUILDING_CACHE_ENTRIES)
+    }
+
+    pub fn open_with_cache(
+        bundle_root: &Path,
+        entries: Vec<SpatialTileEntry>,
+        cache_entries: usize,
+    ) -> Self {
+        let mut slots: Vec<BuildingTileSource> = Vec::with_capacity(entries.len());
+        let mut envs: Vec<BuildingTileEnvelope> = Vec::with_capacity(entries.len());
+        let mut total_items = 0u64;
+        for (idx, e) in entries.iter().enumerate() {
+            total_items += e.item_count;
+            slots.push(BuildingTileSource::Disk(bundle_root.join(&e.rel_path)));
+            envs.push(BuildingTileEnvelope {
+                aabb: AABB::from_corners([e.min_lon, e.min_lat], [e.max_lon, e.max_lat]),
+                slot_idx: idx,
+            });
+        }
+        let tree = RTree::bulk_load(envs);
+        debug!(
+            tile_count = slots.len(),
+            total_items, cache_entries, "BuildingIndex opened"
+        );
+        let capacity = NonZeroUsize::new(cache_entries.max(1)).unwrap();
+        Self {
+            slots,
+            tree,
+            cache: Mutex::new(LruCache::new(capacity)),
+            total_items,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.total_items as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total_items == 0
+    }
+
+    pub fn cache_len(&self) -> usize {
+        self.cache.lock().map(|c| c.len()).unwrap_or(0)
+    }
+
+    /// Buildings whose bbox contains `coord`. Cheap candidate filter
+    /// for "what building is at this point?" — caller can refine to
+    /// true point-in-polygon by walking `outer_ring` if rooftop
+    /// precision matters. Returns finest-first by bbox area so the
+    /// smallest enclosing footprint wins on overlapping bboxes (e.g.
+    /// a courtyard inside a larger complex).
+    pub fn at(&self, coord: Coord) -> Vec<Building> {
+        let q = [coord.lon, coord.lat];
+        let envelope = AABB::from_point(q);
+        let candidate_idxs: Vec<usize> = self
+            .tree
+            .locate_in_envelope_intersecting(&envelope)
+            .map(|e| e.slot_idx)
+            .collect();
+        let mut hits: Vec<Building> = Vec::new();
+        for idx in candidate_idxs {
+            for b in self.load_slot(idx).iter() {
+                if coord.lon >= b.bbox[0]
+                    && coord.lon <= b.bbox[2]
+                    && coord.lat >= b.bbox[1]
+                    && coord.lat <= b.bbox[3]
+                {
+                    hits.push(b.clone());
+                }
+            }
+        }
+        hits.sort_by(|a, b| {
+            let aa = (a.bbox[2] - a.bbox[0]).abs() * (a.bbox[3] - a.bbox[1]).abs();
+            let ba = (b.bbox[2] - b.bbox[0]).abs() * (b.bbox[3] - b.bbox[1]).abs();
+            aa.partial_cmp(&ba).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        hits
+    }
+
+    /// Top-`k` buildings whose centroid is closest to `coord`.
+    /// Tile slots are walked in tile-bbox-distance order so we stop
+    /// early once `k * 4` candidates accumulate. The final sort uses
+    /// squared planar distance, which is fine at city scale; planet-
+    /// scale will need haversine.
+    pub fn nearest_k(&self, coord: Coord, k: usize) -> Vec<Building> {
+        if k == 0 || self.total_items == 0 {
+            return Vec::new();
+        }
+        let mut ranked: Vec<(usize, f64)> = self
+            .tree
+            .iter()
+            .map(|e| (e.slot_idx, point_to_bbox_dist2(coord, &e.aabb)))
+            .collect();
+        ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut gathered: Vec<Building> = Vec::new();
+        for (slot_idx, _) in ranked {
+            for b in self.load_slot(slot_idx).iter() {
+                gathered.push(b.clone());
+            }
+            if gathered.len() >= k * 4 {
+                break;
+            }
+        }
+        gathered.sort_by(|a, b| {
+            let da = (a.centroid[0] - coord.lon).powi(2) + (a.centroid[1] - coord.lat).powi(2);
+            let db = (b.centroid[0] - coord.lon).powi(2) + (b.centroid[1] - coord.lat).powi(2);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        gathered.into_iter().take(k).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +550,68 @@ mod tests {
         assert!(arc.height.is_nan());
         let back: Building = (&arc).into();
         assert!(back.height.is_none());
+    }
+
+    #[test]
+    fn building_index_at_returns_only_containing_buildings() {
+        let layer = BuildingLayer {
+            buildings: vec![
+                building("near", 9.5314, 47.3769),
+                building("far", 11.0, 48.0),
+            ],
+        };
+        let idx = BuildingIndex::build(layer);
+        let hit = idx.at(Coord {
+            lon: 9.5314,
+            lat: 47.3769,
+        });
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].id, "near");
+
+        let miss = idx.at(Coord {
+            lon: 50.0,
+            lat: 50.0,
+        });
+        assert!(miss.is_empty());
+    }
+
+    #[test]
+    fn building_index_nearest_k_orders_by_distance() {
+        let layer = BuildingLayer {
+            buildings: vec![
+                building("a", 0.0, 0.0),
+                building("b", 5.0, 5.0),
+                building("c", 10.0, 10.0),
+            ],
+        };
+        let idx = BuildingIndex::build(layer);
+        let hits = idx.nearest_k(Coord { lon: 4.0, lat: 4.0 }, 2);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, "b");
+        assert_eq!(hits[1].id, "a");
+    }
+
+    #[test]
+    fn building_index_lru_evicts_when_capacity_exceeded() {
+        let dir = tempdir();
+        let layer = BuildingLayer {
+            buildings: vec![
+                building("a", 0.5, 0.5),
+                building("b", 7.0, 7.0),
+                building("c", -5.0, 12.0),
+            ],
+        };
+        let entries = write_buildings_partitioned(&dir, &layer, Level::L2).unwrap();
+        let idx = BuildingIndex::open_with_cache(&dir, entries, 1);
+        assert_eq!(idx.cache_len(), 0);
+        let _ = idx.at(Coord { lon: 0.5, lat: 0.5 });
+        let _ = idx.at(Coord { lon: 7.0, lat: 7.0 });
+        let _ = idx.at(Coord {
+            lon: -5.0,
+            lat: 12.0,
+        });
+        // Cache always holds at most 1 with capacity=1.
+        assert_eq!(idx.cache_len(), 1);
     }
 
     #[test]

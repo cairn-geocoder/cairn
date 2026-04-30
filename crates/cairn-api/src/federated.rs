@@ -19,6 +19,7 @@
 //! don't cause cross-bundle label pollution.
 
 use cairn_place::Coord;
+use cairn_spatial::buildings::{Building, BuildingIndex};
 use cairn_spatial::{AdminFeature, AdminIndex, NearestIndex, PlacePoint};
 use cairn_text::{Hit, SearchOptions, TextError, TextIndex};
 use std::sync::Arc;
@@ -191,6 +192,72 @@ impl FederatedNearest {
                     b.centroid.lon,
                 ))
                 .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        all.truncate(k);
+        all
+    }
+}
+
+/// Federated wrapper around N building layers (v0.3 lane A).
+pub struct FederatedBuildings {
+    bundles: Vec<Arc<BuildingIndex>>,
+}
+
+impl FederatedBuildings {
+    pub fn from_single(idx: Arc<BuildingIndex>) -> Self {
+        Self { bundles: vec![idx] }
+    }
+
+    pub fn from_many(bundles: Vec<Arc<BuildingIndex>>) -> Self {
+        assert!(
+            !bundles.is_empty(),
+            "FederatedBuildings requires >= 1 bundle"
+        );
+        Self { bundles }
+    }
+
+    pub fn len(&self) -> usize {
+        self.bundles.iter().map(|b| b.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bundles.iter().all(|b| b.is_empty())
+    }
+
+    /// Buildings whose bbox contains `coord`. Merged finest-first
+    /// across all federation members so a courtyard inside a larger
+    /// complex still wins ordering.
+    pub fn at(&self, coord: Coord) -> Vec<Building> {
+        if self.bundles.len() == 1 {
+            return self.bundles[0].at(coord);
+        }
+        let mut all: Vec<Building> = Vec::new();
+        for b in &self.bundles {
+            all.extend(b.at(coord));
+        }
+        all.sort_by(|a, b| {
+            let aa = (a.bbox[2] - a.bbox[0]).abs() * (a.bbox[3] - a.bbox[1]).abs();
+            let ba = (b.bbox[2] - b.bbox[0]).abs() * (b.bbox[3] - b.bbox[1]).abs();
+            aa.partial_cmp(&ba).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        all
+    }
+
+    /// Top-`k` buildings by centroid distance, merged across
+    /// federation members and re-sorted globally so the absolute
+    /// closest k surface even if any one bundle has only far hits.
+    pub fn nearest_k(&self, coord: Coord, k: usize) -> Vec<Building> {
+        if self.bundles.len() == 1 {
+            return self.bundles[0].nearest_k(coord, k);
+        }
+        let mut all: Vec<Building> = Vec::new();
+        for b in &self.bundles {
+            all.extend(b.nearest_k(coord, k));
+        }
+        all.sort_by(|a, b| {
+            let da = (a.centroid[0] - coord.lon).powi(2) + (a.centroid[1] - coord.lat).powi(2);
+            let db = (b.centroid[0] - coord.lon).powi(2) + (b.centroid[1] - coord.lat).powi(2);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         });
         all.truncate(k);
         all

@@ -132,6 +132,7 @@ fn build_state() -> AppState {
             nearest: Some(Arc::new(cairn_api::FederatedNearest::from_single(
                 Arc::new(nearest),
             ))),
+            buildings: None,
             bundle_ids: vec!["snapshot-bundle".into()],
         },
         Arc::new(Metrics::new("snapshot-bundle".into(), 2, 1)),
