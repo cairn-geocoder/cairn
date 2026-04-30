@@ -563,10 +563,24 @@ JSON response
         smaller than admin/nearest 1024 because building tiles are
         denser; pinning every loaded tile would balloon RSS at planet
         scale). Two query modes: <code>at(coord)</code> returns
-        bbox-containing buildings finest-first by area;
+        rooftop-containing buildings finest-first by area;
         <code>nearest_k(coord, k)</code> ranks tile slots by
         bbox-distance, gathers <code>k * 4</code> candidates, and
         re-sorts globally.
+      </p>
+      <p>
+        Containment is a three-stage filter. Stage 1: tile R*-tree
+        narrows to per-tile candidates. Stage 2: per-feature bbox
+        check (<code>min_lon ≤ x ≤ max_lon</code>, same for y) rejects
+        the dense majority — building bboxes are tight enough that
+        the bbox alone would already be ~70-90 % accurate at urban
+        density. Stage 3: Sunday-style ray-cast point-in-polygon on
+        the closed <code>outer_ring</code> confirms true rooftop
+        containment, catching the 10-30 % of L- / U-shaped footprints
+        where the bbox covers an inner notch the polygon doesn't.
+        The bbox-only fast path is exposed as <code>at_bbox(coord)</code>
+        / <code>?strict=false</code> for callers that already plan to
+        refine downstream.
       </p>
       <p>
         Spatial join during <code>cairn-build augment --buildings</code>

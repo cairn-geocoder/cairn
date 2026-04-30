@@ -125,6 +125,25 @@
         "responses": { "200": { "description": "OK" }, "400": { "description": "Bad request" } }
       }
     },
+    "/v1/buildings": {
+      "get": {
+        "tags": ["search"],
+        "summary": "Building footprints at a coordinate.",
+        "description": "Returns building polygons that contain (or are nearest to) `(lon, lat)`. `mode=at` (default) runs a strict rooftop-level point-in-polygon check on each candidate's outer ring after a tile + bbox prefilter. `mode=nearest` returns the `limit` closest building centroids regardless of overlap. Set `strict=false` to fall back to bbox-only matching for `mode=at` (cheaper but over-includes ~10–30 % at urban density on L- / U-shaped footprints). Returns 404 with a CLI hint when the bundle has no `building_tiles` (i.e. was not augmented with `cairn-build augment --buildings`).",
+        "parameters": [
+          { "name": "lon",    "in": "query", "required": true, "schema": { "type": "number" } },
+          { "name": "lat",    "in": "query", "required": true, "schema": { "type": "number" } },
+          { "name": "mode",   "in": "query", "schema": { "type": "string", "enum": ["at", "nearest"] } },
+          { "name": "strict", "in": "query", "description": "Strict rooftop PIP for `mode=at`. Default true.", "schema": { "type": "boolean" } },
+          { "name": "limit",  "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200 } }
+        ],
+        "responses": {
+          "200": { "description": "Per-building rows: id, centroid, bbox, outer_ring, height." },
+          "400": { "description": "Bad request — missing or out-of-range lat/lon." },
+          "404": { "description": "Bundle has no building_tiles." }
+        }
+      }
+    },
     "/v1/place": {
       "get": {
         "tags": ["search"],

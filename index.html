@@ -538,8 +538,8 @@
             <span class="method get">GET</span>
             <span class="endpoint">/v1/buildings</span>
             <span class="desc">
-              <span class="desc-plain">"Which building is at this point?" — returns the building footprint(s) covering a coordinate, or the closest N if you ask for the nearest mode.</span>
-              <span class="desc-tech">Building footprints at lon/lat. <code>?mode=at</code> (bbox-contains, default) or <code>?mode=nearest</code>.</span>
+              <span class="desc-plain">"Which building is at this point?" — returns the actual building footprint(s) covering a coordinate (rooftop-level, not just enclosing rectangle), or the closest N if you ask for nearest mode.</span>
+              <span class="desc-tech">Building footprints at lon/lat. <code>?mode=at</code> with strict ray-cast PIP (default) or <code>?mode=nearest</code>. Pass <code>?strict=false</code> for the bbox-only fast path.</span>
             </span>
             <span class="since">v0.3 · NEW</span>
           </div>

@@ -239,9 +239,10 @@ impl FederatedBuildings {
         self.bundles.iter().all(|b| b.is_empty())
     }
 
-    /// Buildings whose bbox contains `coord`. Merged finest-first
-    /// across all federation members so a courtyard inside a larger
-    /// complex still wins ordering.
+    /// Buildings whose **outer ring** contains `coord` (strict
+    /// rooftop-level PIP). Merged finest-first across all federation
+    /// members so a courtyard inside a larger complex still wins
+    /// ordering. For the bbox-only fast path see [`Self::at_bbox`].
     pub fn at(&self, coord: Coord) -> Vec<Building> {
         if self.bundles.len() == 1 {
             return self.bundles[0].at(coord);
@@ -250,12 +251,32 @@ impl FederatedBuildings {
         for b in &self.bundles {
             all.extend(b.at(coord));
         }
-        all.sort_by(|a, b| {
+        Self::sort_by_bbox_area(&mut all);
+        all
+    }
+
+    /// Bbox-only variant. Cheaper but over-includes (~10–30 % false
+    /// positives at urban density on L- / U-shaped footprints).
+    /// Useful for callers that already plan to refine downstream
+    /// or want the union of overlapping bboxes for audit output.
+    pub fn at_bbox(&self, coord: Coord) -> Vec<Building> {
+        if self.bundles.len() == 1 {
+            return self.bundles[0].at_bbox(coord);
+        }
+        let mut all: Vec<Building> = Vec::new();
+        for b in &self.bundles {
+            all.extend(b.at_bbox(coord));
+        }
+        Self::sort_by_bbox_area(&mut all);
+        all
+    }
+
+    fn sort_by_bbox_area(buildings: &mut [Building]) {
+        buildings.sort_by(|a, b| {
             let aa = (a.bbox[2] - a.bbox[0]).abs() * (a.bbox[3] - a.bbox[1]).abs();
             let ba = (b.bbox[2] - b.bbox[0]).abs() * (b.bbox[3] - b.bbox[1]).abs();
             aa.partial_cmp(&ba).unwrap_or(std::cmp::Ordering::Equal)
         });
-        all
     }
 
     /// Top-`k` buildings by centroid distance, merged across

@@ -237,7 +237,7 @@ cairn-build inspect-building-tile --bundle ./bundle-li --tile 2:49509</code></pr
           <tbody>
             <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle to augment in place.</td></tr>
             <tr><td><code>--buildings</code></td><td>path...</td><td>—</td><td>Building-footprint GeoParquet drops. Repeatable. Polygons partitioned to per-tile rkyv blobs at L2 and recorded in <code>manifest.building_tiles</code>.</td></tr>
-            <tr><td><code>--no-building-attach</code></td><td>flag</td><td>off</td><td>Skip the Place-tile spatial join (default behavior stamps <code>building_id</code> + <code>building_height</code> on Places whose centroid sits inside a building bbox).</td></tr>
+            <tr><td><code>--no-building-attach</code></td><td>flag</td><td>off</td><td>Skip the Place-tile spatial join. Default behavior stamps <code>building_id</code> + <code>building_height</code> on Places whose centroid lies inside a building's actual outer ring (strict ray-cast point-in-polygon, not just the enclosing bbox).</td></tr>
             <tr><td><code>--wikidata</code></td><td>path</td><td>—</td><td>Wikidata JSONL dump (<code>.json[.gz]</code>). Two-pass: collect Q-ids from existing place tags, then stream the dump to extract labels + aliases + cross-refs and rewrite affected tiles.</td></tr>
             <tr><td><code>--key</code></td><td>path</td><td>—</td><td>Optional ed25519 secret. Re-signs <code>manifest.toml</code> after augment.</td></tr>
           </tbody>

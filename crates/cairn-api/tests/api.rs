@@ -572,7 +572,12 @@ async fn openapi_spec_served() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("\"openapi\""));
     assert!(body.contains("/v1/search"));
-    assert!(body.contains("Pelias"));
+    // The spec advertises a `pelias` tag for the unprefixed alias
+    // route group. Tag name kept lowercase so existing client code
+    // that filters by tag (Stoplight / Redoc / Swagger UI) keeps
+    // working — unrelated to the demoted-from-feature-level Pelias
+    // narrative on the public docs.
+    assert!(body.contains("\"pelias\""));
 }
 
 #[tokio::test]

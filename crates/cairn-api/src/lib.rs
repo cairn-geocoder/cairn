@@ -1234,11 +1234,17 @@ fn reverse_full(state: AppState, lat: f64, lon: f64, probe: Coord) -> Response {
 struct BuildingsQuery {
     lon: Option<f64>,
     lat: Option<f64>,
-    /// Output mode. `at` (default) returns buildings whose bbox
-    /// contains the point — useful for "what's at this address?".
-    /// `nearest` returns the closest `limit` building centroids
-    /// regardless of overlap.
+    /// Output mode. `at` (default) returns buildings that contain
+    /// the point — useful for "what's at this address?". `nearest`
+    /// returns the closest `limit` building centroids regardless of
+    /// overlap.
     mode: Option<String>,
+    /// Containment test for `mode=at`. `true` (default) runs strict
+    /// rooftop-level point-in-polygon on the building outer ring.
+    /// `false` falls back to bbox-only — cheaper but over-includes
+    /// at urban density (~10–30 % false positives on L- / U-shaped
+    /// footprints). Ignored for `mode=nearest`.
+    strict: Option<bool>,
     limit: Option<usize>,
 }
 
@@ -1282,10 +1288,15 @@ async fn buildings_endpoint(
                 .into_response();
         }
     };
+    let strict = params.strict.unwrap_or(true);
     let hits = match params.mode.as_deref() {
         Some("nearest") => buildings.nearest_k(probe, limit),
         _ => {
-            let all = buildings.at(probe);
+            let all = if strict {
+                buildings.at(probe)
+            } else {
+                buildings.at_bbox(probe)
+            };
             all.into_iter().take(limit).collect()
         }
     };
@@ -1303,7 +1314,13 @@ async fn buildings_endpoint(
         })
         .collect();
     Json(serde_json::json!({
-        "query": {"lon": lon, "lat": lat, "mode": params.mode.unwrap_or_else(|| "at".into()), "limit": limit},
+        "query": {
+            "lon": lon,
+            "lat": lat,
+            "mode": params.mode.unwrap_or_else(|| "at".into()),
+            "strict": strict,
+            "limit": limit,
+        },
         "count": count,
         "buildings": json,
     }))

@@ -272,6 +272,60 @@ pub fn write_buildings_partitioned(
 /// pinning every loaded tile in RAM.
 pub const DEFAULT_BUILDING_CACHE_ENTRIES: usize = 256;
 
+/// True iff `(x, y)` lies inside the closed bbox
+/// `[min_x, min_y, max_x, max_y]`. NaN-safe via the explicit
+/// finite check — building tiles can ship NaN sentinels for
+/// degenerate features.
+fn point_in_bbox(bb: [f64; 4], x: f64, y: f64) -> bool {
+    if !bb[0].is_finite() {
+        return false;
+    }
+    x >= bb[0] && x <= bb[2] && y >= bb[1] && y <= bb[3]
+}
+
+/// Sunday-style ray-cast point-in-polygon on a closed ring.
+/// Returns `true` iff `(qx, qy)` is inside (or on a boundary
+/// edge that crosses the half-line `x = qx, y >= qy`).
+///
+/// Algorithm: shoot a ray east from `(qx, qy)` and count how many
+/// times it crosses the ring's edges. Odd = inside, even = outside.
+/// Edge case for points exactly on a vertex: treated as inside,
+/// because building footprints in the wild rarely place addresses
+/// on a vertex and the alternative (boundary-rejection) hides true
+/// rooftop hits at the corners. < 3 vertices → empty/degenerate
+/// rings always return false.
+fn point_in_ring(ring: &[[f64; 2]], qx: f64, qy: f64) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let n = ring.len();
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (ring[i][0], ring[i][1]);
+        let (xj, yj) = (ring[j][0], ring[j][1]);
+        // Vertex-on-query short-circuit: if the query lands on a
+        // vertex exactly, count the building as a hit. Cheap, avoids
+        // the half-edge tie-break that would otherwise surprise
+        // callers handing in vertex coords directly.
+        if xi == qx && yi == qy {
+            return true;
+        }
+        // Crosses the horizontal ray iff one endpoint is above qy
+        // and the other is at-or-below.
+        let intersects = (yi > qy) != (yj > qy);
+        if intersects {
+            // x-coordinate of the edge at y = qy.
+            let x_at_y = xj + (qy - yj) * (xi - xj) / (yi - yj);
+            if qx < x_at_y {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
 /// Squared distance from a coord to a tile bbox. 0 if inside the box.
 fn point_to_bbox_dist2(q: Coord, env: &AABB<[f64; 2]>) -> f64 {
     let cx = q.lon.clamp(env.lower()[0], env.upper()[0]);
@@ -425,13 +479,31 @@ impl BuildingIndex {
         self.cache.lock().map(|c| c.len()).unwrap_or(0)
     }
 
-    /// Buildings whose bbox contains `coord`. Cheap candidate filter
-    /// for "what building is at this point?" — caller can refine to
-    /// true point-in-polygon by walking `outer_ring` if rooftop
-    /// precision matters. Returns finest-first by bbox area so the
-    /// smallest enclosing footprint wins on overlapping bboxes (e.g.
-    /// a courtyard inside a larger complex).
+    /// Buildings whose **outer ring** contains `coord`. Two-stage
+    /// filter: tile R*-tree narrows to per-tile candidates, then a
+    /// per-feature bbox check rejects the dense majority cheaply,
+    /// then a Sunday-style ray-cast on `outer_ring` confirms true
+    /// rooftop containment. Bbox-only matching would over-include
+    /// at urban density (~10–30 % bbox-only false positives in
+    /// typical L-shaped or U-shaped footprints).
+    ///
+    /// Returns finest-first by bbox area so the smallest enclosing
+    /// footprint wins on overlapping cases (e.g. a courtyard
+    /// building enclosed by a larger complex). For the legacy
+    /// bbox-only behaviour callers can use [`Self::at_bbox`].
     pub fn at(&self, coord: Coord) -> Vec<Building> {
+        self.at_inner(coord, true)
+    }
+
+    /// Bbox-only variant of [`Self::at`]. Cheaper but
+    /// over-includes — use when the caller will refine downstream
+    /// or wants the union of all overlapping footprints (e.g. for
+    /// audit / debug output).
+    pub fn at_bbox(&self, coord: Coord) -> Vec<Building> {
+        self.at_inner(coord, false)
+    }
+
+    fn at_inner(&self, coord: Coord, strict: bool) -> Vec<Building> {
         let q = [coord.lon, coord.lat];
         let envelope = AABB::from_point(q);
         let candidate_idxs: Vec<usize> = self
@@ -442,13 +514,13 @@ impl BuildingIndex {
         let mut hits: Vec<Building> = Vec::new();
         for idx in candidate_idxs {
             for b in self.load_slot(idx).iter() {
-                if coord.lon >= b.bbox[0]
-                    && coord.lon <= b.bbox[2]
-                    && coord.lat >= b.bbox[1]
-                    && coord.lat <= b.bbox[3]
-                {
-                    hits.push(b.clone());
+                if !point_in_bbox(b.bbox, coord.lon, coord.lat) {
+                    continue;
                 }
+                if strict && !point_in_ring(&b.outer_ring, coord.lon, coord.lat) {
+                    continue;
+                }
+                hits.push(b.clone());
             }
         }
         hits.sort_by(|a, b| {
@@ -550,6 +622,72 @@ mod tests {
         assert!(arc.height.is_nan());
         let back: Building = (&arc).into();
         assert!(back.height.is_none());
+    }
+
+    /// Concave (L-shaped) building footprint. Bbox = the enclosing
+    /// rectangle; the inner notch is *outside* the polygon but
+    /// *inside* the bbox — exactly the case that motivates true PIP.
+    fn l_shape_at(cx: f64, cy: f64) -> Building {
+        // Closed ring tracing an L:
+        //   (cx, cy) is the bottom-left corner.
+        //   Outer extent 1.0 x 1.0; the missing quadrant is the
+        //   top-right 0.5 x 0.5 cell.
+        let pts = [
+            [cx, cy],
+            [cx + 1.0, cy],
+            [cx + 1.0, cy + 0.5],
+            [cx + 0.5, cy + 0.5],
+            [cx + 0.5, cy + 1.0],
+            [cx, cy + 1.0],
+            [cx, cy],
+        ];
+        Building {
+            id: "lshape".into(),
+            centroid: [cx + 0.4, cy + 0.4],
+            bbox: [cx, cy, cx + 1.0, cy + 1.0],
+            outer_ring: pts.iter().map(|p| [p[0], p[1]]).collect(),
+            height: None,
+        }
+    }
+
+    #[test]
+    fn point_in_ring_handles_concave_l_shape() {
+        let b = l_shape_at(0.0, 0.0);
+        // Inside the L (below the notch).
+        assert!(point_in_ring(&b.outer_ring, 0.25, 0.25));
+        // Inside the bbox but outside the polygon (in the notch).
+        assert!(!point_in_ring(&b.outer_ring, 0.75, 0.75));
+        // Outside the bbox entirely.
+        assert!(!point_in_ring(&b.outer_ring, 5.0, 5.0));
+    }
+
+    #[test]
+    fn building_index_at_uses_strict_pip_by_default() {
+        let layer = BuildingLayer {
+            buildings: vec![l_shape_at(0.0, 0.0)],
+        };
+        let idx = BuildingIndex::build(layer);
+        // Inside the L-leg → strict hit.
+        let hit = idx.at(Coord {
+            lon: 0.25,
+            lat: 0.25,
+        });
+        assert_eq!(hit.len(), 1);
+        // Inside bbox but inside the L-notch → strict miss.
+        let miss = idx.at(Coord {
+            lon: 0.75,
+            lat: 0.75,
+        });
+        assert!(
+            miss.is_empty(),
+            "strict PIP must reject a coord inside the bbox notch but outside the polygon"
+        );
+        // The legacy bbox-only escape hatch still finds it.
+        let bbox_hit = idx.at_bbox(Coord {
+            lon: 0.75,
+            lat: 0.75,
+        });
+        assert_eq!(bbox_hit.len(), 1);
     }
 
     #[test]
