@@ -14,6 +14,7 @@ members = [
     "crates/cairn-import-geonames",
     "crates/cairn-import-generic",
     "crates/cairn-import-parquet",
+    "crates/cairn-import-overture",
     "crates/cairn-api",
     "bins/cairn-build",
     "bins/cairn-serve",
@@ -42,6 +43,7 @@ cairn-import-oa = { version = "0.1.0", path = "crates/cairn-import-oa" }
 cairn-import-geonames = { version = "0.1.0", path = "crates/cairn-import-geonames" }
 cairn-import-generic = { version = "0.1.0", path = "crates/cairn-import-generic" }
 cairn-import-parquet = { version = "0.1.0", path = "crates/cairn-import-parquet" }
+cairn-import-overture = { version = "0.1.0", path = "crates/cairn-import-overture" }
 
 # Core
 serde = { version = "1", features = ["derive"] }

@@ -131,6 +131,14 @@ enum Command {
         /// match the GeoParquet convention (`geometry`, `name`).
         #[arg(long)]
         parquet_config: Option<PathBuf>,
+        /// Phase 7b lane K — Overture Maps Foundation drops.
+        /// Format: `<theme>:<path>` where `<theme>` is `places` or
+        /// `addresses`. Path points at a flattened parquet (Arrow
+        /// nested-struct support is deferred). Pass repeatedly for
+        /// multi-theme ingest. Each emitted Place is stamped
+        /// `SourceKind::Overture`.
+        #[arg(long)]
+        overture: Vec<String>,
         #[arg(long)]
         out: PathBuf,
         #[arg(long, default_value = "alpha-bundle")]
@@ -337,6 +345,7 @@ fn main() -> Result<()> {
             geojson,
             parquet,
             parquet_config,
+            overture,
             out,
             bundle_id,
             no_zstd,
@@ -354,6 +363,7 @@ fn main() -> Result<()> {
             geojson,
             parquet,
             parquet_config,
+            overture,
             out,
             bundle_id,
             source_priority: parse_source_priority(&source_priority)?,
@@ -794,6 +804,7 @@ struct BuildArgs {
     geojson: Vec<PathBuf>,
     parquet: Vec<PathBuf>,
     parquet_config: Option<PathBuf>,
+    overture: Vec<String>,
     out: PathBuf,
     bundle_id: String,
     compression: TileCompression,
@@ -1044,6 +1055,33 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
                 blake3: hash_file(path)?,
             });
         }
+    }
+
+    // Phase 7b lane K — Overture Maps drops. Format: `theme:path`.
+    for spec in &args.overture {
+        let (theme_str, path_str) = spec.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!(
+                "--overture expects '<theme>:<path>' (e.g. 'places:overture-places.parquet'); got {spec:?}"
+            )
+        })?;
+        let theme = cairn_import_overture::Theme::parse(theme_str).ok_or_else(|| {
+            anyhow::anyhow!("unknown overture theme {theme_str:?} — supported: places, addresses")
+        })?;
+        let path = PathBuf::from(path_str);
+        tracing::info!(path = %path.display(), ?theme, "ingesting Overture drop");
+        let imported = cairn_import_overture::import(&path, theme)
+            .with_context(|| format!("Overture import failed: {}", path.display()))?;
+        tracing::info!(count = imported.len(), "Overture places imported");
+        places.extend(
+            imported
+                .into_iter()
+                .map(|p| (p, cairn_place::SourceKind::Overture)),
+        );
+        sources.push(SourceVersion {
+            name: format!("overture-{theme_str}:{}", path.display()),
+            version: path.display().to_string(),
+            blake3: hash_file(&path)?,
+        });
     }
 
     if !args.source_priority.is_empty() {

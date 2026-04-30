@@ -24,6 +24,7 @@ cairn-import-oa = { workspace = true }
 cairn-import-geonames = { workspace = true }
 cairn-import-generic = { workspace = true }
 cairn-import-parquet = { workspace = true }
+cairn-import-overture = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

@@ -1,0 +1,19 @@
+[package]
+name = "cairn-import-overture"
+description = "Overture Maps Foundation drops importer for the Cairn geocoder."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["geocoding", "geocoder", "overture", "places", "import"]
+categories = ["science::geo", "parser-implementations"]
+
+[dependencies]
+cairn-place = { workspace = true }
+cairn-import-parquet = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

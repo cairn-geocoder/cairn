@@ -696,6 +696,7 @@ dependencies = [
  "cairn-import-geonames",
  "cairn-import-oa",
  "cairn-import-osm",
+ "cairn-import-overture",
  "cairn-import-parquet",
  "cairn-import-wof",
  "cairn-place",
@@ -780,6 +781,16 @@ dependencies = [
  "osmpbf",
  "rayon",
  "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
+name = "cairn-import-overture"
+version = "0.1.0"
+dependencies = [
+ "cairn-import-parquet",
+ "cairn-place",
  "thiserror 1.0.69",
  "tracing",
 ]

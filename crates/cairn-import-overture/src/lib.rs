@@ -1,0 +1,203 @@
+//! Overture Maps Foundation drops → `Place` stream.
+//!
+//! Phase 7b lane K. Wraps [`cairn_import_parquet`] with the column
+//! mapping conventions Overture's monthly drops use, and stamps
+//! [`SourceKind::Overture`] on every emitted record so downstream
+//! dedup + license attribution stays correct.
+//!
+//! ## Supported themes
+//!
+//! Overture publishes several thematic datasets per release. v1 of
+//! this crate targets:
+//!
+//! - **places** — points of interest with categories + confidence.
+//! - **addresses** — house-number / street / postcode points.
+//!
+//! The **divisions** (admin polygons) and **transportation** themes
+//! ship Polygon / LineString geometries that the v1 parquet loader
+//! still skips. Tracked as follow-ups.
+//!
+//! ## Schema flavors
+//!
+//! Overture's "official" parquet files use Arrow nested structs
+//! (e.g. `names: Struct<primary: String, common: Map<String, String>>`).
+//! Cairn's parquet loader currently expects flat columns; operators
+//! who want the "official" drops must pre-flatten via DuckDB:
+//!
+//! ```sql
+//! COPY (
+//!   SELECT
+//!     id,
+//!     geometry,
+//!     names.primary AS name,
+//!     categories.primary AS category,
+//!     confidence
+//!   FROM 'theme=places/type=place/*'
+//! ) TO 'places-flat.parquet' (FORMAT 'parquet');
+//! ```
+//!
+//! Once the parquet loader gains nested-struct support, this wrapper
+//! will switch its `ColumnMap` to point at the nested paths and drop
+//! the flatten requirement.
+//!
+//! ## License
+//!
+//! Overture data is dual-licensed: most themes under
+//! CDLA-Permissive-2.0, the addresses theme partly under ODbL. The
+//! per-bundle SBOM records the source-version for every input so
+//! downstream attribution stays auditable.
+
+use cairn_import_parquet::{ColumnMap, Config, Defaults, ImportError as ParquetError, TagPolicy};
+use cairn_place::Place;
+use std::path::Path;
+use thiserror::Error;
+use tracing::info;
+
+#[derive(Debug, Error)]
+pub enum ImportError {
+    #[error("parquet: {0}")]
+    Parquet(#[from] ParquetError),
+}
+
+/// Theme-aware preset for the Overture parquet drop the operator is
+/// loading. Picks the right column mapping + default Place kind so
+/// callers don't have to re-author a TOML config per theme.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Theme {
+    /// `theme=places` — points of interest. Default kind = poi.
+    Places,
+    /// `theme=addresses` — house-number / street / postcode points.
+    /// Default kind = address.
+    Addresses,
+}
+
+impl Theme {
+    /// Parse a CLI-friendly token. Accepts `places` / `addresses`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "places" | "place" | "poi" | "pois" => Some(Self::Places),
+            "addresses" | "address" => Some(Self::Addresses),
+            _ => None,
+        }
+    }
+
+    /// Construct the parquet [`Config`] that flattened Overture
+    /// exports of this theme should be read with. Operators who use
+    /// non-default column names override these via TOML and pass it
+    /// to [`cairn_import_parquet::import`] directly.
+    pub fn parquet_config(self) -> Config {
+        match self {
+            Theme::Places => Config {
+                map: ColumnMap {
+                    geometry: "geometry".into(),
+                    name: "name".into(),
+                    kind: Some("category".into()),
+                    ..ColumnMap::default()
+                },
+                defaults: Defaults {
+                    kind: "poi".into(),
+                    ..Defaults::default()
+                },
+                tags: TagPolicy {
+                    keep: vec![
+                        "id".into(),
+                        "category".into(),
+                        "confidence".into(),
+                        "phone".into(),
+                        "websites".into(),
+                        "brand".into(),
+                    ],
+                },
+            },
+            Theme::Addresses => Config {
+                map: ColumnMap {
+                    geometry: "geometry".into(),
+                    // Addresses theme has no `name` column directly;
+                    // the operator's flatten step typically materializes
+                    // `name` as `concat_ws(' ', number, street)`.
+                    name: "name".into(),
+                    ..ColumnMap::default()
+                },
+                defaults: Defaults {
+                    kind: "address".into(),
+                    ..Defaults::default()
+                },
+                tags: TagPolicy {
+                    keep: vec![
+                        "id".into(),
+                        "number".into(),
+                        "street".into(),
+                        "postcode".into(),
+                        "country".into(),
+                        "locality".into(),
+                    ],
+                },
+            },
+        }
+    }
+}
+
+/// Read a flattened Overture parquet drop into a `Vec<Place>` per
+/// the supplied theme preset. Caller stamps `SourceKind::Overture`
+/// downstream.
+pub fn import(path: &Path, theme: Theme) -> Result<Vec<Place>, ImportError> {
+    info!(path = %path.display(), ?theme, "importing Overture drop");
+    let cfg = theme.parquet_config();
+    Ok(cairn_import_parquet::import(path, &cfg)?)
+}
+
+/// Like [`import`] but lets the caller override individual fields of
+/// the theme's default column mapping (e.g. point at a custom
+/// `display_name` column instead of `name`).
+pub fn import_with(path: &Path, theme: Theme, mut cfg: Config) -> Result<Vec<Place>, ImportError> {
+    let preset = theme.parquet_config();
+    // Overlay caller config on top of preset — caller-set fields win,
+    // unset fields fall back to the theme defaults.
+    if cfg.map.geometry.is_empty() {
+        cfg.map.geometry = preset.map.geometry;
+    }
+    if cfg.map.name.is_empty() {
+        cfg.map.name = preset.map.name;
+    }
+    if cfg.map.kind.is_none() {
+        cfg.map.kind = preset.map.kind;
+    }
+    if cfg.defaults.kind.is_empty() {
+        cfg.defaults.kind = preset.defaults.kind;
+    }
+    if cfg.tags.keep.is_empty() {
+        cfg.tags.keep = preset.tags.keep;
+    }
+    Ok(cairn_import_parquet::import(path, &cfg)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_parse_canonicals() {
+        assert_eq!(Theme::parse("places"), Some(Theme::Places));
+        assert_eq!(Theme::parse("Place"), Some(Theme::Places));
+        assert_eq!(Theme::parse("ADDRESSES"), Some(Theme::Addresses));
+        assert_eq!(Theme::parse("addr"), None);
+    }
+
+    #[test]
+    fn places_preset_targets_category_kind_column() {
+        let cfg = Theme::Places.parquet_config();
+        assert_eq!(cfg.map.geometry, "geometry");
+        assert_eq!(cfg.map.name, "name");
+        assert_eq!(cfg.map.kind.as_deref(), Some("category"));
+        assert_eq!(cfg.defaults.kind, "poi");
+        assert!(cfg.tags.keep.iter().any(|k| k == "confidence"));
+    }
+
+    #[test]
+    fn addresses_preset_keeps_postcode_country_in_tags() {
+        let cfg = Theme::Addresses.parquet_config();
+        assert_eq!(cfg.defaults.kind, "address");
+        assert!(cfg.tags.keep.iter().any(|k| k == "postcode"));
+        assert!(cfg.tags.keep.iter().any(|k| k == "country"));
+    }
+}
