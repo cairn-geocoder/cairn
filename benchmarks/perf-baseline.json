@@ -1,173 +1,173 @@
 {
   "criterion/autocomplete_3char_5k": {
-    "mean_ns": 33851.8
+    "mean_ns": 32159.1
   },
   "criterion/fuzzy_typo_5k": {
-    "mean_ns": 100044.4
+    "mean_ns": 96306.4
   },
   "criterion/geo_contains_in": {
-    "mean_ns": 126.0
+    "mean_ns": 122.5
   },
   "criterion/geo_contains_out": {
-    "mean_ns": 141.5
+    "mean_ns": 133.2
   },
   "criterion/nearest_k=10_4096pts": {
-    "mean_ns": 374870.1
+    "mean_ns": 358300.2
   },
   "criterion/pip_archived_in": {
-    "mean_ns": 94.3
+    "mean_ns": 90.2
   },
   "criterion/pip_archived_out": {
     "mean_ns": 1.5
   },
   "criterion/pip_archived_ref_in": {
-    "mean_ns": 98.6
+    "mean_ns": 71.4
   },
   "criterion/pip_archived_ref_out": {
-    "mean_ns": 1.5
+    "mean_ns": 1.8
   },
   "criterion/pip_eager_1024": {
-    "mean_ns": 17.0
+    "mean_ns": 16.7
   },
   "criterion/search_exact_5k": {
-    "mean_ns": 3904.4
+    "mean_ns": 3680.7
   },
   "edit_distance/0": {
-    "mean_ns": 125.6
+    "mean_ns": 124.3
   },
   "edit_distance/1": {
-    "mean_ns": 124.9
+    "mean_ns": 122.5
   },
   "edit_distance/2": {
-    "mean_ns": 127.5
+    "mean_ns": 125.3
   },
   "edit_distance/3": {
-    "mean_ns": 97.7
+    "mean_ns": 92.7
   },
   "edit_distance/4": {
-    "mean_ns": 128.8
+    "mean_ns": 124.2
   },
   "edit_distance/5": {
-    "mean_ns": 137.6
+    "mean_ns": 131.7
   },
   "edit_distance/6": {
-    "mean_ns": 133.0
+    "mean_ns": 129.4
   },
   "edit_distance/7": {
-    "mean_ns": 230.1
+    "mean_ns": 222.8
   },
   "edit_distance/8": {
-    "mean_ns": 239.5
+    "mean_ns": 230.0
   },
   "edit_distance/9": {
-    "mean_ns": 811.3
+    "mean_ns": 782.5
   },
   "myers/0": {
-    "mean_ns": 131.2
+    "mean_ns": 129.9
   },
   "myers/1": {
-    "mean_ns": 127.6
+    "mean_ns": 131.2
   },
   "myers/2": {
-    "mean_ns": 128.3
+    "mean_ns": 129.2
   },
   "myers/3": {
-    "mean_ns": 97.2
+    "mean_ns": 92.2
   },
   "myers/4": {
-    "mean_ns": 127.3
+    "mean_ns": 125.2
   },
   "myers/5": {
-    "mean_ns": 134.2
+    "mean_ns": 129.6
   },
   "myers/6": {
-    "mean_ns": 131.8
+    "mean_ns": 129.1
   },
   "myers/7": {
-    "mean_ns": 231.1
+    "mean_ns": 225.6
   },
   "myers/8": {
-    "mean_ns": 239.3
+    "mean_ns": 229.1
   },
   "myers/9": {
-    "mean_ns": 831.9
+    "mean_ns": 795.8
   },
   "trigram_indexed/0": {
-    "mean_ns": 659.4
+    "mean_ns": 510.6
   },
   "trigram_indexed/1": {
-    "mean_ns": 727.5
+    "mean_ns": 534.5
   },
   "trigram_indexed/2": {
-    "mean_ns": 1523.6
+    "mean_ns": 1053.7
   },
   "trigram_indexed/3": {
-    "mean_ns": 2345.1
+    "mean_ns": 1573.2
   },
   "trigram_indexed/4": {
-    "mean_ns": 3961.6
+    "mean_ns": 2613.7
   },
   "trigram_indexed/5": {
-    "mean_ns": 373.3
+    "mean_ns": 305.9
   },
   "trigram_indexed/6": {
-    "mean_ns": 848.4
+    "mean_ns": 659.1
   },
   "trigram_indexed/7": {
-    "mean_ns": 5861.9
+    "mean_ns": 4312.3
   },
   "trigram_query/0": {
-    "mean_ns": 606.9
+    "mean_ns": 464.3
   },
   "trigram_query/1": {
-    "mean_ns": 691.4
+    "mean_ns": 538.2
   },
   "trigram_query/2": {
-    "mean_ns": 1467.3
+    "mean_ns": 1055.1
   },
   "trigram_query/3": {
-    "mean_ns": 2261.7
+    "mean_ns": 1574.9
   },
   "trigram_query/4": {
-    "mean_ns": 3807.8
+    "mean_ns": 2608.5
   },
   "trigram_query/5": {
-    "mean_ns": 377.0
+    "mean_ns": 303.7
   },
   "trigram_query/6": {
-    "mean_ns": 829.2
+    "mean_ns": 652.4
   },
   "trigram_query/7": {
-    "mean_ns": 5800.9
+    "mean_ns": 4249.2
   },
   "wagner_fischer/0": {
-    "mean_ns": 155.2
+    "mean_ns": 152.0
   },
   "wagner_fischer/1": {
-    "mean_ns": 156.9
+    "mean_ns": 151.2
   },
   "wagner_fischer/2": {
-    "mean_ns": 154.1
+    "mean_ns": 151.8
   },
   "wagner_fischer/3": {
-    "mean_ns": 121.8
+    "mean_ns": 118.3
   },
   "wagner_fischer/4": {
-    "mean_ns": 150.7
+    "mean_ns": 148.0
   },
   "wagner_fischer/5": {
-    "mean_ns": 162.6
+    "mean_ns": 157.8
   },
   "wagner_fischer/6": {
-    "mean_ns": 154.6
+    "mean_ns": 153.5
   },
   "wagner_fischer/7": {
-    "mean_ns": 323.4
+    "mean_ns": 326.6
   },
   "wagner_fischer/8": {
-    "mean_ns": 322.3
+    "mean_ns": 382.9
   },
   "wagner_fischer/9": {
-    "mean_ns": 4748.1
+    "mean_ns": 4682.9
   }
 }
