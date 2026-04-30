@@ -78,46 +78,50 @@ pub struct WikidataEntry {
 /// Conservative table — only entries that map cleanly onto cairn's
 /// 10-element kind enum are listed. Wikidata's P31 graph is huge;
 /// adding entries blindly would let typo-Q-ids reclassify Places.
-const P31_PLACEKIND_TABLE: &[(&str, PlaceKind)] = &[
+///
+/// Compiled to a perfect-hash function at build time via the `phf`
+/// macro, so lookups are O(1) with zero collisions and no
+/// runtime hashing pre-warmup. The previous `&[(&str, PlaceKind)]`
+/// did a linear scan per call — fine for ~25 entries but called
+/// once per Q-id-tagged Place (millions per planet bundle).
+static P31_PLACEKIND_TABLE: phf::Map<&'static str, PlaceKind> = phf::phf_map! {
     // Country / sovereign-state-ish.
-    ("Q6256", PlaceKind::Country),
-    ("Q3624078", PlaceKind::Country),
-    ("Q7275", PlaceKind::Country), // state
+    "Q6256"     => PlaceKind::Country,
+    "Q3624078"  => PlaceKind::Country,
+    "Q7275"     => PlaceKind::Country, // state
     // Region / first-order admin.
-    ("Q35657", PlaceKind::Region),  // U.S. state
-    ("Q34876", PlaceKind::Region),  // province
-    ("Q34772", PlaceKind::Region),  // department of France
-    ("Q12046105", PlaceKind::Region), // territory
-    ("Q1907114", PlaceKind::Region), // metropolitan area
+    "Q35657"    => PlaceKind::Region,   // U.S. state
+    "Q34876"    => PlaceKind::Region,   // province
+    "Q34772"    => PlaceKind::Region,   // department of France
+    "Q12046105" => PlaceKind::Region,   // territory
+    "Q1907114"  => PlaceKind::Region,   // metropolitan area
     // County-tier.
-    ("Q484170", PlaceKind::County), // commune of France
-    ("Q47168", PlaceKind::County),  // county of the United States
-    ("Q1549591", PlaceKind::County), // big city — leave as County until lane J adds population check
+    "Q484170"   => PlaceKind::County,   // commune of France
+    "Q47168"    => PlaceKind::County,   // county of the United States
+    "Q1549591"  => PlaceKind::County,   // big city — leave as County until lane J adds population check
     // Cities + settlements.
-    ("Q515", PlaceKind::City),
-    ("Q486972", PlaceKind::City), // human settlement
-    ("Q3957", PlaceKind::City),   // town
-    ("Q532", PlaceKind::City),    // village
-    ("Q15284", PlaceKind::City),  // municipality
-    ("Q5119", PlaceKind::City),   // capital
-    ("Q1093829", PlaceKind::City), // city of the United States
-    ("Q22746", PlaceKind::City),  // borough of NYC
+    "Q515"      => PlaceKind::City,
+    "Q486972"   => PlaceKind::City,     // human settlement
+    "Q3957"     => PlaceKind::City,     // town
+    "Q532"      => PlaceKind::City,     // village
+    "Q15284"    => PlaceKind::City,     // municipality
+    "Q5119"     => PlaceKind::City,     // capital
+    "Q1093829"  => PlaceKind::City,     // city of the United States
+    "Q22746"    => PlaceKind::City,     // borough of NYC
     // Districts + neighborhoods.
-    ("Q174841", PlaceKind::District),
-    ("Q123705", PlaceKind::Neighborhood),
-    ("Q12076836", PlaceKind::Neighborhood), // suburb
+    "Q174841"   => PlaceKind::District,
+    "Q123705"   => PlaceKind::Neighborhood,
+    "Q12076836" => PlaceKind::Neighborhood, // suburb
     // Streets + roads.
-    ("Q34442", PlaceKind::Street),
-    ("Q83620", PlaceKind::Street),
-    ("Q25934", PlaceKind::Street), // trail
+    "Q34442"    => PlaceKind::Street,
+    "Q83620"    => PlaceKind::Street,
+    "Q25934"    => PlaceKind::Street,   // trail
     // Postcode-ish.
-    ("Q37447", PlaceKind::Postcode),
-];
+    "Q37447"    => PlaceKind::Postcode,
+};
 
 fn p31_to_placekind(qid: &str) -> Option<PlaceKind> {
-    P31_PLACEKIND_TABLE
-        .iter()
-        .find_map(|(k, kind)| (*k == qid).then_some(*kind))
+    P31_PLACEKIND_TABLE.get(qid).copied()
 }
 
 #[derive(Default, Debug)]
