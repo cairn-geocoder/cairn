@@ -417,6 +417,151 @@
     }
   },
   {
+    "label": "place-by-gid",
+    "title": "Lookup by gid: 'wof:locality:101748479' (bookmark resolution)",
+    "url": "/v1/place?ids=wof:locality:101748479",
+    "body": {
+      "geocoding": {
+        "version": "0.2",
+        "engine": { "name": "cairn", "bundle_id": "li-demo" },
+        "query": { "ids": "wof:locality:101748479" }
+      },
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "geometry": { "type": "Point", "coordinates": [9.512335, 47.167938] },
+          "properties": {
+            "place_id": 2333060869803474946,
+            "gid": "wof:locality:101748479",
+            "name": "Vaduz",
+            "kind": "city",
+            "level": 1,
+            "label": "Vaduz, Vaduz, Liechtenstein"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "label": "place-by-multi-gid",
+    "title": "Lookup multiple gids: Vaduz + Schaan in one request",
+    "url": "/v1/place?ids=wof:locality:101748479,wof:locality:101748477",
+    "body": {
+      "geocoding": {
+        "version": "0.2",
+        "engine": { "name": "cairn", "bundle_id": "li-demo" }
+      },
+      "type": "FeatureCollection",
+      "features": [
+        {
+          "type": "Feature",
+          "geometry": { "type": "Point", "coordinates": [9.512335, 47.167938] },
+          "properties": {
+            "gid": "wof:locality:101748479",
+            "name": "Vaduz",
+            "kind": "city"
+          }
+        },
+        {
+          "type": "Feature",
+          "geometry": { "type": "Point", "coordinates": [9.508670, 47.164980] },
+          "properties": {
+            "gid": "wof:locality:101748477",
+            "name": "Schaan",
+            "kind": "city"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "label": "buildings-at-vaduz-castle",
+    "title": "Buildings at Vaduz Castle (47.141, 9.523) — strict rooftop PIP",
+    "url": "/v1/buildings?lat=47.141&lon=9.523&mode=at",
+    "body": {
+      "query": {
+        "lon": 9.523,
+        "lat": 47.141,
+        "mode": "at",
+        "strict": true,
+        "limit": 10
+      },
+      "count": 1,
+      "buildings": [
+        {
+          "id": "ms-li-12345",
+          "centroid": [9.5236, 47.1409],
+          "bbox": [9.5232, 47.1406, 9.5240, 47.1412],
+          "outer_ring": [
+            [9.5232, 47.1406],
+            [9.5240, 47.1406],
+            [9.5240, 47.1412],
+            [9.5232, 47.1412],
+            [9.5232, 47.1406]
+          ],
+          "height": 14.5
+        }
+      ]
+    }
+  },
+  {
+    "label": "buildings-nearest-vaduz",
+    "title": "Nearest 5 buildings to (47.141, 9.523)",
+    "url": "/v1/buildings?lat=47.141&lon=9.523&mode=nearest&limit=5",
+    "body": {
+      "query": {
+        "lon": 9.523,
+        "lat": 47.141,
+        "mode": "nearest",
+        "strict": true,
+        "limit": 5
+      },
+      "count": 5,
+      "buildings": [
+        {
+          "id": "ms-li-12345",
+          "centroid": [9.5236, 47.1409],
+          "bbox": [9.5232, 47.1406, 9.5240, 47.1412],
+          "outer_ring": [
+            [9.5232, 47.1406],
+            [9.5240, 47.1406],
+            [9.5240, 47.1412],
+            [9.5232, 47.1412],
+            [9.5232, 47.1406]
+          ],
+          "height": 14.5
+        },
+        {
+          "id": "ms-li-12346",
+          "centroid": [9.5228, 47.1405],
+          "bbox": [9.5224, 47.1402, 9.5232, 47.1408],
+          "outer_ring": [
+            [9.5224, 47.1402],
+            [9.5232, 47.1402],
+            [9.5232, 47.1408],
+            [9.5224, 47.1408],
+            [9.5224, 47.1402]
+          ],
+          "height": 9.0
+        },
+        {
+          "id": "ms-li-12347",
+          "centroid": [9.5245, 47.1413],
+          "bbox": [9.5241, 47.1410, 9.5249, 47.1416],
+          "outer_ring": [
+            [9.5241, 47.1410],
+            [9.5249, 47.1410],
+            [9.5249, 47.1416],
+            [9.5241, 47.1416],
+            [9.5241, 47.1410]
+          ],
+          "height": 6.2
+        }
+      ]
+    }
+  },
+  {
     "label": "reverse-fallback-nearest",
     "title": "Reverse outside Liechtenstein with nearest=3 fallback",
     "url": "/v1/reverse?lat=48.0&lon=10.5&nearest=3",

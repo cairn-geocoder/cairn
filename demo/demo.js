@@ -22,10 +22,13 @@
   }).addTo(map);
 
   let activeMarkers = [];
+  let activePolygons = [];
 
   function clearMarkers() {
     activeMarkers.forEach((m) => map.removeLayer(m));
     activeMarkers = [];
+    activePolygons.forEach((p) => map.removeLayer(p));
+    activePolygons = [];
   }
 
   function escapeHtml(s) {
@@ -56,6 +59,8 @@
   function pointsFromBody(body) {
     const out = [];
     if (!body || typeof body !== "object") return out;
+
+    // Standard search / structured / reverse envelope.
     if (Array.isArray(body.results)) {
       for (const r of body.results) {
         if (Number.isFinite(r.lat) && Number.isFinite(r.lon)) {
@@ -64,10 +69,45 @@
             lon: r.lon,
             label: r.name,
             kind: r.kind,
+            gid: r.gid,
           });
         }
       }
     }
+
+    // /v1/place returns a GeoJSON FeatureCollection.
+    if (Array.isArray(body.features)) {
+      for (const f of body.features) {
+        const c = f && f.geometry && f.geometry.coordinates;
+        const p = f && f.properties;
+        if (Array.isArray(c) && c.length >= 2) {
+          const [lon, lat] = c;
+          out.push({
+            lat,
+            lon,
+            label: (p && (p.name || p.label)) || "?",
+            kind: (p && p.kind) || "place",
+            gid: p && p.gid,
+          });
+        }
+      }
+    }
+
+    // /v1/buildings rows.
+    if (Array.isArray(body.buildings)) {
+      for (const b of body.buildings) {
+        if (Array.isArray(b.centroid) && b.centroid.length >= 2) {
+          const [lon, lat] = b.centroid;
+          out.push({
+            lat,
+            lon,
+            label: b.id || "building",
+            kind: "building",
+          });
+        }
+      }
+    }
+
     if (Number.isFinite(body.lat) && Number.isFinite(body.lon)) {
       out.push({
         lat: body.lat,
@@ -78,6 +118,42 @@
       });
     }
     return out;
+  }
+
+  /// Building outer rings ship as `[[lon, lat], …]`. Leaflet's
+  /// `L.polygon` expects `[[lat, lon], …]`. Returns null when the
+  /// ring is malformed so the caller can skip the layer cleanly.
+  function ringAsLatLng(ring) {
+    if (!Array.isArray(ring) || ring.length < 3) return null;
+    const out = [];
+    for (const v of ring) {
+      if (!Array.isArray(v) || v.length < 2) return null;
+      const [lon, lat] = v;
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+      out.push([lat, lon]);
+    }
+    return out;
+  }
+
+  function polygonsFromBody(body, bounds) {
+    if (!body || !Array.isArray(body.buildings)) return;
+    for (const b of body.buildings) {
+      const ll = ringAsLatLng(b.outer_ring);
+      if (!ll) continue;
+      const heightLabel = Number.isFinite(b.height) ? `${b.height} m` : "—";
+      const poly = L.polygon(ll, {
+        color: "#c96442",
+        weight: 1.5,
+        fillColor: "#c96442",
+        fillOpacity: 0.18,
+      })
+        .addTo(map)
+        .bindPopup(
+          `<b>${escapeHtml(b.id || "?")}</b><br>height: ${escapeHtml(heightLabel)}`,
+        );
+      activePolygons.push(poly);
+      ll.forEach((p) => bounds.extend(p));
+    }
   }
 
   function renderBody(title, urlPath, body, statusLabel) {
@@ -93,28 +169,30 @@
 
     clearMarkers();
     const points = pointsFromBody(body);
-    if (!points.length) {
-      return;
-    }
     const bounds = L.latLngBounds([]);
+    polygonsFromBody(body, bounds);
     points.forEach((p) => {
       const isProbe = p.probe === true;
+      const isBuilding = p.kind === "building";
+      const popupGid = p.gid
+        ? `<br><code style="font-size:11px">${escapeHtml(p.gid)}</code>`
+        : "";
       const marker = L.circleMarker([p.lat, p.lon], {
-        radius: isProbe ? 9 : 7,
-        color: isProbe ? "#f59e0b" : "#84cc16",
+        radius: isProbe ? 9 : isBuilding ? 5 : 7,
+        color: isProbe ? "#f59e0b" : isBuilding ? "#c96442" : "#84cc16",
         weight: 2,
-        fillColor: isProbe ? "#f59e0b" : "#65a30d",
+        fillColor: isProbe ? "#f59e0b" : isBuilding ? "#c96442" : "#65a30d",
         fillOpacity: 0.85,
       })
         .addTo(map)
         .bindPopup(
-          `<b>${escapeHtml(p.label || "?")}</b><br>${escapeHtml(p.kind || "")}<br>${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`,
+          `<b>${escapeHtml(p.label || "?")}</b><br>${escapeHtml(p.kind || "")}<br>${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}${popupGid}`,
         );
       activeMarkers.push(marker);
       bounds.extend([p.lat, p.lon]);
     });
     if (bounds.isValid()) {
-      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
     }
   }
 
