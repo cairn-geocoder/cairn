@@ -1394,25 +1394,38 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     }
     tracing::info!(tile_count = buckets.len(), "bucketed places per-level");
 
-    let mut entries: Vec<TileEntry> = Vec::new();
+    // Tile blobs are independent of each other — each rkyv encode +
+    // optional zstd + blake3 + fs::write touches only that tile's
+    // path. Run them through rayon's work-stealing pool so the
+    // encode pass scales with core count instead of bottlenecking
+    // on a single writer. BTreeMap pre-sort preserves stable
+    // (level, tile_id) ordering for the manifest entries — the
+    // .map closure produces a TileEntry per tile, and
+    // par_iter_mut().collect() rebuilds the Vec in input order.
     let sorted: BTreeMap<(u8, u32), (TileCoord, Vec<Place>)> = buckets
         .into_iter()
         .map(|(coord, places)| ((coord.level.as_u8(), coord.id()), (coord, places)))
         .collect();
-
-    for (_key, (coord, tile_places)) in sorted {
-        let path = args.out.join(coord.relative_path());
-        let count = tile_places.len() as u32;
-        let (hash, size) = write_tile(&path, &tile_places, args.compression)?;
-        entries.push(TileEntry {
-            level: coord.level.as_u8(),
-            tile_id: coord.id(),
-            blake3: hash,
-            byte_size: size,
-            place_count: count,
-            compression: args.compression,
-        });
-    }
+    let pairs: Vec<(TileCoord, Vec<Place>)> = sorted.into_values().collect();
+    let entries: Vec<TileEntry> = {
+        use rayon::prelude::*;
+        pairs
+            .into_par_iter()
+            .map(|(coord, tile_places)| -> Result<TileEntry> {
+                let path = args.out.join(coord.relative_path());
+                let count = tile_places.len() as u32;
+                let (hash, size) = write_tile(&path, &tile_places, args.compression)?;
+                Ok(TileEntry {
+                    level: coord.level.as_u8(),
+                    tile_id: coord.id(),
+                    blake3: hash,
+                    byte_size: size,
+                    place_count: count,
+                    compression: args.compression,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
 
     let mut admin_tile_entries: Vec<cairn_tile::SpatialTileEntry> = Vec::new();
     if let Some(mut layer) = deduped_admin {
