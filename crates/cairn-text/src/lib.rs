@@ -141,6 +141,13 @@ pub struct Hit {
     /// field.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
+    /// Pelias-compatible global identifier (`<source>:<type>:<id>`,
+    /// e.g. `osm:way:12345`). Stable across rebuilds when the
+    /// underlying upstream data is unchanged. Suitable for
+    /// bookmark URLs and the `/v1/place?ids=…` lookup. Empty for
+    /// pre-v0.4 bundles that didn't carry the tag.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub gid: String,
     /// Per-stage scoring breakdown. Populated only when
     /// `SearchOptions.explain == true`. Shows the BM25 baseline plus
     /// every multiplier applied — exact-name, population, language
@@ -326,6 +333,13 @@ struct TextSchema {
     /// since cosine ranking happens on the candidate set after
     /// BM25. See `semantic.rs` for layout.
     name_vec: Field,
+    /// Pelias-compatible global identifier (`<source>:<type>:<id>`).
+    /// STRING (whole-token) + STORED + INDEXED — whole-token so the
+    /// colon-delimited form matches verbatim, INDEXED so the
+    /// `/v1/place?ids=…` resolver can hit it via `TermQuery`.
+    /// Pulled from the row's `gid` tag at index time; older bundles
+    /// without the tag leave the field empty.
+    gid: Field,
 }
 
 impl TextSchema {
@@ -382,6 +396,10 @@ impl TextSchema {
             "name_vec",
             tantivy::schema::BytesOptions::default().set_stored(),
         );
+        // gid: whole-token, indexed for TermQuery lookups, stored so
+        // search hits round-trip the value into the JSON response.
+        // STRING already implies indexed; no extra flag needed.
+        let gid = sb.add_text_field("gid", STRING | STORED);
         let schema = sb.build();
         Self {
             schema,
@@ -403,6 +421,7 @@ impl TextSchema {
             end_year,
             name_trigrams,
             name_vec,
+            gid,
         }
     }
 }
@@ -570,6 +589,9 @@ where
         doc.add_u64(schema.place_id, place.id.0);
         doc.add_u64(schema.level, place.id.level() as u64);
         doc.add_text(schema.kind, kind_str(place.kind));
+        if let Some(gid) = place.gid() {
+            doc.add_text(schema.gid, gid);
+        }
         doc.add_f64(schema.lon, place.centroid.lon);
         doc.add_f64(schema.lat, place.centroid.lat);
         for ancestor in &place.admin_path {
@@ -798,6 +820,37 @@ impl TextIndex {
             }
         }
         Ok(hits)
+    }
+
+    /// Resolve a list of Pelias-style `gid` strings (e.g.
+    /// `osm:way:12345`) to [`Hit`]s. Stable across rebuilds when the
+    /// underlying upstream data is unchanged — suitable for the
+    /// `/v1/place?ids=…` endpoint and for client-side bookmark
+    /// resolution. Missing gids are silently skipped; result order
+    /// mirrors `gids` so callers can correlate.
+    pub fn lookup_by_gids(&self, gids: &[String]) -> Result<Vec<Hit>, TextError> {
+        if gids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let searcher = self.reader.searcher();
+        let mut hits_by_gid: std::collections::HashMap<String, Hit> =
+            std::collections::HashMap::with_capacity(gids.len());
+        for gid in gids {
+            if gid.is_empty() {
+                continue;
+            }
+            let term = tantivy::Term::from_field_text(self.schema.gid, gid);
+            let q: Box<dyn Query> = Box::new(TermQuery::new(term, IndexRecordOption::Basic));
+            let raw = searcher.search(&q, &TopDocs::with_limit(1).order_by_score())?;
+            if let Some((score, addr)) = raw.into_iter().next() {
+                let doc: TantivyDocument = searcher.doc(addr)?;
+                hits_by_gid.insert(gid.clone(), self.hit_from_doc(score, &doc));
+            }
+        }
+        Ok(gids
+            .iter()
+            .filter_map(|g| hits_by_gid.remove(g))
+            .collect())
     }
 
     /// Resolve a list of `place_id` values to [`Hit`]s. Used by Pelias's
@@ -1144,6 +1197,11 @@ impl TextIndex {
                 .get_all(self.schema.categories)
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect(),
+            gid: doc
+                .get_first(self.schema.gid)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             explain: None,
         }
     }
@@ -1732,6 +1790,7 @@ mod tests {
             label: String::new(),
             langs: Vec::new(),
             categories: Vec::new(),
+            gid: String::new(),
             explain: None,
         };
         let label = super::format_label(&hit, &admin_names);
@@ -1760,6 +1819,7 @@ mod tests {
             label: String::new(),
             langs: Vec::new(),
             categories: Vec::new(),
+            gid: String::new(),
             explain: None,
         };
         let label = super::format_label(&hit, &admin_names);
@@ -1785,6 +1845,7 @@ mod tests {
             label: String::new(),
             langs: Vec::new(),
             categories: Vec::new(),
+            gid: String::new(),
             explain: None,
         };
         assert_eq!(super::format_label(&hit, &admin_names), "");
@@ -2103,6 +2164,53 @@ mod tests {
             "lang=de must promote the German-tagged record, got {hits:?}"
         );
         assert!(hits[0].langs.iter().any(|l| l == "de"));
+    }
+
+    #[test]
+    fn gid_round_trips_through_search_results() {
+        // A Place tagged with `gid=osm:way:12345` (set by the OSM
+        // importer) must surface that identifier verbatim on every
+        // matching hit — both via free-text search and via the
+        // direct gid resolver.
+        let dir = tempdir_for_test();
+        let mut place = Place {
+            id: PlaceId::new(1, 1, 1).unwrap(),
+            kind: PlaceKind::City,
+            names: vec![LocalizedName {
+                lang: "default".into(),
+                value: "Vaduz".into(),
+            }],
+            centroid: Coord {
+                lon: 9.5209,
+                lat: 47.141,
+            },
+            admin_path: vec![],
+            tags: vec![],
+        };
+        place.set_gid("osm:way:12345");
+        build_index(&dir, vec![place]).unwrap();
+        let idx = TextIndex::open(&dir).unwrap();
+
+        // Free-text search surfaces the gid on the hit.
+        let hits = idx.search("Vaduz", &SearchOptions::default()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].gid, "osm:way:12345");
+
+        // gid resolver finds the hit by gid alone.
+        let resolved = idx
+            .lookup_by_gids(&["osm:way:12345".to_string()])
+            .unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].name, "Vaduz");
+        // Result order matches input order; missing gids dropped.
+        let mixed = idx
+            .lookup_by_gids(&[
+                "osm:way:nonexistent".to_string(),
+                "osm:way:12345".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].gid, "osm:way:12345");
     }
 
     #[test]

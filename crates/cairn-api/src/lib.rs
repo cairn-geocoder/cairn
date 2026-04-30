@@ -2032,6 +2032,7 @@ async fn pelias_reverse(
                 label: String::new(),
                 langs: Vec::new(),
                 categories: Vec::new(),
+                gid: String::new(),
                 explain: None,
             };
             hit_to_pelias_feature(hit)
@@ -2069,25 +2070,41 @@ async fn place_lookup(
     if raw.is_empty() {
         return Err(ApiError::bad_request(
             "missing_ids",
-            "the 'ids' query parameter is required (comma-separated place_ids)",
+            "the 'ids' query parameter is required (comma-separated place_ids or Pelias-style gids)",
         ));
     }
-    let ids: Vec<u64> = raw
-        .split(',')
-        .filter_map(|s| s.trim().parse::<u64>().ok())
-        .collect();
-    if ids.is_empty() {
+    // Each comma-separated token is either a Pelias-style gid
+    // (`<source>:<type>:<id>`, e.g. `osm:way:12345`) or a legacy
+    // bundle-local u64 place_id. Tokens containing a colon route to
+    // the gid resolver; the rest go through the u64 resolver. Both
+    // resolvers fan out across federation members.
+    let mut gids: Vec<String> = Vec::new();
+    let mut ids: Vec<u64> = Vec::new();
+    for tok in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if tok.contains(':') {
+            gids.push(tok.to_string());
+        } else if let Ok(n) = tok.parse::<u64>() {
+            ids.push(n);
+        }
+    }
+    if gids.is_empty() && ids.is_empty() {
         return Err(ApiError::bad_request(
             "bad_ids",
-            "no valid u64 place_ids in 'ids' parameter",
+            "no valid place_ids or gids in 'ids' parameter",
         ));
     }
     let text = state
         .text()
         .ok_or_else(|| ApiError::unavailable("text_index_unloaded", "text index not loaded"))?;
-    let hits = text
+    let mut hits = text
         .lookup_by_ids(&ids)
         .map_err(|err| ApiError::internal("text_lookup_failed", err.to_string()))?;
+    if !gids.is_empty() {
+        let gid_hits = text
+            .lookup_by_gids(&gids)
+            .map_err(|err| ApiError::internal("text_lookup_failed", err.to_string()))?;
+        hits.extend(gid_hits);
+    }
     Ok(Json(PeliasFeatureCollection {
         geocoding: PeliasGeocodingMeta {
             version: "0.2",

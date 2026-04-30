@@ -88,6 +88,21 @@ impl FederatedText {
         }
         Ok(out)
     }
+
+    /// Pelias-style gid resolver. Same fan-out shape as
+    /// [`Self::lookup_by_ids`] but keys on the rebuild-stable
+    /// `<source>:<type>:<id>` string. Suitable for the
+    /// `/v1/place?ids=osm:way:1,wof:locality:2` endpoint.
+    pub fn lookup_by_gids(&self, gids: &[String]) -> Result<Vec<Hit>, TextError> {
+        if self.bundles.len() == 1 {
+            return self.bundles[0].lookup_by_gids(gids);
+        }
+        let mut out: Vec<Hit> = Vec::new();
+        for b in &self.bundles {
+            out.extend(b.lookup_by_gids(gids)?);
+        }
+        Ok(out)
+    }
 }
 
 /// Federated wrapper around N admin layers.
