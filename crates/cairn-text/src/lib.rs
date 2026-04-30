@@ -10,6 +10,7 @@
 
 use cairn_place::{Coord, Place, PlaceKind};
 use rphonetic::DoubleMetaphone;
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 pub mod edit;
@@ -521,11 +522,21 @@ where
             continue;
         }
         let mut doc = TantivyDocument::default();
-        let mut langs_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut phonetic_seen: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
-        let mut trigrams_seen: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
+        // Per-place dedup sets. Switched from BTreeSet to FxHashSet
+        // here: BTreeSet allocates a heap node per unique key
+        // (24-byte overhead) and the order it preserves isn't used
+        // anywhere downstream — tantivy stamps each value as a
+        // separate token regardless of insertion order. FxHashSet
+        // amortizes via a single contiguous buffer + faster hashing
+        // on small string keys. Capacity hints sized to typical
+        // per-place fan-out (1-5 names × ~8 langs / phonetic codes /
+        // trigrams).
+        let mut langs_seen: FxHashSet<String> =
+            FxHashSet::with_capacity_and_hasher(8, Default::default());
+        let mut phonetic_seen: FxHashSet<String> =
+            FxHashSet::with_capacity_and_hasher(8, Default::default());
+        let mut trigrams_seen: FxHashSet<String> =
+            FxHashSet::with_capacity_and_hasher(64, Default::default());
         for n in &place.names {
             doc.add_text(schema.name, &n.value);
             doc.add_text(schema.name_prefix, &n.value);
@@ -565,13 +576,24 @@ where
                 langs_seen.insert(canonical.to_string());
             }
         }
-        for code in phonetic_seen {
+        // Sort each dedup set before adding tokens to tantivy so
+        // the index is byte-deterministic across rebuilds (FxHashSet
+        // iteration order is unspecified). The collect+sort costs
+        // microseconds; bundle reproducibility is non-negotiable
+        // for diff/apply + signature workflows.
+        let mut phonetic_v: Vec<String> = phonetic_seen.into_iter().collect();
+        phonetic_v.sort_unstable();
+        for code in phonetic_v {
             doc.add_text(schema.name_phonetic, &code);
         }
-        for tg in trigrams_seen {
+        let mut trigrams_v: Vec<String> = trigrams_seen.into_iter().collect();
+        trigrams_v.sort_unstable();
+        for tg in trigrams_v {
             doc.add_text(schema.name_trigrams, &tg);
         }
-        for lang in langs_seen {
+        let mut langs_v: Vec<String> = langs_seen.into_iter().collect();
+        langs_v.sort_unstable();
+        for lang in langs_v {
             doc.add_text(schema.lang_codes, &lang);
         }
         for cat in cairn_place::categories_for(&place) {
@@ -1055,7 +1077,7 @@ impl TextIndex {
         let folded = ascii_fold(query).unwrap_or_else(|| query.to_string());
         let tokens: Vec<&str> = folded.split_whitespace().collect();
         let mut code_clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut seen: FxHashSet<String> = FxHashSet::default();
         for tok in tokens {
             // DoubleMetaphone produces noisy codes on short tokens
             // (1-2 chars often collapse to a single letter that
