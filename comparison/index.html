@@ -184,10 +184,38 @@
             </tr>
             <tr>
               <th>Importers</th>
-              <td>OSM, WoF, OA, Geonames</td>
+              <td>OSM, WoF, OA, Geonames, Overture, GeoParquet, MS Buildings</td>
               <td>OSM, WoF, OA, Geonames, ++</td>
               <td>OSM (via Nominatim DB)</td>
               <td>OSM</td>
+            </tr>
+            <tr>
+              <th>Wikidata enrichment</th>
+              <td>yes (multilingual labels + P31 kind + cross-refs)</td>
+              <td>limited (label join only)</td>
+              <td>limited (label join only)</td>
+              <td>limited</td>
+            </tr>
+            <tr>
+              <th>Building footprints</th>
+              <td>yes (MS Buildings, ODbL)</td>
+              <td>no</td>
+              <td>no</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <th>Stable identifier</th>
+              <td>Pelias-style <code>gid</code> + bundle-local <code>place_id</code></td>
+              <td>Pelias <code>gid</code></td>
+              <td>OSM id only</td>
+              <td>OSM id + place_id</td>
+            </tr>
+            <tr>
+              <th>Lookup-by-id endpoint</th>
+              <td><code>/v1/place?ids=…</code> (gid or u64)</td>
+              <td><code>/v1/place</code></td>
+              <td>n/a</td>
+              <td><code>/lookup</code></td>
             </tr>
             <tr>
               <th>License</th>

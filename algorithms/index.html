@@ -529,6 +529,39 @@ JSON response
         </article>
 
         <article class="diff-card">
+          <h3>Pelias-style stable gid (v0.4)</h3>
+          <p>
+            Two identifiers per Place — both intentional, both useful:
+          </p>
+          <ul class="algo-list">
+            <li>
+              <code>place_id: u64</code> — the bundle-local packed id
+              (<code>level: 3 | tile: 22 | local: 39</code>). Cheap
+              to hash, suitable for in-process maps. Not stable across
+              rebuilds because <code>local</code> is a per-tile insertion
+              counter.
+            </li>
+            <li>
+              <code>gid: String</code> — Pelias-compatible global
+              identifier (<code>osm:way:12345</code>,
+              <code>wof:locality:101748479</code>,
+              <code>overture:place:08bb…</code>). Built at import time
+              from upstream stable IDs; sources without one
+              (OpenAddresses, generic CSV) get a deterministic hash of
+              <code>(kind, name, ~100&nbsp;m centroid)</code>. Survives
+              rebuilds + federation hops.
+            </li>
+          </ul>
+          <p>
+            Stamped on a reserved <code>gid</code> tag at import time,
+            indexed as a tantivy <code>STRING</code> field, surfaced
+            on every <code>Hit</code> and resolvable via
+            <code>/v1/place?ids=…</code>. Pelias clients pick up the
+            field unchanged — no SDK change required.
+          </p>
+        </article>
+
+        <article class="diff-card">
           <h3>Query explain (Phase 4e)</h3>
           <p>
             <code>?explain=true</code> populates

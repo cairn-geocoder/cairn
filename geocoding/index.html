@@ -451,6 +451,33 @@
             DNS swap.
           </p>
         </article>
+
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Stable bookmark IDs</h3>
+          <p>
+            Every Place ships a Pelias-style <code>gid</code>
+            (<code>osm:way:12345</code>,
+            <code>wof:locality:101748479</code>) that survives bundle
+            rebuilds and federation hops. Save a record once;
+            reload it years later via
+            <code>/v1/place?ids=…</code> — same identifier, same
+            answer. Audit trails, share links, and cross-system
+            joins keep working across releases.
+          </p>
+        </article>
+
+        <article class="offer">
+          <div class="offer-bullet">·</div>
+          <h3>Building-precision addressing</h3>
+          <p>
+            Microsoft Building Footprints layered alongside addresses
+            give rooftop-level resolution where OSM is sparse
+            (~1.4 B polygons globally). Reverse-geocode a coordinate
+            and return the actual building it sits inside, not just
+            the nearest address point.
+          </p>
+        </article>
       </div>
     </section>
 

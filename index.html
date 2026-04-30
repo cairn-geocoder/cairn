@@ -405,37 +405,48 @@
             <div class="code"><pre><code><span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=Vaduz&amp;limit=2'</span>
 {
   <span class="tk-s">"results"</span>: [
-    { <span class="tk-s">"name"</span>: <span class="tk-s">"Vaduz"</span>, <span class="tk-s">"kind"</span>: <span class="tk-s">"city"</span>,
+    { <span class="tk-s">"place_id"</span>: <span class="tk-n">1099603968001</span>,
+      <span class="tk-s">"gid"</span>:      <span class="tk-s">"wof:locality:101748479"</span>,
+      <span class="tk-s">"name"</span>: <span class="tk-s">"Vaduz"</span>, <span class="tk-s">"kind"</span>: <span class="tk-s">"city"</span>,
       <span class="tk-s">"lon"</span>: <span class="tk-n">9.522</span>, <span class="tk-s">"lat"</span>: <span class="tk-n">47.139</span> }
   ]
-}</code></pre></div>
+}
+<span class="tk-c"># place_id is bundle-local (rebuilds change it).</span>
+<span class="tk-c"># gid is rebuild-stable: bookmark it, resolve via /v1/place.</span></code></pre></div>
           </div>
           <div class="ex">
-            <div class="ex-hd"><span class="num">ii.</span><h4>Autocomplete</h4></div>
+            <div class="ex-hd"><span class="num">ii.</span><h4>Lookup by gid</h4></div>
+            <div class="code"><pre><code><span class="tk-c"># Pelias-style /v1/place. Mix gids and u64 place_ids freely;</span>
+<span class="tk-c"># missing identifiers return empty (not 404).</span>
+<span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/place \
+    ?ids=osm:way:12345,wof:locality:101748479'</span></code></pre></div>
+          </div>
+          <div class="ex">
+            <div class="ex-hd"><span class="num">iii.</span><h4>Autocomplete</h4></div>
             <div class="code"><pre><code><span class="tk-c"># Prefix-ngram index. Cheap enough for keystroke-grain UI.</span>
 <span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=Vad&amp;mode=autocomplete'</span></code></pre></div>
           </div>
           <div class="ex">
-            <div class="ex-hd"><span class="num">iii.</span><h4>Fuzzy + phonetic</h4></div>
+            <div class="ex-hd"><span class="num">iv.</span><h4>Fuzzy + phonetic</h4></div>
             <div class="code"><pre><code><span class="tk-c"># Edit distance + DoubleMetaphone</span>
 <span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=vaaduz&amp;fuzzy=2'</span>
 <span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=Smyth&amp;phonetic=true'</span>
 <span class="tk-c"># Phonetic rescues 99.5% of typos in Cairn's noisy benchmark.</span></code></pre></div>
           </div>
           <div class="ex">
-            <div class="ex-hd"><span class="num">iv.</span><h4>Layer + focus bias</h4></div>
+            <div class="ex-hd"><span class="num">v.</span><h4>Layer + focus bias</h4></div>
             <div class="code"><pre><code><span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/search?q=Vaduz \
     &amp;layer=city \
     &amp;focus.lat=47.165&amp;focus.lon=9.51 \
     &amp;focus.weight=2.0'</span></code></pre></div>
           </div>
           <div class="ex">
-            <div class="ex-hd"><span class="num">v.</span><h4>Structured search</h4></div>
+            <div class="ex-hd"><span class="num">vi.</span><h4>Structured search</h4></div>
             <div class="code"><pre><code><span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/structured \
     ?road=Aeulestrasse&amp;city=Vaduz'</span></code></pre></div>
           </div>
           <div class="ex">
-            <div class="ex-hd"><span class="num">vi.</span><h4>Reverse geocoding</h4></div>
+            <div class="ex-hd"><span class="num">vii.</span><h4>Reverse geocoding</h4></div>
             <div class="code"><pre><code><span class="tk-k">$</span> curl <span class="tk-s">'localhost:8080/v1/reverse \
     ?lat=47.141&amp;lon=9.523&amp;limit=4'</span>
 {
@@ -497,8 +508,14 @@
           <div class="api-row">
             <span class="method get">GET</span>
             <span class="endpoint">/v1/place</span>
-            <span class="desc">Pelias-compat lookup by place_id list.</span>
-            <span class="since">v0.0.1</span>
+            <span class="desc">Lookup by Pelias-style <code>gid</code> (<code>osm:way:12345</code>) or legacy bundle-local u64. Comma-separated list. Stable across rebuilds.</span>
+            <span class="since">v0.4 · UPDATED</span>
+          </div>
+          <div class="api-row">
+            <span class="method get">GET</span>
+            <span class="endpoint">/v1/buildings</span>
+            <span class="desc">v0.3 lane A — building footprints at lon/lat. <code>?mode=at</code> (bbox-contains, default) or <code>?mode=nearest</code>.</span>
+            <span class="since">v0.3 · NEW</span>
           </div>
           <div class="api-row">
             <span class="method get">GET</span>
