@@ -439,9 +439,10 @@ impl BuildingIndex {
 
     pub fn open_with_cache(
         bundle_root: &Path,
-        entries: Vec<SpatialTileEntry>,
+        mut entries: Vec<SpatialTileEntry>,
         cache_entries: usize,
     ) -> Self {
+        crate::sort_entries_by_z_order(&mut entries);
         let mut slots: Vec<BuildingTileSource> = Vec::with_capacity(entries.len());
         let mut envs: Vec<BuildingTileEnvelope> = Vec::with_capacity(entries.len());
         let mut total_items = 0u64;
