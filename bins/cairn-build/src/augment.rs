@@ -314,6 +314,7 @@ fn run_wikidata(bundle: &Path, dump_path: &Path, manifest: &mut Manifest) -> Res
         labels_added = stats.labels_added,
         aliases_added = stats.aliases_added,
         crossrefs_added = stats.crossrefs_added,
+        kind_promotions = stats.kind_promotions,
         tiles_rewritten = updated_tiles,
         "wikidata augment apply done"
     );

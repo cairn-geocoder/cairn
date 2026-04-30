@@ -33,7 +33,7 @@
 //! per-bundle SBOM still records the source dump version for
 //! reproducibility.
 
-use cairn_place::{LocalizedName, Place};
+use cairn_place::{LocalizedName, Place, PlaceKind};
 use flate2::read::GzDecoder;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -65,6 +65,57 @@ pub struct WikidataEntry {
     /// administrative territorial entity"). When the entity has
     /// multiple, the first non-deprecated one wins.
     pub p131_parent: Option<String>,
+    /// Every Q-id from P31 ("instance of") in declaration order,
+    /// non-deprecated only. Used to refine [`PlaceKind`] when the
+    /// importer was unable to classify the row precisely (e.g. an
+    /// OSM POI tagged with `wikidata=Q34442` is actually a road).
+    pub p31_types: Vec<String>,
+}
+
+/// Map a P31 "instance of" Q-id onto a refined [`PlaceKind`].
+/// Conservative table — only entries that map cleanly onto cairn's
+/// 10-element kind enum are listed. Wikidata's P31 graph is huge;
+/// adding entries blindly would let typo-Q-ids reclassify Places.
+const P31_PLACEKIND_TABLE: &[(&str, PlaceKind)] = &[
+    // Country / sovereign-state-ish.
+    ("Q6256", PlaceKind::Country),
+    ("Q3624078", PlaceKind::Country),
+    ("Q7275", PlaceKind::Country), // state
+    // Region / first-order admin.
+    ("Q35657", PlaceKind::Region),  // U.S. state
+    ("Q34876", PlaceKind::Region),  // province
+    ("Q34772", PlaceKind::Region),  // department of France
+    ("Q12046105", PlaceKind::Region), // territory
+    ("Q1907114", PlaceKind::Region), // metropolitan area
+    // County-tier.
+    ("Q484170", PlaceKind::County), // commune of France
+    ("Q47168", PlaceKind::County),  // county of the United States
+    ("Q1549591", PlaceKind::County), // big city — leave as County until lane J adds population check
+    // Cities + settlements.
+    ("Q515", PlaceKind::City),
+    ("Q486972", PlaceKind::City), // human settlement
+    ("Q3957", PlaceKind::City),   // town
+    ("Q532", PlaceKind::City),    // village
+    ("Q15284", PlaceKind::City),  // municipality
+    ("Q5119", PlaceKind::City),   // capital
+    ("Q1093829", PlaceKind::City), // city of the United States
+    ("Q22746", PlaceKind::City),  // borough of NYC
+    // Districts + neighborhoods.
+    ("Q174841", PlaceKind::District),
+    ("Q123705", PlaceKind::Neighborhood),
+    ("Q12076836", PlaceKind::Neighborhood), // suburb
+    // Streets + roads.
+    ("Q34442", PlaceKind::Street),
+    ("Q83620", PlaceKind::Street),
+    ("Q25934", PlaceKind::Street), // trail
+    // Postcode-ish.
+    ("Q37447", PlaceKind::Postcode),
+];
+
+fn p31_to_placekind(qid: &str) -> Option<PlaceKind> {
+    P31_PLACEKIND_TABLE
+        .iter()
+        .find_map(|(k, kind)| (*k == qid).then_some(*kind))
 }
 
 #[derive(Default, Debug)]
@@ -76,6 +127,12 @@ pub struct AugmentStats {
     pub labels_added: u64,
     pub aliases_added: u64,
     pub crossrefs_added: u64,
+    /// Number of Places whose `kind` was refined by a P31 lookup
+    /// (e.g. promoted from Poi to City). Conservative: only Places
+    /// currently classified as [`PlaceKind::Poi`] are eligible —
+    /// upstream importers that already produced a more specific
+    /// kind are trusted.
+    pub kind_promotions: u64,
 }
 
 /// Walk a `Vec<Place>` (one tile's contents) and extract every Q-id
@@ -283,6 +340,21 @@ pub fn apply_to_places(
         if let Some(parent) = &entry.p131_parent {
             push_tag(&mut p.tags, "wikidata_parent", parent);
         }
+        // P31 → PlaceKind refinement. Only promote when the current
+        // kind is `Poi` (the importer's "I don't know" bucket); any
+        // more specific classification from upstream is trusted as-is.
+        if matches!(p.kind, PlaceKind::Poi) {
+            for q in &entry.p31_types {
+                if let Some(refined) = p31_to_placekind(q) {
+                    if refined != p.kind {
+                        p.kind = refined;
+                        stats.kind_promotions += 1;
+                        touched = true;
+                    }
+                    break;
+                }
+            }
+        }
         if touched {
             stats.places_enriched += 1;
         }
@@ -352,6 +424,7 @@ impl RawEntity {
         let iso_3166_2 = first_string_claim(&self.claims, "P300");
         let fips_10_4 = first_string_claim(&self.claims, "P901");
         let p131_parent = first_entity_claim(&self.claims, "P131");
+        let p31_types = all_entity_claims(&self.claims, "P31");
         WikidataEntry {
             qid: self.id,
             labels,
@@ -360,6 +433,7 @@ impl RawEntity {
             iso_3166_2,
             fips_10_4,
             p131_parent,
+            p31_types,
         }
     }
 }
@@ -397,6 +471,35 @@ fn first_entity_claim(claims: &HashMap<String, Vec<RawClaim>>, prop: &str) -> Op
         }
     }
     None
+}
+
+/// Like [`first_entity_claim`] but returns every non-deprecated
+/// Q-id for `prop`, in declaration order. Used for P31 because an
+/// entity can be an instance of several types; the apply step
+/// iterates and picks the first one our table maps onto a kind.
+fn all_entity_claims(claims: &HashMap<String, Vec<RawClaim>>, prop: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let cs = match claims.get(prop) {
+        Some(c) => c,
+        None => return out,
+    };
+    for c in cs {
+        if c.rank.as_deref() == Some("deprecated") {
+            continue;
+        }
+        let Some(dv) = c.mainsnak.as_ref().and_then(|s| s.datavalue.as_ref()) else {
+            continue;
+        };
+        if dv.kind.as_deref() != Some("wikibase-entityid") {
+            continue;
+        }
+        if let Some(qid) = dv.value.get("id").and_then(|v| v.as_str()) {
+            out.push(qid.to_string());
+        } else if let Some(num) = dv.value.get("numeric-id").and_then(|v| v.as_u64()) {
+            out.push(format!("Q{num}"));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -473,6 +576,7 @@ mod tests {
             iso_3166_2: None,
             fips_10_4: None,
             p131_parent: Some("Q5".into()),
+            p31_types: vec![],
         };
         let mut entries = HashMap::new();
         entries.insert("Q42".to_string(), entry);
@@ -493,6 +597,59 @@ mod tests {
         assert_eq!(places[0].names.len(), pre_names);
         assert_eq!(places[0].tags.len(), pre_tags);
         let _ = p;
+    }
+
+    #[test]
+    fn p31_promotes_poi_to_city() {
+        let p = place_with_qid("Q42");
+        // Place is currently Poi (importer's "I don't know" default).
+        assert!(matches!(p.kind, PlaceKind::Poi));
+
+        let entry = WikidataEntry {
+            qid: "Q42".into(),
+            labels: vec![],
+            aliases: vec![],
+            geonames_id: None,
+            iso_3166_2: None,
+            fips_10_4: None,
+            p131_parent: None,
+            // First non-mapped Q-id ignored, second matches the table.
+            p31_types: vec!["Q9999999".into(), "Q515".into()], // Q515 = city
+        };
+        let mut entries = HashMap::new();
+        entries.insert("Q42".to_string(), entry);
+        let mut stats = AugmentStats::default();
+        let mut places = vec![p.clone()];
+        apply_to_places(&mut places, &entries, &mut stats);
+        assert!(matches!(places[0].kind, PlaceKind::City));
+        assert_eq!(stats.kind_promotions, 1);
+        // Re-run does nothing — already a City, no longer eligible.
+        apply_to_places(&mut places, &entries, &mut stats);
+        assert_eq!(stats.kind_promotions, 1);
+        let _ = p;
+    }
+
+    #[test]
+    fn p31_does_not_demote_specific_kinds() {
+        let mut p = place_with_qid("Q42");
+        p.kind = PlaceKind::Country;
+        let entry = WikidataEntry {
+            qid: "Q42".into(),
+            labels: vec![],
+            aliases: vec![],
+            geonames_id: None,
+            iso_3166_2: None,
+            fips_10_4: None,
+            p131_parent: None,
+            p31_types: vec!["Q515".into()], // city — would demote Country to City
+        };
+        let mut entries = HashMap::new();
+        entries.insert("Q42".to_string(), entry);
+        let mut stats = AugmentStats::default();
+        let mut places = vec![p];
+        apply_to_places(&mut places, &entries, &mut stats);
+        assert!(matches!(places[0].kind, PlaceKind::Country));
+        assert_eq!(stats.kind_promotions, 0);
     }
 
     #[test]
