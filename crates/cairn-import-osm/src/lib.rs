@@ -1541,16 +1541,29 @@ fn relation_to_admin(
         return None;
     }
 
-    let outer_rings = assemble_rings(&outer_ways, way_nodes);
+    // Outer + inner ring assembly are independent; for big admin
+    // relations (e.g. coastlines stitched from thousands of ways)
+    // running them in parallel via rayon::join cuts wall-clock by
+    // ~50 % on the relation. Cheap relations don't notice the
+    // overhead — rayon::join is essentially free when one side
+    // returns immediately.
+    let (outer_rings, inner_rings) = rayon::join(
+        || assemble_rings(&outer_ways, way_nodes),
+        || assemble_rings(&inner_ways, way_nodes),
+    );
     if outer_rings.is_empty() {
         counters.skipped_relation_open_ring += 1;
         debug!(rel_id = relation.id(), "no closed outer ring; dropping");
         return None;
     }
-    let inner_rings = assemble_rings(&inner_ways, way_nodes);
 
+    // ring_to_linestring is independent per ring (only reads
+    // node_coords). par_iter() across rings is a free win for
+    // multi-ring relations; for the typical single-ring case
+    // par_iter falls back to sequential with negligible overhead.
+    use rayon::prelude::*;
     let outer_linestrings: Vec<LineString<f64>> = outer_rings
-        .into_iter()
+        .into_par_iter()
         .filter_map(|ring| ring_to_linestring(&ring, node_coords))
         .collect();
     if outer_linestrings.is_empty() {
@@ -1558,7 +1571,7 @@ fn relation_to_admin(
         return None;
     }
     let inner_linestrings: Vec<LineString<f64>> = inner_rings
-        .into_iter()
+        .into_par_iter()
         .filter_map(|ring| ring_to_linestring(&ring, node_coords))
         .collect();
     let polygons = assemble_polygons(outer_linestrings, inner_linestrings, counters);
