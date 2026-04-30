@@ -256,6 +256,19 @@ enum Command {
         #[arg(long)]
         tile: String,
     },
+    /// Decode a single building spatial tile (v0.3 lane A) and
+    /// pretty-print its per-building rows. Useful for verifying a
+    /// post-augment bundle picked up the expected polygon count.
+    InspectBuildingTile {
+        #[arg(long)]
+        bundle: PathBuf,
+        /// Tile coordinate as `LEVEL:TILE_ID`.
+        #[arg(long)]
+        tile: String,
+        /// Number of sample buildings to print. Default 10.
+        #[arg(long, default_value_t = 10)]
+        sample: usize,
+    },
     /// Fetch new OSM minutely diff files into `<bundle>/replication/`
     /// and update `replication_state.toml`. Application of the diffs
     /// to tile blobs is a separate follow-up step; this command only
@@ -422,6 +435,11 @@ fn main() -> Result<()> {
             grep,
         } => cmd_inspect_tile(&bundle, &tile, sample, grep.as_deref()),
         Command::InspectAdminTile { bundle, tile } => cmd_inspect_admin_tile(&bundle, &tile),
+        Command::InspectBuildingTile {
+            bundle,
+            tile,
+            sample,
+        } => cmd_inspect_building_tile(&bundle, &tile, sample),
         Command::ReplicateFetch {
             bundle,
             upstream,
@@ -778,6 +796,64 @@ fn cmd_inspect_tile(bundle: &Path, spec: &str, sample: usize, grep: Option<&str>
             p.centroid.lat,
             name,
             p.admin_path.len(),
+        );
+    }
+    Ok(())
+}
+
+/// Decode a single building spatial tile and pretty-print its
+/// per-building rows (id, centroid, bbox area, vertex count, height).
+/// Mirrors `cmd_inspect_admin_tile` for v0.3 lane A.
+fn cmd_inspect_building_tile(bundle: &Path, spec: &str, sample: usize) -> Result<()> {
+    let (level, tile_id) = parse_tile_arg(spec)?;
+    let coord = TileCoord::from_id(level, tile_id);
+    let manifest = read_manifest(&bundle.join("manifest.toml"))?;
+    let entry = manifest
+        .building_tiles
+        .iter()
+        .find(|e| e.level == level.as_u8() && e.tile_id == tile_id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no building tile {}:{} in manifest.toml — \
+                 did you run `cairn-build augment --buildings`?",
+                level.as_u8(),
+                tile_id
+            )
+        })?;
+    let abs = bundle.join(&entry.rel_path);
+    let layer = cairn_spatial::buildings::read_layer(&abs)
+        .with_context(|| format!("opening building tile {}", abs.display()))?;
+
+    let (min_lon, min_lat, max_lon, max_lat) = coord.bbox();
+    println!("tile           = {}:{}", level.as_u8(), tile_id);
+    println!("bbox           = lon[{min_lon:.4}..{max_lon:.4}], lat[{min_lat:.4}..{max_lat:.4}]");
+    println!("rel_path       = {}", entry.rel_path);
+    println!("byte_size      = {}", entry.byte_size);
+    println!("blake3         = {}", entry.blake3);
+    println!("building_count = {}", layer.buildings.len());
+
+    let take = sample.min(layer.buildings.len());
+    if take == 0 {
+        return Ok(());
+    }
+    println!("samples ({take} of {}):", layer.buildings.len());
+    for b in layer.buildings.iter().take(take) {
+        let bbox_w = (b.bbox[2] - b.bbox[0]).abs();
+        let bbox_h = (b.bbox[3] - b.bbox[1]).abs();
+        let height = if b.height.is_nan() {
+            "—".to_string()
+        } else {
+            format!("{:.1}m", b.height)
+        };
+        println!(
+            "  id={} ({:.5},{:.5}) bbox={:.5}×{:.5} verts={} height={}",
+            b.id,
+            b.centroid[0],
+            b.centroid[1],
+            bbox_w,
+            bbox_h,
+            b.outer_ring.len(),
+            height,
         );
     }
     Ok(())
