@@ -1,0 +1,420 @@
+/* CLI reference page — page-specific overrides on top of site.css.
+   Reuses tokens (--bg, --paper, --ink, --accent, --serif, --mono).
+   Layout: long single-column reference with dense flag tables and
+   collapsible details for the longer per-flag explanations. */
+
+.cli-page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 32px 96px;
+}
+
+/* ── HERO ─────────────────────────────────────────────────────── */
+
+.cli-hero {
+  padding: 96px 0 48px;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 64px;
+}
+
+.cli-hero-inner {
+  max-width: 820px;
+}
+
+.cli-eyebrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 24px;
+}
+
+.cli-hero h1 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(48px, 5.6vw, 84px);
+  line-height: 0.96;
+  letter-spacing: -0.025em;
+  margin: 0 0 28px;
+  color: var(--ink);
+}
+
+.cli-lede {
+  font-size: 19px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  max-width: 680px;
+  margin: 0 0 44px;
+}
+.cli-lede strong { color: var(--ink); font-weight: 600; }
+.cli-lede code {
+  font-family: var(--mono);
+  font-size: 15px;
+  background: var(--rule-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+
+.cli-toc {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px 18px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.cli-toc a {
+  display: block;
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  color: var(--ink-2);
+  transition: all 0.15s ease;
+}
+.cli-toc a:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+  background: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(201, 100, 66, 0.08);
+}
+
+/* ── SECTIONS ─────────────────────────────────────────────────── */
+
+.cli-section {
+  position: relative;
+  padding: 56px 0 32px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.cli-section:last-of-type { border-bottom: 0; }
+
+.section-num {
+  position: absolute;
+  top: 56px;
+  left: -56px;
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+
+@media (max-width: 1100px) {
+  .section-num {
+    position: static;
+    margin-bottom: 8px;
+    color: var(--accent);
+  }
+}
+
+.cli-section h2 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(34px, 3.6vw, 52px);
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+  margin: 0 0 20px;
+  color: var(--ink);
+}
+.cli-section h2 code {
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 0.62em;
+  background: var(--rule-soft);
+  padding: 4px 12px;
+  border-radius: 6px;
+  color: var(--ink);
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.cli-section h3 {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 19px;
+  letter-spacing: -0.005em;
+  margin: 36px 0 12px;
+  color: var(--ink);
+}
+.cli-section h3 code {
+  font-family: var(--mono);
+  font-size: 18px;
+  background: transparent;
+  padding: 0;
+  color: var(--accent);
+}
+
+.cli-section p {
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--ink-2);
+  max-width: 820px;
+  margin: 0 0 16px;
+}
+.cli-section .section-lede {
+  font-size: 17px;
+  line-height: 1.62;
+  color: var(--ink-2);
+  border-left: 3px solid var(--accent);
+  padding-left: 18px;
+  margin: 0 0 36px;
+  max-width: 820px;
+}
+.cli-section a {
+  color: var(--accent);
+  border-bottom: 1px dashed var(--accent-soft);
+  padding-bottom: 1px;
+}
+.cli-section a:hover { border-bottom-style: solid; }
+.cli-section code {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--rule-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+.cli-section strong { color: var(--ink); font-weight: 600; }
+
+/* ── BINARY CARDS (00) ────────────────────────────────────────── */
+
+.bin-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+  margin: 24px 0 28px;
+}
+@media (max-width: 820px) {
+  .bin-grid { grid-template-columns: 1fr; }
+}
+.bin-card {
+  padding: 24px 26px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+.bin-card .bin-name {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 24px;
+  margin-bottom: 14px;
+  color: var(--ink);
+}
+.bin-card .bin-name code {
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 18px;
+  background: transparent;
+  padding: 0;
+  color: var(--accent);
+}
+.bin-card p { margin: 0 0 12px; }
+.bin-card p:last-child { margin-bottom: 0; }
+
+.cli-callout {
+  margin: 24px 0 8px;
+  padding: 16px 20px;
+  background: #fff8f1;
+  border: 1px solid #f1d4be;
+  border-radius: 6px;
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+.cli-callout strong {
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--accent);
+}
+
+/* ── WORKFLOW PRE BLOCKS (01) ────────────────────────────────── */
+
+.code {
+  background: #1a1815;
+  color: #e9e2d3;
+  padding: 18px 20px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+  margin: 0 0 18px;
+  max-width: 100%;
+  min-width: 0;
+}
+.code code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: 13px;
+}
+
+/* ── COMMAND BLOCKS (02) ─────────────────────────────────────── */
+
+.cmd {
+  margin: 36px 0 8px;
+  padding: 22px 24px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+.cmd h3 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-family: var(--sans);
+  font-weight: 600;
+  color: var(--ink);
+}
+.cmd h3 code {
+  font-family: var(--mono);
+  font-size: 22px;
+  background: transparent;
+  padding: 0;
+  color: var(--accent);
+}
+.cmd .cmd-tag {
+  font-family: var(--sans);
+  font-size: 14.5px;
+  color: var(--ink-2);
+  margin: 0 0 16px;
+  max-width: none;
+}
+.cmd .cmd-note {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule-soft);
+  font-size: 14px;
+  color: var(--ink-2);
+  max-width: none;
+}
+
+/* ── FLAG TABLES ─────────────────────────────────────────────── */
+
+.flag-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 13px;
+  margin: 0;
+}
+.flag-table thead th {
+  text-align: left;
+  font-weight: 500;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10.5px;
+}
+.flag-table tbody td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+  color: var(--ink-2);
+}
+.flag-table tbody tr:last-child td { border-bottom: 0; }
+.flag-table tbody td:first-child {
+  white-space: nowrap;
+  color: var(--accent);
+}
+.flag-table tbody td:nth-child(2),
+.flag-table tbody td:nth-child(3) {
+  white-space: nowrap;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.flag-table tbody td:last-child {
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.flag-table tbody td code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--rule-soft);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+.flag-table tbody td strong {
+  font-family: var(--sans);
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+/* ── DETAILS / DISCLOSURE ────────────────────────────────────── */
+
+.cmd-detail {
+  margin-top: 14px;
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.cmd-detail summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--ink);
+  padding: 6px 0;
+  user-select: none;
+}
+.cmd-detail summary code {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: transparent;
+  padding: 0;
+  color: var(--accent);
+}
+.cmd-detail ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  line-height: 1.6;
+}
+.cmd-detail li { margin-bottom: 4px; }
+.cmd-detail strong { color: var(--ink); font-weight: 600; }
+.cmd-detail code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--rule-soft);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+
+/* ── FOOTER ──────────────────────────────────────────────────── */
+
+.site-foot {
+  border-top: 1px solid var(--rule);
+  padding: 32px 0 48px;
+  margin-top: 64px;
+}
+.foot-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 32px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.foot-inner a { color: var(--ink-2); }
+.foot-inner a:hover { color: var(--accent); }
+
+/* ── RESPONSIVE ──────────────────────────────────────────────── */
+
+@media (max-width: 820px) {
+  .cli-page { padding: 0 18px 80px; }
+  .cli-hero { padding: 56px 0 32px; }
+  .cli-hero h1 { font-size: 44px; }
+  .cmd { padding: 18px 16px; }
+  .flag-table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .flag-table tbody td:last-child { white-space: normal; }
+}

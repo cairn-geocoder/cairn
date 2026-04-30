@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cairn — CLI reference</title>
+  <meta name="description" content="Complete reference for the cairn-build and cairn-serve command-line interfaces. Every subcommand, every flag, every default — with worked examples for build, augment, replication, signing, and serve." />
+  <link rel="icon" type="image/svg+xml" href="../assets/cairn-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../site.css" />
+  <link rel="stylesheet" href="cli.css" />
+</head>
+<body>
+
+  <header class="topnav">
+    <div class="topnav-inner">
+      <a class="brand" href="../">
+        <img class="mk" src="../assets/cairn-photoreal.svg" alt="" />
+        <span>cairn<span class="dot">.</span></span>
+      </a>
+      <nav>
+        <a href="../#hero">Docs</a>
+        <a href="../#install">Install</a>
+        <a href="../geocoding/">Geocoding</a>
+        <a href="../algorithms/">Algorithms</a>
+        <a href="../comparison/">Comparison</a>
+        <a href="../demo/">Live demo</a>
+        <a class="active" href="./">CLI</a>
+      </nav>
+      <div class="right">
+        <span class="ver-pill">v0.1.0 · beta</span>
+        <a class="gh-link" href="https://github.com/cairn-geocoder/cairn">★ GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="cli-page">
+
+    <section class="cli-hero">
+      <div class="cli-hero-inner">
+        <div class="cli-eyebrow">Command-line reference</div>
+        <h1>Every flag, every subcommand.</h1>
+        <p class="cli-lede">
+          Cairn ships two binaries: <code>cairn-build</code> for everything
+          offline (build, augment, sign, replicate, inspect) and
+          <code>cairn-serve</code> for the runtime HTTP API. This page
+          documents every subcommand and every flag, with examples for the
+          common workflows.
+        </p>
+        <div class="cli-toc">
+          <a href="#binaries">0 · Binaries</a>
+          <a href="#workflows">1 · Common workflows</a>
+          <a href="#build">2 · cairn-build</a>
+          <a href="#serve">3 · cairn-serve</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="cli-section" id="binaries">
+      <div class="section-num">00</div>
+      <h2>The two binaries</h2>
+      <div class="bin-grid">
+        <div class="bin-card">
+          <div class="bin-name"><code>cairn-build</code></div>
+          <p>
+            Offline pipeline. Reads upstream sources (OSM PBF, WhosOnFirst
+            SQLite, OpenAddresses CSV, Geonames TSV, GeoParquet, Overture
+            drops, Microsoft Building Footprints, Wikidata dumps) and emits
+            a self-contained <strong>bundle</strong> directory: tile blobs,
+            spatial layers, text index, manifest, signature.
+          </p>
+          <p>
+            Also handles incremental updates (replication, diff/apply),
+            augmentation (lane A buildings, lane I Wikidata), signing,
+            and inspection.
+          </p>
+        </div>
+        <div class="bin-card">
+          <div class="bin-name"><code>cairn-serve</code></div>
+          <p>
+            Runtime. Loads one or more bundles via <code>mmap</code> and
+            serves the HTTP API: search, autocomplete, reverse, parse,
+            place lookup, layers metadata, healthz, metrics, OpenAPI spec.
+          </p>
+          <p>
+            Federation built in — pass <code>--bundles a/,b/,c/</code>
+            to fan out across continental shards from one process. Hot
+            reload via <code>POST /admin/reload</code>; signed manifest
+            verification at startup.
+          </p>
+        </div>
+      </div>
+      <div class="cli-callout">
+        <strong>Help on demand.</strong> <code>cairn-build --help</code> and
+        <code>cairn-build &lt;subcommand&gt; --help</code> always print
+        the canonical surface — this page mirrors the same content but
+        groups examples and adds the operator-facing context the
+        machine-generated help can't.
+      </div>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="cli-section" id="workflows">
+      <div class="section-num">01</div>
+      <h2>Common workflows</h2>
+
+      <h3>Build a country bundle from OSM + WoF + OA</h3>
+<pre class="code"><code>cairn-build build \
+  --osm liechtenstein-latest.osm.pbf \
+  --wof whosonfirst-data-li.spatial.db \
+  --oa openaddresses/li.csv \
+  --geonames geonames-LI.txt \
+  --postcodes geonames-LI-postcodes.txt \
+  --out ./bundle-li \
+  --bundle-id "li-2026-04" \
+  --simplify-meters 100</code></pre>
+      <p>
+        Produces <code>bundle-li/</code> with a self-contained corpus.
+        The <code>--simplify-meters</code> flag trims admin polygon
+        vertices below 100 m precision; saves 30-60 % bundle size on
+        dense boundaries with no user-visible change.
+      </p>
+
+      <h3>Augment with Microsoft Building Footprints + Wikidata</h3>
+<pre class="code"><code>cairn-build augment \
+  --bundle ./bundle-li \
+  --buildings ms-buildings-li.parquet \
+  --wikidata wikidata-20260420-all.json.gz \
+  --key ./signing/cairn.key</code></pre>
+      <p>
+        Layers building footprints into <code>spatial/buildings/</code>,
+        runs the spatial join to stamp <code>building_id</code> on
+        Places whose centroid lands inside a building bbox, then streams
+        the Wikidata dump to enrich Place names with multilingual
+        labels and cross-refs (P1566 GeoNames ID, P300 ISO 3166-2,
+        P901 FIPS, P131 admin parent, P31 instance-of for kind
+        refinement). Re-signs the manifest at the end.
+      </p>
+
+      <h3>Generate keys, sign, verify</h3>
+<pre class="code"><code>cairn-build keygen --out ./signing
+cairn-build sign --bundle ./bundle-li --key ./signing/cairn.key
+cairn-build sign-verify --bundle ./bundle-li --pubkey ./signing/cairn.pub</code></pre>
+
+      <h3>Incremental updates (OSM minutely)</h3>
+<pre class="code"><code>cairn-build replicate-fetch --bundle ./bundle-li \
+  --upstream https://planet.openstreetmap.org/replication/minute --max 60
+cairn-build replicate-status --bundle ./bundle-li
+cairn-build replicate-apply --bundle ./bundle-li --max 60</code></pre>
+      <p>
+        Fetches up to 60 minutely diffs, prints state, then applies
+        them to place tiles. Way + relation re-application is deferred
+        (logged + skipped); run a full rebuild from PBF for boundary
+        churn.
+      </p>
+
+      <h3>Diff + apply between bundles</h3>
+<pre class="code"><code>cairn-build diff --old ./bundle-li-old --new ./bundle-li --out ./bundle-li.diff
+cairn-build apply --bundle ./bundle-li-old --diff ./bundle-li.diff \
+  --source ./bundle-li-new-mirror</code></pre>
+      <p>
+        Computes a tile-level delta as a TOML manifest, then applies it
+        on the receiving side without re-downloading the whole bundle.
+        Designed for airgap upload paths.
+      </p>
+
+      <h3>Serve</h3>
+<pre class="code"><code># Single bundle.
+cairn-serve --bundle ./bundle-li --bind 0.0.0.0:8080
+
+# Federated (planet split into continents).
+cairn-serve --bundles ./bundle-eu,./bundle-na,./bundle-as --bind 0.0.0.0:8080</code></pre>
+
+      <h3>Inspect a tile</h3>
+<pre class="code"><code>cairn-build inspect-tile        --bundle ./bundle-li --tile 2:49509 --sample 5
+cairn-build inspect-admin-tile  --bundle ./bundle-li --tile 1:12345
+cairn-build inspect-building-tile --bundle ./bundle-li --tile 2:49509</code></pre>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="cli-section" id="build">
+      <div class="section-num">02</div>
+      <h2><code>cairn-build</code> — subcommand reference</h2>
+      <p class="section-lede">
+        Every subcommand below corresponds to <code>cairn-build &lt;name&gt;</code>.
+        Run <code>cairn-build --help</code> for the live list, or
+        <code>cairn-build &lt;name&gt; --help</code> for a single
+        subcommand's flag table.
+      </p>
+
+      <!-- BUILD -->
+      <article class="cmd" id="cmd-build">
+        <h3><code>build</code></h3>
+        <p class="cmd-tag">Build a bundle from configured sources.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--osm</code></td><td>path</td><td>—</td><td>OSM PBF input.</td></tr>
+            <tr><td><code>--wof</code></td><td>path</td><td>—</td><td>WhosOnFirst SQLite (<code>spatial.db</code>).</td></tr>
+            <tr><td><code>--oa</code></td><td>path</td><td>—</td><td>OpenAddresses combined CSV.</td></tr>
+            <tr><td><code>--geonames</code></td><td>path</td><td>—</td><td>Geonames named-feature TSV (<code>allCountries.txt</code> or per-country).</td></tr>
+            <tr><td><code>--postcodes</code></td><td>path</td><td>—</td><td>Geonames postcode TSV (<code>&lt;CC&gt;.txt</code>).</td></tr>
+            <tr><td><code>--csv</code></td><td>path...</td><td>—</td><td>Operator CSV files. Repeatable. Columns: <code>lon,lat,name</code> minimum; <code>kind</code>, <code>population</code>, <code>lang</code>, <code>id</code> optional.</td></tr>
+            <tr><td><code>--geojson</code></td><td>path...</td><td>—</td><td>Operator GeoJSON FeatureCollections. Repeatable. Point preferred, polygon centroid fallback.</td></tr>
+            <tr><td><code>--parquet</code></td><td>path...</td><td>—</td><td>GeoParquet files (WKB Point in <code>geometry</code>). Repeatable. Foundation for Overture.</td></tr>
+            <tr><td><code>--parquet-config</code></td><td>path</td><td>—</td><td>Optional TOML mapping override for <code>--parquet</code> column names.</td></tr>
+            <tr><td><code>--overture</code></td><td>spec...</td><td>—</td><td>Overture drops as <code>&lt;theme&gt;:&lt;path&gt;</code> (<code>places</code> or <code>addresses</code>). Repeatable. Each row stamped <code>SourceKind::Overture</code>.</td></tr>
+            <tr><td><code>--out</code></td><td>path</td><td><strong>required</strong></td><td>Bundle output directory.</td></tr>
+            <tr><td><code>--bundle-id</code></td><td>string</td><td><code>alpha-bundle</code></td><td>Stamped on the manifest + metrics.</td></tr>
+            <tr><td><code>--no-zstd</code></td><td>flag</td><td>off</td><td>Disable zstd tile compression. Default ZSTD on (~50-70 % size drop).</td></tr>
+            <tr><td><code>--source-priority</code></td><td>csv</td><td><code>wof,osm,oa,geonames</code></td><td>Cross-source dedup priority; earlier = higher trust.</td></tr>
+            <tr><td><code>--simplify-meters</code></td><td>float</td><td><code>0</code></td><td>Douglas-Peucker tolerance in meters for admin polygons. <code>0</code> disables. Reasonable: 50-200 m.</td></tr>
+            <tr><td><code>--node-cache</code></td><td>enum</td><td><code>auto</code></td><td>OSM node-coord strategy: <code>auto</code> / <code>inline</code> / <code>sorted-vec</code> / <code>flatnode</code>.</td></tr>
+            <tr><td><code>--flatnode-path</code></td><td>path</td><td><code>&lt;pbf-stem&gt;.flatnode.bin</code></td><td>Override flatnode location when <code>--node-cache flatnode</code> is in effect.</td></tr>
+          </tbody>
+        </table>
+        <details class="cmd-detail">
+          <summary><code>--node-cache</code> picker</summary>
+          <ul>
+            <li><strong>auto</strong> — picks <code>inline</code> at ≤ 5 GB, <code>sorted-vec</code> at 5-30 GB, <code>flatnode</code> above 30 GB.</li>
+            <li><strong>inline</strong> — HashMap, fastest lookup, ~48 B/entry.</li>
+            <li><strong>sorted-vec</strong> — i32-quantized binary-searchable Vec, ~16 B/entry.</li>
+            <li><strong>flatnode</strong> — disk-backed mmap'd dense <code>[i32;2]</code> array indexed by node id; bounded RSS regardless of input size.</li>
+          </ul>
+        </details>
+      </article>
+
+      <!-- AUGMENT -->
+      <article class="cmd" id="cmd-augment">
+        <h3><code>augment</code></h3>
+        <p class="cmd-tag">Apply v0.3 enrichers (Microsoft Building Footprints + Wikidata) to an existing bundle.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle to augment in place.</td></tr>
+            <tr><td><code>--buildings</code></td><td>path...</td><td>—</td><td>Building-footprint GeoParquet drops. Repeatable. Polygons partitioned to per-tile rkyv blobs at L2 and recorded in <code>manifest.building_tiles</code>.</td></tr>
+            <tr><td><code>--no-building-attach</code></td><td>flag</td><td>off</td><td>Skip the Place-tile spatial join (default behavior stamps <code>building_id</code> + <code>building_height</code> on Places whose centroid sits inside a building bbox).</td></tr>
+            <tr><td><code>--wikidata</code></td><td>path</td><td>—</td><td>Wikidata JSONL dump (<code>.json[.gz]</code>). Two-pass: collect Q-ids from existing place tags, then stream the dump to extract labels + aliases + cross-refs and rewrite affected tiles.</td></tr>
+            <tr><td><code>--key</code></td><td>path</td><td>—</td><td>Optional ed25519 secret. Re-signs <code>manifest.toml</code> after augment.</td></tr>
+          </tbody>
+        </table>
+        <p class="cmd-note">
+          Both lanes are idempotent: re-running with the same inputs
+          produces a byte-identical bundle (deduped by <code>(lang,
+          value)</code> and <code>(key, value)</code> before insertion).
+          Wikidata also runs the P31 instance-of check to refine
+          <code>PlaceKind</code> when the upstream importer fell back to
+          <code>Poi</code>.
+        </p>
+      </article>
+
+      <!-- EXTRACT -->
+      <article class="cmd" id="cmd-extract">
+        <h3><code>extract</code></h3>
+        <p class="cmd-tag">Extract a regional bundle from an existing planet bundle.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Source bundle.</td></tr>
+            <tr><td><code>--bbox</code></td><td>4 floats</td><td><strong>required</strong></td><td><code>min_lon min_lat max_lon max_lat</code>, space-separated.</td></tr>
+            <tr><td><code>--out</code></td><td>path</td><td><strong>required</strong></td><td>Destination bundle dir.</td></tr>
+            <tr><td><code>--tar</code></td><td>flag</td><td>off</td><td>After extracting, tar+gzip the output and remove the staging dir.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <!-- VERIFY -->
+      <article class="cmd" id="cmd-verify">
+        <h3><code>verify</code></h3>
+        <p class="cmd-tag">Verify bundle integrity against its manifest (blake3 every tile, admin layer, point layer, building layer, text index segment).</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle to verify.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <!-- INFO -->
+      <article class="cmd" id="cmd-info">
+        <h3><code>info</code></h3>
+        <p class="cmd-tag">Print summary information about a bundle (sources, schema_version, tile counts, sizes, sign state).</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle to summarize.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <!-- DIFF -->
+      <article class="cmd" id="cmd-diff">
+        <h3><code>diff</code></h3>
+        <p class="cmd-tag">Compute a tile-level diff manifest between two bundles.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--old</code></td><td>path</td><td><strong>required</strong></td><td>Older bundle (the one to migrate forward).</td></tr>
+            <tr><td><code>--new</code></td><td>path</td><td><strong>required</strong></td><td>Newer bundle (the source of truth).</td></tr>
+            <tr><td><code>--out</code></td><td>path</td><td><strong>required</strong></td><td>Output diff manifest path (TOML).</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <!-- APPLY -->
+      <article class="cmd" id="cmd-apply">
+        <h3><code>apply</code></h3>
+        <p class="cmd-tag">Apply a previously-computed diff to a target bundle.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle to migrate forward (the <code>old</code> from <code>diff</code>).</td></tr>
+            <tr><td><code>--diff</code></td><td>path</td><td><strong>required</strong></td><td>Diff manifest from <code>cairn-build diff</code>.</td></tr>
+            <tr><td><code>--source</code></td><td>path</td><td><strong>required</strong></td><td>Mirror of the <code>new</code> bundle to pull added/changed files from.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <!-- INSPECT -->
+      <article class="cmd" id="cmd-inspect-tile">
+        <h3><code>inspect-tile</code></h3>
+        <p class="cmd-tag">Decode a single place tile and pretty-print its contents.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle to read.</td></tr>
+            <tr><td><code>--tile</code></td><td>string</td><td><strong>required</strong></td><td><code>LEVEL:TILE_ID</code>, e.g. <code>2:49509</code>.</td></tr>
+            <tr><td><code>--sample</code></td><td>int</td><td><code>10</code></td><td>Place rows to print.</td></tr>
+            <tr><td><code>--grep</code></td><td>string</td><td>—</td><td>Substring filter on default name (case-insensitive).</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="cmd" id="cmd-inspect-admin-tile">
+        <h3><code>inspect-admin-tile</code></h3>
+        <p class="cmd-tag">Decode a single admin spatial tile and pretty-print its <code>AdminFeature</code> list.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle to read.</td></tr>
+            <tr><td><code>--tile</code></td><td>string</td><td><strong>required</strong></td><td><code>LEVEL:TILE_ID</code>.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="cmd" id="cmd-inspect-building-tile">
+        <h3><code>inspect-building-tile</code></h3>
+        <p class="cmd-tag">Decode a single building spatial tile (v0.3 lane A) and print per-building rows (id, centroid, bbox, vertex count, height).</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle to read.</td></tr>
+            <tr><td><code>--tile</code></td><td>string</td><td><strong>required</strong></td><td><code>LEVEL:TILE_ID</code>.</td></tr>
+            <tr><td><code>--sample</code></td><td>int</td><td><code>10</code></td><td>Building rows to print.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <!-- REPLICATION -->
+      <article class="cmd" id="cmd-replicate-fetch">
+        <h3><code>replicate-fetch</code></h3>
+        <p class="cmd-tag">Fetch new OSM minutely diff files into <code>&lt;bundle&gt;/replication/</code>. Idempotent.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Target bundle.</td></tr>
+            <tr><td><code>--upstream</code></td><td>url</td><td>(state file)</td><td>e.g. <code>https://planet.openstreetmap.org/replication/minute</code>. Required on first run; remembered after.</td></tr>
+            <tr><td><code>--max</code></td><td>int</td><td><code>60</code></td><td>Cap on diffs fetched per invocation. Stale bundles catch up over multiple runs.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="cmd" id="cmd-replicate-status">
+        <h3><code>replicate-status</code></h3>
+        <p class="cmd-tag">Print the current replication state for a bundle.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle to inspect.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="cmd" id="cmd-replicate-apply">
+        <h3><code>replicate-apply</code></h3>
+        <p class="cmd-tag">Apply previously-fetched OSM minutely diffs to the bundle's place tiles.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Target bundle.</td></tr>
+            <tr><td><code>--max</code></td><td>int</td><td><code>60</code></td><td>Cap on diffs applied per invocation.</td></tr>
+            <tr><td><code>--dry-run</code></td><td>flag</td><td>off</td><td>Parse + bucket without rewriting any tile blobs. Prints dirty-tile count + per-action histogram.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <!-- SIGNING -->
+      <article class="cmd" id="cmd-keygen">
+        <h3><code>keygen</code></h3>
+        <p class="cmd-tag">Generate a fresh ed25519 signing keypair (<code>cairn.key</code> + <code>cairn.pub</code>).</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--out</code></td><td>path</td><td><strong>required</strong></td><td>Directory to write keys into. Refuses to overwrite an existing <code>cairn.key</code>.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="cmd" id="cmd-sign">
+        <h3><code>sign</code></h3>
+        <p class="cmd-tag">Sign <code>&lt;bundle&gt;/manifest.toml</code> with the secret key. Writes <code>manifest.toml.sig</code>.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle directory.</td></tr>
+            <tr><td><code>--key</code></td><td>path</td><td><strong>required</strong></td><td>Path to <code>cairn.key</code>.</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="cmd" id="cmd-sign-verify">
+        <h3><code>sign-verify</code></h3>
+        <p class="cmd-tag">Verify <code>manifest.toml</code> against <code>manifest.toml.sig</code> using the public key. Non-zero exit on failure.</p>
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td><strong>required</strong></td><td>Bundle directory.</td></tr>
+            <tr><td><code>--pubkey</code></td><td>path</td><td><strong>required</strong></td><td>Path to <code>cairn.pub</code>.</td></tr>
+          </tbody>
+        </table>
+      </article>
+    </section>
+
+    <!-- ─────────────────────────────────────────────────────────── -->
+    <section class="cli-section" id="serve">
+      <div class="section-num">03</div>
+      <h2><code>cairn-serve</code> — runtime flags</h2>
+      <p class="section-lede">
+        One process, one mmap region, one HTTP listener. Federation
+        transparent to clients — pass multiple bundles and the router
+        fans out per-request.
+      </p>
+
+      <article class="cmd" id="serve-flags">
+        <table class="flag-table">
+          <thead><tr><th>Flag</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>--bundle</code></td><td>path</td><td>—</td><td>Single bundle directory. Mutually exclusive with <code>--bundles</code>.</td></tr>
+            <tr><td><code>--bundles</code></td><td>csv paths</td><td>—</td><td>Comma-separated list of bundle dirs to federate. Each keeps its own indices; queries fan out + merge by score (or distance for reverse).</td></tr>
+            <tr><td><code>--bind</code></td><td>SocketAddr</td><td><code>0.0.0.0:8080</code></td><td>Listen address.</td></tr>
+          </tbody>
+        </table>
+        <p class="cmd-note">
+          Either <code>--bundle</code> or <code>--bundles</code> is
+          required. Auth + rate-limiting + CIDR proxy trust are
+          configured at the API layer (env vars + headers) — see the
+          OpenAPI spec at <code>/openapi.json</code> on a running
+          instance for the runtime contract.
+        </p>
+      </article>
+
+      <h3>Endpoints exposed</h3>
+      <p>
+        Forward search (<code>/v1/search</code>), structured search
+        (<code>/v1/structured</code>), reverse (<code>/v1/reverse</code>),
+        autocomplete (<code>/v1/autocomplete</code>), parse
+        (<code>/v1/parse</code>, <code>/v1/expand</code>), place lookup
+        by gid or u64 (<code>/v1/place?ids=…</code>), buildings
+        (<code>/v1/buildings</code>), layers metadata
+        (<code>/v1/layers</code>), bundle info (<code>/v1/info</code>),
+        SBOM (<code>/v1/sbom</code>), Pelias-compatible aliases
+        (<code>/search</code>, <code>/autocomplete</code>,
+        <code>/reverse</code>, <code>/place</code>), ops endpoints
+        (<code>/healthz</code>, <code>/readyz</code>,
+        <code>/metrics</code>, <code>/openapi.json</code>), and admin
+        hot-reload (<code>POST /admin/reload</code>).
+      </p>
+    </section>
+
+  </main>
+
+  <footer class="site-foot">
+    <div class="foot-inner">
+      <p>
+        <span>cairn — offline geocoder.</span>
+        <a href="https://github.com/cairn-geocoder/cairn">github.com/cairn-geocoder/cairn</a> ·
+        MIT OR Apache-2.0
+      </p>
+    </div>
+  </footer>
+
+</body>
+</html>

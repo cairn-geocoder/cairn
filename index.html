@@ -23,13 +23,11 @@
       <nav>
         <a class="active" href="#hero">Docs</a>
         <a href="#install">Install</a>
-        <a href="#quickstart">Quickstart</a>
-        <a href="#api">Reference</a>
-        <a href="#benchmark">Benchmark</a>
-        <a href="geocoding/">For institutions</a>
+        <a href="geocoding/">Geocoding</a>
         <a href="algorithms/">Algorithms</a>
         <a href="comparison/">Comparison</a>
         <a href="demo/">Live demo</a>
+        <a href="cli/">CLI</a>
       </nav>
       <div class="right">
         <span class="ver-pill">v0.1.0 · beta</span>
@@ -51,6 +49,7 @@
           <li><a href="#quickstart"><span class="num">03</span> Quickstart</a></li>
           <li><a href="#deploy"><span class="num">04</span> Deploy <span class="sb-tag new">NEW</span></a></li>
           <li><a href="#concepts"><span class="num">05</span> Core concepts</a></li>
+          <li><a href="#enrichers"><span class="num">06</span> What's new <span class="sb-tag new">NEW</span></a></li>
         </ul>
       </div>
       <div class="sb-group">
@@ -68,6 +67,7 @@
         <div class="sb-title">Reference</div>
         <ul class="sb-list">
           <li><a href="#api">HTTP API</a></li>
+          <li><a href="cli/">CLI reference <span class="sb-tag new">NEW</span></a></li>
           <li><a href="#bundle">Bundle layout</a></li>
           <li><a href="#data-sources">Build sources</a></li>
         </ul>
@@ -321,11 +321,78 @@
         </div>
       </section>
 
+      <!-- ── V0.3 / V0.4 ENRICHERS ─────────────────────────────── -->
+      <section class="section" id="enrichers">
+        <div class="sect-hd">
+          <div class="l">
+            <div class="num">05 — What's new in v0.3 / v0.4</div>
+            <h2>Enrichers + stable identifiers.</h2>
+            <p>
+              Two recent landings layer on top of the v0.2 build pipeline:
+              <strong>augmenters</strong> that enrich an existing bundle in
+              place (no rebuild needed), and a <strong>Pelias-compatible
+              <code>gid</code></strong> on every Place so bookmarks survive
+              rebuilds and federation hops.
+            </p>
+          </div>
+          <div class="r"><a href="cli/#cmd-augment">CLI reference →</a></div>
+        </div>
+        <div class="tiles">
+          <a class="tile" href="cli/#cmd-augment">
+            <span class="lbl">v0.3 lane A · NEW</span>
+            <h4>Building footprints</h4>
+            <p>
+              Microsoft Building Footprints (~1.4 B polygons, ODbL) layer
+              into <code>spatial/buildings/</code> as per-tile rkyv blobs.
+              Spatial join stamps <code>building_id</code> on Places whose
+              centroid lands inside a building bbox. Rooftop-precision
+              addressing where OSM is sparse.
+            </p>
+            <span class="arrow">cairn-build augment --buildings →</span>
+          </a>
+          <a class="tile" href="cli/#cmd-augment">
+            <span class="lbl">v0.3 lane I · NEW</span>
+            <h4>Wikidata enrichment</h4>
+            <p>
+              Two-pass over the canonical Wikidata dump: collect Q-ids from
+              Place tags, then stream the dump to extract labels (200+
+              languages), aliases, cross-refs (P1566 GeoNames ID, P300
+              ISO 3166-2, P901 FIPS, P131 admin parent), and P31
+              instance-of for kind refinement. Idempotent on re-run.
+            </p>
+            <span class="arrow">cairn-build augment --wikidata →</span>
+          </a>
+          <a class="tile" href="#api">
+            <span class="lbl">v0.4 · NEW</span>
+            <h4>Pelias-style gid</h4>
+            <p>
+              Every Place ships a stable <code>gid</code> field
+              (<code>osm:way:12345</code>, <code>wof:locality:101748479</code>,
+              <code>overture:place:08bb…</code>). Resolves through
+              <code>/v1/place?ids=…</code> after rebuilds + across
+              federation members. Pelias clients pick it up unchanged.
+            </p>
+            <span class="arrow">GET /v1/place?ids=osm:way:1 →</span>
+          </a>
+          <a class="tile" href="cli/#cmd-replicate-fetch">
+            <span class="lbl">Continuous · STABLE</span>
+            <h4>OSM replication</h4>
+            <p>
+              <code>cairn-build replicate-fetch</code> + <code>replicate-apply</code>
+              walk OSM minutely diffs and rewrite affected place tiles in
+              place. Stale bundles catch up over multiple runs without
+              touching the planet PBF; airgap-safe by design.
+            </p>
+            <span class="arrow">cairn-build replicate-* →</span>
+          </a>
+        </div>
+      </section>
+
       <!-- ── EXAMPLES ──────────────────────────────────────────── -->
       <section class="section" id="examples">
         <div class="sect-hd">
           <div class="l">
-            <div class="num">05 — Examples</div>
+            <div class="num">06 — Examples</div>
             <h2>Recipes from the trail.</h2>
             <p>Short, complete <code>curl</code> snippets covering the most common queries against a running <code>cairn-serve</code>.</p>
           </div>
@@ -387,7 +454,7 @@
       <section class="section" id="api">
         <div class="sect-hd">
           <div class="l">
-            <div class="num">06 — Reference</div>
+            <div class="num">07 — Reference</div>
             <h2>The HTTP API at a glance.</h2>
             <p>Pelias-compatible endpoint shape. Same curl, same JSON envelope; substitute <code>localhost:8080</code> for whatever <code>cairn-serve</code> binds.</p>
           </div>
@@ -458,7 +525,7 @@
       <section class="section" id="bundle">
         <div class="sect-hd">
           <div class="l">
-            <div class="num">07 — Bundle</div>
+            <div class="num">08 — Bundle</div>
             <h2>What's in a bundle.</h2>
             <p>One directory. Everything Cairn needs at runtime, anchored by blake3 hashes in <code>manifest.toml</code>. <code>cairn-build verify</code> recomputes them and refuses any drifted artifact.</p>
           </div>
@@ -483,7 +550,7 @@
       <section class="section" id="data-sources">
         <div class="sect-hd">
           <div class="l">
-            <div class="num">08 — Build sources</div>
+            <div class="num">09 — Build sources</div>
             <h2>Bring your own data.</h2>
             <p>Mix and match. OSM alone is enough for a working bundle; the rest fill specific holes.</p>
           </div>
@@ -506,7 +573,7 @@
       <section class="section" id="benchmark">
         <div class="sect-hd">
           <div class="l">
-            <div class="num">09 — Benchmark</div>
+            <div class="num">10 — Benchmark</div>
             <h2>Switzerland on a Mac.</h2>
             <p>Same 506 MB OSM PBF, same 6 408-query workload, same Apple Silicon host. Cairn vs Pelias, Nominatim, Photon. Reproducible — <a href="https://github.com/cairn-geocoder/cairn/tree/main/benchmarks"><code>benchmarks/</code></a> ships every script.</p>
           </div>
@@ -617,7 +684,7 @@
       <section class="section" id="community">
         <div class="sect-hd">
           <div class="l">
-            <div class="num">10 — Community</div>
+            <div class="num">11 — Community</div>
             <h2>Stack with us.</h2>
             <p>Cairn is built in the open. Issues, PRs, and design discussions all happen on GitHub.</p>
           </div>
