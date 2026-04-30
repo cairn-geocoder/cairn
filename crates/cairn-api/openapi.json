@@ -125,6 +125,31 @@
         "responses": { "200": { "description": "OK" }, "400": { "description": "Bad request" } }
       }
     },
+    "/v1/place": {
+      "get": {
+        "tags": ["search"],
+        "summary": "Resolve one or more bookmarks to full Place records.",
+        "description": "Comma-separated `ids`. Each token is either a Pelias-style global identifier (`<source>:<type>:<id>`, e.g. `osm:way:12345`, `wof:locality:101748479`) or a legacy bundle-local u64 `place_id`. Tokens containing a colon are routed through the gid resolver; bare digits use the legacy path. Both fan out across federation members. Returns a Pelias FeatureCollection. Missing identifiers are silently skipped — partial results are not an error.",
+        "parameters": [
+          { "name": "ids", "in": "query", "required": true, "description": "Comma-separated gids and/or u64 place_ids.", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Pelias FeatureCollection" },
+          "400": { "description": "Bad request — missing or malformed `ids`." },
+          "503": { "description": "Text index not loaded." }
+        }
+      }
+    },
+    "/place": {
+      "get": {
+        "tags": ["pelias"],
+        "summary": "Pelias-compatible alias of /v1/place.",
+        "parameters": [
+          { "name": "ids", "in": "query", "required": true, "description": "Comma-separated Pelias `gid` values, e.g. `osm:way:12345,wof:locality:101748479`. Bundle-local u64 place_ids are also accepted.", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Pelias FeatureCollection" } }
+      }
+    },
     "/search": {
       "get": {
         "tags": ["pelias"],
@@ -185,6 +210,7 @@
         "type": "object",
         "properties": {
           "place_id":    { "type": "integer", "format": "uint64" },
+          "gid":         { "type": "string", "description": "Pelias-style global identifier (`<source>:<type>:<id>`). Stable across rebuilds; resolvable via /v1/place." },
           "name":        { "type": "string" },
           "kind":        { "type": "string" },
           "level":       { "type": "integer" },
@@ -207,6 +233,7 @@
         "type": "object",
         "properties": {
           "place_id":    { "type": "integer", "format": "uint64" },
+          "gid":         { "type": "string", "description": "Pelias-style global identifier (`<source>:<type>:<id>`)." },
           "name":        { "type": "string" },
           "kind":        { "type": "string" },
           "level":       { "type": "integer" },
