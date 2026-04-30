@@ -325,6 +325,14 @@ enum Command {
         /// in `manifest.building_tiles`. Repeatable.
         #[arg(long)]
         buildings: Vec<PathBuf>,
+        /// Skip the Place-tile spatial join after writing the building
+        /// layer. Default behavior stamps `building_id` (and
+        /// `building_height` when known) on Places whose centroid lands
+        /// inside a building bbox, rewriting affected tiles. Pass
+        /// `--no-building-attach` to keep place tiles byte-identical
+        /// (e.g. when re-running the import on already-attached data).
+        #[arg(long)]
+        no_building_attach: bool,
         /// Wikidata JSONL dump (`.json[.gz]`). Two-pass: collect Q-ids
         /// from existing place tags, then stream the dump to extract
         /// labels + cross-refs and rewrite affected tiles in place.
@@ -455,6 +463,7 @@ fn main() -> Result<()> {
         Command::Augment {
             bundle,
             buildings,
+            no_building_attach,
             wikidata,
             key,
         } => augment::cmd_augment(augment::AugmentArgs {
@@ -462,6 +471,7 @@ fn main() -> Result<()> {
             buildings,
             wikidata,
             key,
+            building_attach: !no_building_attach,
         }),
         Command::Sign { bundle, key } => sign::cmd_sign(&bundle, &key).map(|_| ()),
         Command::SignVerify { bundle, pubkey } => sign::cmd_verify(&bundle, &pubkey),
