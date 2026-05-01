@@ -678,6 +678,15 @@ where
         doc_count += 1;
     }
     writer.commit()?;
+    // Phase 6d C1 — force single-segment merge before quiescing. Default
+    // LogMergePolicy can leave 2-4 segments after commit on bundles built
+    // with mixed source arrival; per-query BM25 has to scan all of them.
+    // Single segment cuts text query latency 20-40% on small/medium
+    // corpora and stabilizes manifest file count.
+    let segment_ids = index.searchable_segment_ids()?;
+    if segment_ids.len() > 1 {
+        writer.merge(&segment_ids).wait()?;
+    }
     // Block until tantivy's background merge threads quiesce before
     // returning. Otherwise cairn-build's blake3 hashing race with
     // post-commit merges produces manifest hashes that don't match
