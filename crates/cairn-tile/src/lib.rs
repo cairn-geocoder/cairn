@@ -370,6 +370,126 @@ fn decode_tile(bytes: &[u8], path: &Path) -> Result<Vec<Place>, TileError> {
     Ok(places)
 }
 
+/// Phase 6d C3 — backing storage for a validated archived place tile.
+/// Mirrors `cairn_spatial::archived::AdminTileBytes`. Three variants:
+/// - `Owned` — eager-built or zstd-decompressed payload in heap.
+/// - `Mapped` — raw mmap, payload aligned to 16 bytes.
+/// - `OwnedMappedCopy` — mmap exists but payload offset is not 16-aligned;
+///   keep the mmap alive for the lifetime of the heap copy so OS page
+///   cache is shared.
+enum PlaceTileBytes {
+    #[allow(dead_code)]
+    Owned(rkyv::AlignedVec),
+    Mapped(memmap2::Mmap),
+    OwnedMappedCopy(rkyv::AlignedVec, #[allow(dead_code)] memmap2::Mmap),
+}
+
+/// Phase 6d C3 — mmap-backed zero-copy archive of a place tile.
+///
+/// `read_tile` materializes a `Vec<Place>` for every cache miss, which is
+/// fine for small bundles but burns CPU + heap on planet-scale workloads
+/// hitting tens of thousands of distinct tiles. `PlaceTileArchive` skips
+/// that step: validates the rkyv payload once at construction, then
+/// returns a borrowed `Archived<Vec<Place>>` that callers iterate
+/// directly. Page-cache shared across processes via the kernel.
+///
+/// Compression handling:
+/// - `TILE_FORMAT_VERSION_RAW` tiles: validate + hold the mmap. True
+///   zero-copy.
+/// - `TILE_FORMAT_VERSION_ZSTD` tiles: must be decompressed into an
+///   `AlignedVec`. Holds both the mmap and the decompressed buffer.
+///   The mmap drop runs after the buffer goes out of scope.
+pub struct PlaceTileArchive {
+    bytes: PlaceTileBytes,
+    body_offset: usize,
+    body_len: usize,
+    item_count: usize,
+}
+
+impl PlaceTileArchive {
+    /// Open a tile from disk. Validates the rkyv archive once; subsequent
+    /// `archived()` calls are zero-cost.
+    pub fn from_path(path: &Path) -> Result<Self, TileError> {
+        let file = std::fs::File::open(path)?;
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        if mmap.len() < HEADER_LEN {
+            return Err(TileError::BadMagic(path.display().to_string()));
+        }
+        if &mmap[0..8] != TILE_MAGIC {
+            return Err(TileError::BadMagic(path.display().to_string()));
+        }
+        let mut v = [0u8; 4];
+        v.copy_from_slice(&mmap[8..12]);
+        let version = u32::from_le_bytes(v);
+        let payload = &mmap[HEADER_LEN..];
+
+        match version {
+            TILE_FORMAT_VERSION_RAW => {
+                let payload_ptr = unsafe { mmap.as_ptr().add(HEADER_LEN) };
+                if (payload_ptr as usize) % 16 != 0 {
+                    let mut aligned = rkyv::AlignedVec::with_capacity(payload.len());
+                    aligned.extend_from_slice(payload);
+                    let archived = rkyv::check_archived_root::<Vec<Place>>(&aligned)
+                        .map_err(|e| TileError::RkyvValidate(format!("{e:?}")))?;
+                    let item_count = archived.len();
+                    let body_len = aligned.len();
+                    return Ok(Self {
+                        bytes: PlaceTileBytes::OwnedMappedCopy(aligned, mmap),
+                        body_offset: 0,
+                        body_len,
+                        item_count,
+                    });
+                }
+                let archived = rkyv::check_archived_root::<Vec<Place>>(payload)
+                    .map_err(|e| TileError::RkyvValidate(format!("{e:?}")))?;
+                let item_count = archived.len();
+                let body_len = payload.len();
+                Ok(Self {
+                    bytes: PlaceTileBytes::Mapped(mmap),
+                    body_offset: HEADER_LEN,
+                    body_len,
+                    item_count,
+                })
+            }
+            TILE_FORMAT_VERSION_ZSTD => {
+                let raw = zstd::stream::decode_all(payload)?;
+                let mut aligned = rkyv::AlignedVec::with_capacity(raw.len());
+                aligned.extend_from_slice(&raw);
+                let archived = rkyv::check_archived_root::<Vec<Place>>(&aligned)
+                    .map_err(|e| TileError::RkyvValidate(format!("{e:?}")))?;
+                let item_count = archived.len();
+                let body_len = aligned.len();
+                Ok(Self {
+                    bytes: PlaceTileBytes::OwnedMappedCopy(aligned, mmap),
+                    body_offset: 0,
+                    body_len,
+                    item_count,
+                })
+            }
+            _ => Err(TileError::BadVersion(version)),
+        }
+    }
+
+    fn payload(&self) -> &[u8] {
+        let raw: &[u8] = match &self.bytes {
+            PlaceTileBytes::Owned(v) => v,
+            PlaceTileBytes::Mapped(m) => &m[..],
+            PlaceTileBytes::OwnedMappedCopy(v, _) => v,
+        };
+        &raw[self.body_offset..self.body_offset + self.body_len]
+    }
+
+    /// Zero-copy reference into the archived `Vec<Place>`. Sound because
+    /// every constructor validates via `check_archived_root` first.
+    pub fn archived(&self) -> &<Vec<Place> as rkyv::Archive>::Archived {
+        unsafe { rkyv::archived_root::<Vec<Place>>(self.payload()) }
+    }
+
+    pub fn item_count(&self) -> usize {
+        self.item_count
+    }
+}
+
 pub fn write_manifest(path: &Path, manifest: &Manifest) -> Result<(), TileError> {
     let s = toml::to_string_pretty(manifest)?;
     std::fs::write(path, s)?;
@@ -552,6 +672,68 @@ mod tests {
         assert_eq!(raw_back[0].names[0].value, zst_back[0].names[0].value);
         // Quiet unused-coord warning when tests evolve.
         let _ = coord;
+    }
+
+    #[test]
+    fn place_tile_archive_roundtrip_raw() {
+        let dir = tempdir_for_test();
+        let coord = TileCoord::from_coord(Level::L1, vaduz().centroid);
+        let path = dir.join(coord.relative_path());
+        let places = vec![vaduz()];
+        write_tile(&path, &places, TileCompression::None).unwrap();
+        let arch = PlaceTileArchive::from_path(&path).unwrap();
+        assert_eq!(arch.item_count(), 1);
+        let archived_places = arch.archived();
+        assert_eq!(archived_places.len(), 1);
+        assert_eq!(
+            archived_places[0].names[0].value.as_str(),
+            "Vaduz",
+            "archived name must roundtrip via mmap"
+        );
+    }
+
+    #[test]
+    fn place_tile_archive_roundtrip_zstd() {
+        let dir = tempdir_for_test();
+        let big: Vec<Place> = (0..32)
+            .map(|i| {
+                let mut p = vaduz();
+                p.id = PlaceId::new(1, 200, i).unwrap();
+                p.names = vec![cairn_place::LocalizedName {
+                    lang: "default".into(),
+                    value: format!("Vaduz mmap roundtrip {i:04}"),
+                }];
+                p
+            })
+            .collect();
+        let path = dir.join("zstd.bin");
+        write_tile(&path, &big, TileCompression::Zstd).unwrap();
+        let arch = PlaceTileArchive::from_path(&path).unwrap();
+        assert_eq!(arch.item_count(), 32);
+        let archived_places = arch.archived();
+        assert_eq!(archived_places.len(), 32);
+        assert!(archived_places[0]
+            .names
+            .iter()
+            .any(|n| n.value.as_str().starts_with("Vaduz mmap")));
+    }
+
+    #[test]
+    fn place_tile_archive_rejects_corrupt_magic() {
+        let dir = tempdir_for_test();
+        let path = dir.join("bad.bin");
+        let coord = TileCoord::from_coord(Level::L1, vaduz().centroid);
+        let _ = coord;
+        write_tile(&path, &[vaduz()], TileCompression::None).unwrap();
+        // Flip a magic byte in place.
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[0] = b'X';
+        std::fs::write(&path, &bytes).unwrap();
+        match PlaceTileArchive::from_path(&path) {
+            Err(TileError::BadMagic(_)) => {}
+            Err(e) => panic!("expected BadMagic, got {e:?}"),
+            Ok(_) => panic!("expected BadMagic, got Ok"),
+        }
     }
 
     #[test]
