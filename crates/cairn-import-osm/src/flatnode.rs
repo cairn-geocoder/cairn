@@ -184,6 +184,14 @@ impl FlatnodeReader {
     pub fn open(path: &Path) -> Result<Self, FlatnodeError> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
+        // Phase 6e A4 — hint random access. Pass 2b1 issues
+        // unpredictable 8-byte reads keyed by node id; the default
+        // readahead heuristic (sequential) trips into prefetch storms
+        // that pollute page cache on planet flatnodes. `Random` tells
+        // the kernel to skip readahead and serve faults page-at-a-time
+        // — significantly faster on HDD-backed mmap and a small win on
+        // NVMe by reducing fault-coalesce overhead.
+        let _ = mmap.advise(memmap2::Advice::Random);
         if mmap.len() < HEADER_SIZE {
             return Err(FlatnodeError::BadMagic { got: [0u8; 8] });
         }

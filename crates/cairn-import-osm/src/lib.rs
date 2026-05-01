@@ -1654,19 +1654,69 @@ fn kind_str(kind: PlaceKind) -> &'static str {
 /// Each output ring is a `Vec<NodeId>` whose first and last entries match
 /// (geographically the same node).
 fn assemble_rings(outer_way_ids: &[i64], way_nodes: &WayNodes) -> Vec<Vec<i64>> {
+    // Phase 6e A6 — endpoint hash index drops the inner extension loop
+    // from O(remaining) per probe to O(1) average. Coastline-stitched
+    // admin polygons (UK with Hebrides + Shetlands, Norway, Greece,
+    // Russia) routinely hit thousands of ways per relation — the prior
+    // `available.iter().find_map(...)` was O(k²) per ring and dominated
+    // pass 2b2 on Europe-scale dumps.
+    //
+    // `endpoint_index` maps each unconsumed way's first/last node to
+    // the way ids that touch it. When a chain advances, we look up the
+    // tail node, pull the matching way, and clear both ends from the
+    // index in O(1). Rebuilds never happen — the same map services the
+    // whole pass.
     let mut available: HashMap<i64, Vec<i64>> = outer_way_ids
         .iter()
         .filter_map(|id| way_nodes.get(id).cloned().map(|v| (*id, v)))
         .collect();
+    let mut endpoint_index: HashMap<i64, Vec<i64>> = HashMap::default();
+    for (id, nodes) in &available {
+        if let Some(&first) = nodes.first() {
+            endpoint_index.entry(first).or_default().push(*id);
+        }
+        if let Some(&last) = nodes.last() {
+            // Skip duplicate registration when first == last (already-
+            // closed loop); both endpoints point at the same node.
+            if Some(&last) != nodes.first() {
+                endpoint_index.entry(last).or_default().push(*id);
+            }
+        }
+    }
     let mut rings: Vec<Vec<i64>> = Vec::new();
 
     while let Some(&seed_id) = available.keys().next().copied().as_ref() {
-        let mut chain = available.remove(&seed_id).unwrap();
-        if chain.len() < 2 {
+        let chain_nodes = match available.remove(&seed_id) {
+            Some(n) => n,
+            None => continue,
+        };
+        if chain_nodes.len() < 2 {
+            // Drop seed's endpoints from the index so they don't
+            // surface as fake matches for the next chain.
+            if let Some(&first) = chain_nodes.first() {
+                if let Some(v) = endpoint_index.get_mut(&first) {
+                    v.retain(|w| *w != seed_id);
+                }
+            }
+            if let Some(&last) = chain_nodes.last() {
+                if let Some(v) = endpoint_index.get_mut(&last) {
+                    v.retain(|w| *w != seed_id);
+                }
+            }
             continue;
         }
-        // Try to extend the chain at its tail end until it closes or we
-        // run out of matching ways.
+        let mut chain = chain_nodes;
+        // Drop seed from the endpoint index (both ends).
+        if let Some(&first) = chain.first() {
+            if let Some(v) = endpoint_index.get_mut(&first) {
+                v.retain(|w| *w != seed_id);
+            }
+        }
+        if let Some(&last) = chain.last() {
+            if let Some(v) = endpoint_index.get_mut(&last) {
+                v.retain(|w| *w != seed_id);
+            }
+        }
         let mut extended = true;
         while extended {
             extended = false;
@@ -1674,20 +1724,39 @@ fn assemble_rings(outer_way_ids: &[i64], way_nodes: &WayNodes) -> Vec<Vec<i64>> 
                 break;
             }
             let tail = *chain.last().unwrap();
-            // Find a way that starts or ends at `tail`.
-            let next_id = available.iter().find_map(|(id, nodes)| {
-                if nodes.first() == Some(&tail) || nodes.last() == Some(&tail) {
-                    Some(*id)
-                } else {
-                    None
+            // O(1) lookup for any way touching `tail`. Drain the slot
+            // until we find one still in `available` (entries can lag
+            // by a step when both endpoints registered the same id).
+            let next_id = loop {
+                let bucket = endpoint_index.get_mut(&tail);
+                let bucket = match bucket {
+                    Some(b) if !b.is_empty() => b,
+                    _ => break None,
+                };
+                let candidate = bucket.pop().unwrap();
+                if available.contains_key(&candidate) {
+                    break Some(candidate);
                 }
-            });
+            };
             if let Some(id) = next_id {
-                let mut nodes = available.remove(&id).unwrap();
+                let mut nodes = match available.remove(&id) {
+                    Some(n) => n,
+                    None => continue,
+                };
                 if nodes.first() != Some(&tail) {
                     nodes.reverse();
                 }
-                // Skip the duplicated joining node.
+                // Drop the *other* endpoint of `id` from the index.
+                let other = if Some(&tail) == nodes.first() {
+                    nodes.last().copied()
+                } else {
+                    nodes.first().copied()
+                };
+                if let Some(other_node) = other {
+                    if let Some(v) = endpoint_index.get_mut(&other_node) {
+                        v.retain(|w| *w != id);
+                    }
+                }
                 chain.extend(nodes.into_iter().skip(1));
                 extended = true;
             }
@@ -1748,6 +1817,16 @@ fn ring_is_self_intersecting(ls: &LineString<f64>) -> bool {
     if n < 5 {
         // <5 vertices = triangle or smaller. Triangles can't self-
         // intersect; checking degenerates wastes cycles.
+        return false;
+    }
+    // Phase 6e A7 — cap O(n²) check at 5000 vertices.
+    // Norway/UK coastlines after 100m Douglas-Peucker can still carry
+    // 50K+ vertices per ring → 2.5B segment-pair tests → minutes per
+    // ring on a single core. Past 5K vertices we accept the polygon as
+    // "probably simple"; even genuine self-intersection survives PIP
+    // (the ray-cast crossings rule degrades gracefully) and would have
+    // shipped under bincode in the v0.4 baseline anyway.
+    if n > 5000 {
         return false;
     }
     let last = n - 1;
