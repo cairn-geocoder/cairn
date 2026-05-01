@@ -656,6 +656,16 @@ enum PointTileSource {
 
 pub struct NearestIndex {
     slots: Vec<PointTileSource>,
+    /// Phase 6e B3 — parallel AABB array indexed by `slot_idx`. Avoids
+    /// the O(slots) linear scan in `slot_bbox_dist2` that would
+    /// otherwise dominate `nearest_k_filtered` on planet-scale bundles.
+    slot_aabbs: Vec<AABB<[f64; 2]>>,
+    /// R*-tree retained for future per-tile R*-tree + bounded-heap kNN
+    /// (TODO Phase 7c). Currently `nearest_k_filtered` ranks slots
+    /// directly via `slot_aabbs` + adaptive widening; the tree is
+    /// load-bearing only for the constructor cost test that exercises
+    /// the bulk-load path.
+    #[allow(dead_code)]
     tree: RTree<TileEnvelope>,
     cache: Mutex<LruCache<usize, Arc<[PlacePoint]>>>,
     total_items: u64,
@@ -717,6 +727,7 @@ impl NearestIndex {
         let tree = RTree::bulk_load(vec![TileEnvelope { aabb, slot_idx: 0 }]);
         Self {
             slots: vec![slot],
+            slot_aabbs: vec![aabb],
             tree,
             cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(DEFAULT_TILE_CACHE_ENTRIES).unwrap(),
@@ -740,13 +751,16 @@ impl NearestIndex {
     ) -> Self {
         sort_entries_by_z_order(&mut entries);
         let mut slots: Vec<PointTileSource> = Vec::with_capacity(entries.len());
+        let mut slot_aabbs: Vec<AABB<[f64; 2]>> = Vec::with_capacity(entries.len());
         let mut envs: Vec<TileEnvelope> = Vec::with_capacity(entries.len());
         let mut total_items = 0u64;
         for (idx, e) in entries.iter().enumerate() {
             total_items += e.item_count;
             slots.push(PointTileSource::Disk(bundle_root.join(&e.rel_path)));
+            let aabb = AABB::from_corners([e.min_lon, e.min_lat], [e.max_lon, e.max_lat]);
+            slot_aabbs.push(aabb);
             envs.push(TileEnvelope {
-                aabb: AABB::from_corners([e.min_lon, e.min_lat], [e.max_lon, e.max_lat]),
+                aabb,
                 slot_idx: idx,
             });
         }
@@ -758,6 +772,7 @@ impl NearestIndex {
         let capacity = NonZeroUsize::new(cache_entries.max(1)).unwrap();
         Self {
             slots,
+            slot_aabbs,
             tree,
             cache: Mutex::new(LruCache::new(capacity)),
             total_items,
@@ -843,26 +858,20 @@ fn bbox_of(mp: &MultiPolygon<f64>) -> Option<Rect<f64>> {
 }
 
 /// Squared distance from a coord to a slot's tile bbox. 0 if inside.
+///
+/// Phase 6e B3 — O(1) lookup via the parallel `slot_aabbs` array;
+/// previously did `tree.iter().find()` which was O(slots) per call and
+/// dominated `nearest_k_filtered` on planet-scale bundles.
 fn slot_bbox_dist2(idx: &NearestIndex, slot_idx: usize, q: Coord) -> f64 {
-    // The R*-tree's TileEnvelope carries the bbox we want.
     let env = idx
-        .tree
-        .iter()
-        .find(|e| e.slot_idx == slot_idx)
-        .map(|e| e.aabb)
+        .slot_aabbs
+        .get(slot_idx)
+        .copied()
         .unwrap_or_else(|| AABB::from_corners([-180.0, -90.0], [180.0, 90.0]));
-    let dx = (q.lon - env.lower()[0])
-        .max(0.0)
-        .max(env.upper()[0] - q.lon);
-    let dy = (q.lat - env.lower()[1])
-        .max(0.0)
-        .max(env.upper()[1] - q.lat);
-    // The above max-trick is wrong; replace with proper bbox-distance:
     let cx = q.lon.clamp(env.lower()[0], env.upper()[0]);
     let cy = q.lat.clamp(env.lower()[1], env.upper()[1]);
     let dxc = q.lon - cx;
     let dyc = q.lat - cy;
-    let _ = (dx, dy);
     dxc * dxc + dyc * dyc
 }
 
