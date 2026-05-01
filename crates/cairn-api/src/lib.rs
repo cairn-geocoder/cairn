@@ -2051,6 +2051,7 @@ async fn pelias_reverse(
                 categories: Vec::new(),
                 gid: String::new(),
                 explain: None,
+                name_vec_bytes: None,
             };
             hit_to_pelias_feature(hit)
         })
