@@ -42,18 +42,24 @@ pub fn myers_distance(pattern: &str, text: &str) -> Option<usize> {
         return Some(m);
     }
 
-    // Build the per-character bitmask `peq[c]`: bit `i` is set iff
-    // `pattern[i] == c`. We use a small `Vec<(char, u64)>` instead of
-    // a dense table because patterns rarely have more than ~30
-    // distinct chars; linear scan in cache is faster than a HashMap
-    // lookup for this size.
-    let mut peq: Vec<(char, u64)> = Vec::with_capacity(m);
+    // Phase 6e B4 — direct ASCII index plus narrow fallback for the
+    // unicode tail. Geocoder name corpora are dominated by ASCII or
+    // ASCII-folded text (`trigram::extract_indexed` lowercases +
+    // strips diacritics upstream), so the inner loop hits `ascii_peq`
+    // ~99% of iterations. The unicode `wide_peq` Vec only fires when
+    // the caller passes a CJK or unfoldable codepoint through; in
+    // that case the linear scan is cheaper than maintaining a
+    // dynamic HashMap.
+    let mut ascii_peq: [u64; 128] = [0u64; 128];
+    let mut wide_peq: Vec<(char, u64)> = Vec::new();
     for (i, &ch) in p_chars.iter().enumerate() {
         let bit = 1u64 << i;
-        if let Some(entry) = peq.iter_mut().find(|(c, _)| *c == ch) {
+        if (ch as u32) < 128 {
+            ascii_peq[ch as usize] |= bit;
+        } else if let Some(entry) = wide_peq.iter_mut().find(|(c, _)| *c == ch) {
             entry.1 |= bit;
         } else {
-            peq.push((ch, bit));
+            wide_peq.push((ch, bit));
         }
     }
     let last_bit: u64 = 1u64 << (m - 1);
@@ -68,11 +74,15 @@ pub fn myers_distance(pattern: &str, text: &str) -> Option<usize> {
     let mut score: usize = m;
 
     for &c in &t_chars {
-        let eq: u64 = peq
-            .iter()
-            .find(|(ch, _)| *ch == c)
-            .map(|(_, b)| *b)
-            .unwrap_or(0);
+        let eq: u64 = if (c as u32) < 128 {
+            ascii_peq[c as usize]
+        } else {
+            wide_peq
+                .iter()
+                .find(|(ch, _)| *ch == c)
+                .map(|(_, b)| *b)
+                .unwrap_or(0)
+        };
         let xv = eq | mv;
         let xh = (((eq & pv).wrapping_add(pv)) ^ pv) | eq;
         let mut ph = mv | !(xh | pv);
