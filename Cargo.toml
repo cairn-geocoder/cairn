@@ -76,7 +76,7 @@ memmap2 = "0.9"
 parquet = { version = "54", features = ["arrow"] }
 arrow-array = "54"
 arc-swap = "1"
-rkyv = { version = "0.7", features = ["validation"] }
+rkyv = { version = "0.7", default-features = false, features = ["validation", "size_64", "alloc", "std"] }
 bytecheck = "0.6"
 blake3 = "1"
 zstd = "0.13"
