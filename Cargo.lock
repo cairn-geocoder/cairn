@@ -677,6 +677,7 @@ dependencies = [
  "geo-types",
  "http-body-util",
  "insta",
+ "rayon",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
