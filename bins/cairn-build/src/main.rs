@@ -13,11 +13,11 @@ mod sign;
 use cairn_place::Place;
 use cairn_spatial::{PlacePoint, PointLayer};
 use cairn_tile::{
-    bbox_intersects, bucket_places, read_manifest, verify_bundle, write_manifest, write_tile,
-    Level, Manifest, SourceVersion, TileCompression, TileCoord, TileEntry,
+    bbox_intersects, read_manifest, verify_bundle, write_manifest, write_tile, Level, Manifest,
+    SourceVersion, TileCompression, TileCoord, TileEntry,
 };
 use clap::{Parser, Subcommand, ValueEnum};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -1379,42 +1379,62 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         "admin_names sidecar written"
     );
 
-    // Bucket per-level using each Place's PlaceId-recorded level so admin,
-    // city, and street/POI rows land in their natural tier.
-    let mut by_level: HashMap<u8, Vec<Place>> = HashMap::new();
-    for p in places.iter() {
-        by_level.entry(p.id.level()).or_default().push(p.clone());
-    }
-    let mut buckets: HashMap<TileCoord, Vec<Place>> = HashMap::new();
-    for (level_u8, level_places) in by_level {
-        let level = Level::from_u8(level_u8).unwrap_or(Level::L1);
-        for (coord, group) in bucket_places(level, level_places) {
-            buckets.entry(coord).or_default().extend(group);
+    // Phase 6e — sort-and-stream tile write. Prior pipeline (drain
+    // `places` into HashMap<TileCoord, Vec<Place>>, then collect into
+    // Vec<(coord, places)>, then par_iter) held the full place set
+    // twice during the conversion: once in `places.drain()` (Vec
+    // capacity stays allocated until explicit drop) and again in
+    // `buckets`, plus a third transient peak when `into_iter().collect()`
+    // restructured the HashMap into the sorted Vec.
+    //
+    // For Europe-scale corpora (25.4M places ≈ 38 GB heap-resident)
+    // that ~2-3× factor put peak memory in the 76-114 GB range and
+    // triggered OOM on hosts where airflow/k3s workloads competed
+    // for the same RAM (cluster has 124 GB total, ~30-40 GB
+    // baseline taken by other tenants).
+    //
+    // New shape: sort `places` in place by (level, tile_id), build a
+    // small `runs` Vec<(coord, start, end)> of slice indices, then
+    // par_iter the runs and write each tile from a `&places[range]`
+    // slice. No bucketing HashMap, no Vec restructuring, no extra
+    // copies of the place set — peak adds only `num_threads` transient
+    // tile-blob buffers (each tile typically 1-50 MB after rkyv +
+    // zstd, so the parallel peak is bounded by ~50 MB × cores ≈ 1 GB
+    // on a 19-core box). `places` Vec frees explicitly after the
+    // run loop returns.
+    places.sort_unstable_by_key(|p| {
+        let level = Level::from_u8(p.id.level()).unwrap_or(Level::L1);
+        let coord = TileCoord::from_coord(level, p.centroid);
+        (coord.level.as_u8(), coord.id())
+    });
+    let mut runs: Vec<(TileCoord, usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    while start < places.len() {
+        let p = &places[start];
+        let level = Level::from_u8(p.id.level()).unwrap_or(Level::L1);
+        let coord = TileCoord::from_coord(level, p.centroid);
+        let mut end = start + 1;
+        while end < places.len() {
+            let q = &places[end];
+            let qlevel = Level::from_u8(q.id.level()).unwrap_or(Level::L1);
+            let qcoord = TileCoord::from_coord(qlevel, q.centroid);
+            if qcoord != coord {
+                break;
+            }
+            end += 1;
         }
+        runs.push((coord, start, end));
+        start = end;
     }
-    tracing::info!(tile_count = buckets.len(), "bucketed places per-level");
-
-    // Tile blobs are independent of each other — each rkyv encode +
-    // optional zstd + blake3 + fs::write touches only that tile's
-    // path. Run them through rayon's work-stealing pool so the
-    // encode pass scales with core count instead of bottlenecking
-    // on a single writer. BTreeMap pre-sort preserves stable
-    // (level, tile_id) ordering for the manifest entries — the
-    // .map closure produces a TileEntry per tile, and
-    // par_iter_mut().collect() rebuilds the Vec in input order.
-    let sorted: BTreeMap<(u8, u32), (TileCoord, Vec<Place>)> = buckets
-        .into_iter()
-        .map(|(coord, places)| ((coord.level.as_u8(), coord.id()), (coord, places)))
-        .collect();
-    let pairs: Vec<(TileCoord, Vec<Place>)> = sorted.into_values().collect();
+    tracing::info!(tile_count = runs.len(), "tile runs computed");
     let entries: Vec<TileEntry> = {
         use rayon::prelude::*;
-        pairs
-            .into_par_iter()
-            .map(|(coord, tile_places)| -> Result<TileEntry> {
+        runs.par_iter()
+            .map(|(coord, start, end)| -> Result<TileEntry> {
+                let tile_places: &[Place] = &places[*start..*end];
                 let path = args.out.join(coord.relative_path());
                 let count = tile_places.len() as u32;
-                let (hash, size) = write_tile(&path, &tile_places, args.compression)?;
+                let (hash, size) = write_tile(&path, tile_places, args.compression)?;
                 Ok(TileEntry {
                     level: coord.level.as_u8(),
                     tile_id: coord.id(),
@@ -1426,6 +1446,7 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             })
             .collect::<Result<Vec<_>>>()?
     };
+    drop(runs);
 
     let mut admin_tile_entries: Vec<cairn_tile::SpatialTileEntry> = Vec::new();
     if let Some(mut layer) = deduped_admin {
@@ -1478,9 +1499,16 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         );
     }
 
+    // Phase 6e — convert places into PlacePoints by draining instead
+    // of cloning. The previous `places.iter().map(...)` ran to
+    // completion holding both `places` (~38 GB on Europe) and the
+    // freshly built `point_layer.points` Vec (~2.5 GB) at the same
+    // time. Drain consumes `places` element-by-element so its
+    // allocation is reusable inside the iterator chain; we drop the
+    // empty Vec immediately after to release the underlying buffer.
     let point_layer = PointLayer {
         points: places
-            .iter()
+            .drain(..)
             .map(|p| {
                 let default_name = p
                     .names
@@ -1500,6 +1528,7 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             })
             .collect(),
     };
+    drop(places);
     let point_tile_entries = cairn_spatial::write_points_partitioned(&args.out, &point_layer)
         .with_context(|| format!("writing partitioned point layer to {}", args.out.display()))?;
     let total_point_bytes: u64 = point_tile_entries.iter().map(|e| e.byte_size).sum();
