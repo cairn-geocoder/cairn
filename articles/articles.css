@@ -1,0 +1,187 @@
+/* Articles — long-form pages on top of cli.css.
+   Reuses cli-page / cli-hero / cli-section grid; adds prose
+   typography tuned for reading length (longer measure, looser
+   leading, larger code blocks). */
+
+.article-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 24px;
+}
+.article-list li a {
+  display: block;
+  padding: 28px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  transition: all 0.15s ease;
+  color: var(--ink);
+}
+.article-list li a:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(201, 100, 66, 0.10);
+}
+.article-eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+.article-list h3 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 28px;
+  line-height: 1.15;
+  margin: 0 0 12px;
+  color: var(--ink);
+}
+.article-list p {
+  margin: 0 0 16px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.article-meta {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+/* ── Article body typography ──────────────────────────────────── */
+
+.article-body {
+  max-width: 720px;
+  margin: 0 auto;
+  font-size: 17px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+.article-body > * + * { margin-top: 1.05em; }
+.article-body p {
+  margin: 0 0 1.05em;
+}
+.article-body p strong { color: var(--ink); font-weight: 600; }
+.article-body em { color: var(--ink); font-style: italic; }
+
+.article-body h2 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 36px;
+  line-height: 1.15;
+  margin: 2.2em 0 0.6em;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.article-body h3 {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 19px;
+  margin: 2em 0 0.5em;
+  color: var(--ink);
+  letter-spacing: -0.005em;
+}
+
+.article-body code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  background: var(--rule-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+
+.article-body pre {
+  background: var(--code-bg);
+  color: var(--code-ink);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin: 1.4em 0;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.55;
+  border: 1px solid #2a2520;
+}
+.article-body pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+.article-body ul,
+.article-body ol {
+  padding-left: 1.4em;
+  margin: 1em 0;
+}
+.article-body li {
+  margin-bottom: 0.4em;
+}
+.article-body li > p {
+  margin-bottom: 0.4em;
+}
+
+.article-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.4em 0;
+  font-size: 14.5px;
+}
+.article-body th,
+.article-body td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.article-body th {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+.article-body td code {
+  font-size: 13px;
+}
+
+.article-body a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+.article-body a:hover {
+  color: var(--ink);
+  text-decoration-thickness: 2px;
+}
+
+.article-body blockquote {
+  margin: 1.4em 0;
+  padding-left: 22px;
+  border-left: 2px solid var(--accent);
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.article-foot {
+  margin-top: 5em;
+  padding-top: 32px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.article-foot a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.article-foot a:hover { color: var(--ink); }

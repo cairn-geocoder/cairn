@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cairn — Articles</title>
+  <meta name="description" content="Long-form writing on the Cairn geocoder: the offline bundle format, mobile integration paths, and the engineering choices behind the runtime." />
+  <link rel="icon" type="image/svg+xml" href="../assets/cairn-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../site.css" />
+  <link rel="stylesheet" href="../cli/cli.css" />
+  <link rel="stylesheet" href="articles.css" />
+</head>
+<body>
+
+  <header class="topnav">
+    <div class="topnav-inner">
+      <a class="brand" href="../">
+        <img class="mk" src="../assets/cairn-photoreal.svg" alt="" />
+        <span>cairn<span class="dot">.</span></span>
+      </a>
+      <nav>
+        <a href="../#hero">Docs</a>
+        <a href="../#install">Install</a>
+        <a href="../geocoding/">Geocoding</a>
+        <a href="../algorithms/">Algorithms</a>
+        <a href="../comparison/">Comparison</a>
+        <a href="../demo/">Live demo</a>
+        <a href="../cli/">CLI</a>
+        <a class="active" href="./">Articles</a>
+      </nav>
+      <div class="right">
+        <span class="ver-pill">v0.1.0 · beta</span>
+        <a class="gh-link" href="https://github.com/cairn-geocoder/cairn">★ GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="cli-page">
+    <section class="cli-hero">
+      <div class="cli-hero-inner">
+        <div class="cli-eyebrow">Long-form writing</div>
+        <h1>Articles.</h1>
+        <p class="cli-lede">
+          The engineering choices behind Cairn — the on-disk format,
+          the mobile integration paths, the trade-offs that fall out
+          of treating geocoding as a static artifact instead of a
+          hosted service.
+        </p>
+      </div>
+    </section>
+
+    <section class="cli-section">
+      <ul class="article-list">
+        <li>
+          <a href="offline-tiles/">
+            <div class="article-eyebrow">Architecture</div>
+            <h3>Why Cairn is an offline geocoder, and what that buys you</h3>
+            <p>
+              How Cairn ships place data — addresses, POIs, admin
+              polygons, postcodes — as a self-contained directory of
+              mmap-ready tiles you can drop on any disk, embed in a
+              mobile app, or ship inside a static site.
+            </p>
+            <div class="article-meta">2026 · 10 min read</div>
+          </a>
+        </li>
+      </ul>
+    </section>
+  </main>
+
+</body>
+</html>
