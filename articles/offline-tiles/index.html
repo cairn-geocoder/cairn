@@ -196,26 +196,25 @@
           No deserialization, no allocation.
         </p>
 
-        <p>Two pieces of recent work make this fully usable:</p>
+        <p>Three properties make this fully usable:</p>
 
         <p>
           <strong>Compression by default.</strong> Tile payloads
           compress with zstd. On a typical POI-heavy tile this trims
-          size 4–5×, and we trained the writer to flip the format
-          version flag automatically so callers don't have to opt in.
-          The decompression cost is paid once per cache miss, not per
+          size 4–5×, and the writer flips the format version flag
+          automatically so callers don't have to opt in. The
+          decompression cost is paid once per cache miss, not per
           query.
         </p>
 
         <p>
           <strong>Zero-copy reads via <code>PlaceTileArchive</code>.</strong>
-          Phase 6d added a <code>PlaceTileArchive::from_path(...)</code>
-          constructor that opens a tile, validates its rkyv root once,
-          and hands the caller a borrowed
-          <code>&amp;Archived&lt;Vec&lt;Place&gt;&gt;</code>. Subsequent
-          iterations skip the deserialize-into-owned step entirely. On
-          planet-scale serve workloads this saves both CPU and a
-          25.4M-place transient heap allocation per cold-tile load.
+          <code>PlaceTileArchive::from_path(...)</code> opens a tile,
+          validates its rkyv root once, and hands the caller a
+          borrowed <code>&amp;Archived&lt;Vec&lt;Place&gt;&gt;</code>.
+          Subsequent iterations skip the deserialize-into-owned step
+          entirely. On planet-scale serve workloads this saves both
+          CPU and a transient heap allocation per cold-tile load.
         </p>
 
         <p>
@@ -269,12 +268,11 @@
           <code>asia/</code>, <code>africa/</code>,
           <code>oceania/</code>) is a federation of bundles. The
           runtime fans every query — search, reverse,
-          lookup-by-id — across every bundle in parallel and merges
-          results. This is how you ship a planet's worth of geocoding
-          to a single-tenant deployment without one giant 100 GB
-          tantivy index. Phase 6e shipped the parallel fan-out via
-          rayon, so multi-shard p95 stops growing linearly with shard
-          count.
+          lookup-by-id — across every bundle in parallel via rayon
+          and merges results. This is how you ship a planet's worth
+          of geocoding to a single-tenant deployment without one
+          giant 100 GB tantivy index. Multi-shard p95 stays bounded
+          by the slowest shard rather than the sum.
         </p>
 
         <h2>How a mobile app actually uses this</h2>

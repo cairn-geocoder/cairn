@@ -64,11 +64,11 @@ The level isn't decorative. A `Place` carries a `PlaceId` whose top three bits e
 
 Each tile blob is a fixed 16-byte header (magic + format version + payload length) followed by an [rkyv](https://rkyv.org/) archive of `Vec<Place>`. rkyv is a zero-copy serialization framework: the on-disk bytes are the runtime layout, so reading a tile is just memory-mapping it and casting the payload to `&Archived<Vec<Place>>`. No deserialization, no allocation.
 
-Two pieces of recent work make this fully usable:
+Three properties make this fully usable:
 
-**Compression by default.** Tile payloads compress with zstd. On a typical POI-heavy tile this trims size 4–5×, and we trained the writer to flip the format version flag automatically so callers don't have to opt in. The decompression cost is paid once per cache miss, not per query.
+**Compression by default.** Tile payloads compress with zstd. On a typical POI-heavy tile this trims size 4–5×, and the writer flips the format version flag automatically so callers don't have to opt in. The decompression cost is paid once per cache miss, not per query.
 
-**Zero-copy reads via `PlaceTileArchive`.** Phase 6d added a `PlaceTileArchive::from_path(...)` constructor that opens a tile, validates its rkyv root once, and hands the caller a borrowed `&Archived<Vec<Place>>`. Subsequent iterations skip the deserialize-into-owned step entirely. On planet-scale serve workloads this saves both CPU and a 25.4M-place transient heap allocation per cold-tile load.
+**Zero-copy reads via `PlaceTileArchive`.** `PlaceTileArchive::from_path(...)` opens a tile, validates its rkyv root once, and hands the caller a borrowed `&Archived<Vec<Place>>`. Subsequent iterations skip the deserialize-into-owned step entirely. On planet-scale serve workloads this saves both CPU and a transient heap allocation per cold-tile load.
 
 **Integrity by default.** Every tile is hashed with blake3 at build time. The manifest carries those hashes. A `cairn-build verify` pass walks the bundle, recomputes every digest, and confirms byte-for-byte that the runtime is reading what the build wrote. Tampered tiles surface immediately; this matters for signed deploys and for dataset attribution audits.
 
@@ -80,7 +80,7 @@ Tiles store places — addresses, POIs, places-of-the-named variety. Two more la
 
 **Nearest-point R\*-tree.** For the cases where polygons don't cover (islands missing from OSM, points off-coast, addresses interpolated between known nodes), `spatial/nearest/` stores a partitioned R\*-tree of place centroids. Each tile's bounding box is loaded eagerly into the tree at startup; the points themselves stay on disk and load lazily through an LRU cache when their tile is queried. A planet-scale nearest-fallback layer carries a few thousand tile bboxes — fits in a megabyte — and the LRU keeps the working set bounded.
 
-**Federation.** A planet split into continental shards (`europe/`, `americas/`, `asia/`, `africa/`, `oceania/`) is a federation of bundles. The runtime fans every query — search, reverse, lookup-by-id — across every bundle in parallel and merges results. This is how you ship a planet's worth of geocoding to a single-tenant deployment without one giant 100 GB tantivy index. Phase 6e shipped the parallel fan-out via rayon, so multi-shard p95 stops growing linearly with shard count.
+**Federation.** A planet split into continental shards (`europe/`, `americas/`, `asia/`, `africa/`, `oceania/`) is a federation of bundles. The runtime fans every query — search, reverse, lookup-by-id — across every bundle in parallel via rayon and merges results. This is how you ship a planet's worth of geocoding to a single-tenant deployment without one giant 100 GB tantivy index. Multi-shard p95 stays bounded by the slowest shard rather than the sum.
 
 ## How a mobile app actually uses this
 
