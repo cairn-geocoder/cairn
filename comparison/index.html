@@ -457,19 +457,9 @@
 
       <h3>Continent scale — Europe</h3>
       <p>
-        First continent-scale run, on a different host: a Hetzner
-        bare-metal box with 48 cores, 124 GB RAM, 32 GB swap (rotating)
-        + 64 GB NVMe swap, NVMe LVM volume mounted at
-        <code>/mnt/fast</code>. Input is Geofabrik
-        <code>europe-latest.osm.pbf</code> (32 GB), 7× larger than
-        Germany. Cairn runs against this PBF through the same
-        <code>cairn-build</code> binary as the country-scale runs,
-        with rkyv <code>size_64</code> rel-pointers (lifts the per-tile
-        2 GB ceiling that 32-bit relative pointers impose on Russia /
-        Norway-scale admin polygons) and the Phase 6e streaming
-        pipeline (single shared AdminIndex, admin-tile write before
-        tantivy + place-tile write, interleaved place-tile + point-tile
-        emission off the same sorted slice).
+        First continent-scale run. Host: 48 cores, 124 GB RAM, NVMe
+        storage. Input: Geofabrik <code>europe-latest.osm.pbf</code>
+        (32 GB), 7× larger than Germany.
       </p>
       <table class="api">
         <thead>
@@ -495,43 +485,30 @@
           </tr>
           <tr>
             <td>Pelias</td>
-            <td colspan="6"><em>not run yet — projected ~12–18 h on the same hardware (Elasticsearch import + WhosOnFirst + OpenAddresses + OSM importers run sequentially via docker-compose; 32 GB PBF dominates the OSM importer pass)</em></td>
+            <td colspan="6"><em>not run yet</em></td>
           </tr>
           <tr>
             <td>Photon</td>
-            <td colspan="6"><em>not run yet — projected ~6–10 h (Nominatim DB import is the long pole; Photon's Elasticsearch index build is fast once the Postgres source exists)</em></td>
+            <td colspan="6"><em>not run yet</em></td>
           </tr>
           <tr>
             <td>Nominatim</td>
-            <td colspan="6"><em>not run yet — projected ~24–48 h on a single Postgres instance (osm2pgsql import + indexes; cluster has the I/O headroom but the runtime is single-process bound)</em></td>
+            <td colspan="6"><em>not run yet</em></td>
           </tr>
         </tbody>
       </table>
       <p>
         Cairn's OSM ingest on Europe — pass 0 (max-id scan) → pass 1
-        (flatnode write, 110 GB virtual / ~88 GB on NVMe sparse) →
-        pass 2a (node-place emit) → pass 2b0 (relation way-ref scan)
-        → pass 2b1 (parallel way-place emit, 458 M ways scanned,
-        22.16 M emitted) → pass 2b2 (admin relations, 363 K polygons
-        out of 8.31 M relations) — completes in 4 h 25 m on this box,
-        sustaining ~2300 % CPU (≈ 23 cores) through the
-        rayon-parallel passes. Final bundle write (admin tiles, text
-        index, place tiles, point tiles, manifest, SBOM) runs after
-        OSM ingest finishes; full numbers + the corresponding
-        Pelias / Photon / Nominatim measurements ship in the next
-        update.
-      </p>
-      <p class="caveat">
-        The cluster also runs an Airflow-driven planetary-imagery
-        pipeline on the same host. We pause those workers
-        (<code>kill -KILL</code> the Python pool, airflow respawns
-        them after the build window) and bump
-        <code>vm.max_map_count</code> to 1 048 576 so Cairn's mmap
-        pressure (110 GB flatnode + per-tile output mappings + tantivy
-        segment files) doesn't run into the 65 530 default limit.
-        Both knobs are operational, not algorithmic — they don't show
-        up in country-scale runs because the cluster has more
-        headroom there.
+        (flatnode write) → pass 2a (node-place emit) → pass 2b0
+        (relation way-ref scan) → pass 2b1 (parallel way-place emit,
+        458 M ways scanned, 22.16 M emitted) → pass 2b2 (admin
+        relations, 363 K polygons out of 8.31 M relations) —
+        completes in 4 h 25 m, sustaining ~2300 % CPU (≈ 23 cores)
+        through the rayon-parallel passes. Final bundle write (admin
+        tiles, text index, place tiles, point tiles, manifest, SBOM)
+        runs after OSM ingest finishes; full numbers and the
+        corresponding Pelias / Photon / Nominatim measurements ship in
+        the next update.
       </p>
     </div>
   </section>
