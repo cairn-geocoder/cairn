@@ -374,32 +374,55 @@ pub fn write_points_partitioned(
 
     let mut entries = Vec::with_capacity(buckets.len());
     for ((level_u8, tile_id), pts) in buckets {
-        let rel = points_rel_path(level_u8, tile_id);
-        let abs = bundle_root.join(&rel);
-        if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let layer = PointLayer {
-            points: pts.clone(),
-        };
-        let bytes = bincode::serialize(&layer)?;
-        std::fs::write(&abs, &bytes)?;
-        let level = Level::from_u8(level_u8).ok_or(SpatialError::UnknownLevel(level_u8))?;
-        let (min_lon, min_lat, max_lon, max_lat) = tile_bbox(level, tile_id);
-        entries.push(SpatialTileEntry {
-            level: level_u8,
-            tile_id,
-            min_lon,
-            min_lat,
-            max_lon,
-            max_lat,
-            item_count: pts.len() as u64,
-            byte_size: bytes.len() as u64,
-            blake3: blake3::hash(&bytes).to_hex().to_string(),
-            rel_path: rel,
-        });
+        entries.push(write_point_tile(bundle_root, level_u8, tile_id, &pts)?);
     }
     Ok(entries)
+}
+
+/// Phase 6e — single-tile point writer for streaming callers. Wraps
+/// the slice in a borrowed view, bincode-serializes, hashes with
+/// blake3, and emits the manifest entry. Lets `cairn-build` write
+/// point tiles incrementally per-run during the parallel tile-write
+/// pass instead of materializing a 2.5 GB `Vec<PlacePoint>` and
+/// invoking `write_points_partitioned`'s BTreeMap → re-clone → serialize
+/// path.
+///
+/// Wire-compatible with the `PointLayer { points: Vec<PlacePoint> }`
+/// reader: bincode encodes single-field structs positionally, so a
+/// borrowed `points: &[PlacePoint]` writes the same length-prefixed
+/// element sequence as the owned `Vec<PlacePoint>` form.
+pub fn write_point_tile(
+    bundle_root: &Path,
+    level_u8: u8,
+    tile_id: u32,
+    points: &[PlacePoint],
+) -> Result<SpatialTileEntry, SpatialError> {
+    #[derive(Serialize)]
+    struct PointLayerRef<'a> {
+        points: &'a [PlacePoint],
+    }
+    let rel = points_rel_path(level_u8, tile_id);
+    let abs = bundle_root.join(&rel);
+    if let Some(parent) = abs.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let layer_ref = PointLayerRef { points };
+    let bytes = bincode::serialize(&layer_ref)?;
+    std::fs::write(&abs, &bytes)?;
+    let level = Level::from_u8(level_u8).ok_or(SpatialError::UnknownLevel(level_u8))?;
+    let (min_lon, min_lat, max_lon, max_lat) = tile_bbox(level, tile_id);
+    Ok(SpatialTileEntry {
+        level: level_u8,
+        tile_id,
+        min_lon,
+        min_lat,
+        max_lon,
+        max_lat,
+        item_count: points.len() as u64,
+        byte_size: bytes.len() as u64,
+        blake3: blake3::hash(&bytes).to_hex().to_string(),
+        rel_path: rel,
+    })
 }
 
 // ============================================================

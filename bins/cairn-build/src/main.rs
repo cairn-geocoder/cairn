@@ -11,7 +11,7 @@ mod replication;
 mod sbom;
 mod sign;
 use cairn_place::Place;
-use cairn_spatial::{PlacePoint, PointLayer};
+use cairn_spatial::PlacePoint;
 use cairn_tile::{
     bbox_intersects, read_manifest, verify_bundle, write_manifest, write_tile, Level, Manifest,
     SourceVersion, TileCompression, TileCoord, TileEntry,
@@ -1259,80 +1259,87 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     // Mutex<LruCache> is Sync). We compute chains in parallel and write
     // them back sequentially so the input order is preserved (key for
     // reproducible builds).
-    if let Some(layer) = &deduped_admin {
+    // Phase 6e v2 — share the AdminIndex across both enrichment passes
+    // and drop it as soon as the second pass finishes. The prior code
+    // built the index twice (one `layer.clone()` per pass, ~5-10 GB
+    // each on Europe) and held it alive through tantivy build, where
+    // it competed for RAM with the place set + tantivy writer heap.
+    //
+    // The index is read-only after construction — `Mutex<LruCache>`
+    // is `Sync`, R*-tree iteration is per-query — so a single shared
+    // build serves both enrichments.
+    if let Some(layer) = deduped_admin.as_mut() {
         use rayon::prelude::*;
         let admin_idx = cairn_spatial::AdminIndex::build(layer.clone());
 
         // Pass 1: enrich Place::admin_path (forward search, point fallback).
-        let place_kind_strs: Vec<&'static str> = places
-            .iter()
-            .map(|p| cairn_text::kind_str(p.kind))
-            .collect();
-        let chains: Vec<Vec<cairn_place::PlaceId>> = places
-            .par_iter()
-            .zip(place_kind_strs.par_iter())
-            .map(|(place, kind_str)| {
-                if !place.admin_path.is_empty() {
-                    return Vec::new();
+        {
+            let place_kind_strs: Vec<&'static str> = places
+                .iter()
+                .map(|p| cairn_text::kind_str(p.kind))
+                .collect();
+            let chains: Vec<Vec<cairn_place::PlaceId>> = places
+                .par_iter()
+                .zip(place_kind_strs.par_iter())
+                .map(|(place, kind_str)| {
+                    if !place.admin_path.is_empty() {
+                        return Vec::new();
+                    }
+                    pip_admin_chain(&admin_idx, place.centroid, kind_str, place.id.0)
+                })
+                .collect();
+            // place_kind_strs goes out of scope at block end, freeing
+            // the ~200 MB pointer Vec before the next allocation peak.
+            drop(place_kind_strs);
+            let mut place_enriched = 0u64;
+            for (place, chain) in places.iter_mut().zip(chains) {
+                if place.admin_path.is_empty() && !chain.is_empty() {
+                    place.admin_path = chain;
+                    place_enriched += 1;
                 }
-                pip_admin_chain(&admin_idx, place.centroid, kind_str, place.id.0)
-            })
-            .collect();
-        let mut place_enriched = 0u64;
-        for (place, chain) in places.iter_mut().zip(chains) {
-            if place.admin_path.is_empty() && !chain.is_empty() {
-                place.admin_path = chain;
-                place_enriched += 1;
             }
+            tracing::info!(enriched = place_enriched, "Place admin_path enriched");
         }
-        tracing::info!(enriched = place_enriched, "Place admin_path enriched");
+
+        // Pass 2: enrich AdminFeature::admin_path (reverse PIP hits)
+        // against the same admin_idx.
+        {
+            let chains: Vec<Vec<cairn_place::PlaceId>> = layer
+                .features
+                .par_iter()
+                .map(|feat| {
+                    if !feat.admin_path.is_empty() {
+                        return feat
+                            .admin_path
+                            .iter()
+                            .map(|id| cairn_place::PlaceId(*id))
+                            .collect();
+                    }
+                    pip_admin_chain_for_feature(&admin_idx, feat)
+                })
+                .collect();
+            let mut admin_enriched = 0u64;
+            for (feat, chain) in layer.features.iter_mut().zip(chains) {
+                if feat.admin_path.is_empty() && !chain.is_empty() {
+                    feat.admin_path = chain.into_iter().map(|p| p.0).collect();
+                    admin_enriched += 1;
+                }
+            }
+            tracing::info!(
+                enriched = admin_enriched,
+                "AdminFeature admin_path enriched"
+            );
+        }
+        // admin_idx drops here — the cloned admin layer it carried
+        // (5-10 GB on Europe) is freed before tantivy build starts.
+        drop(admin_idx);
     }
 
-    // Pass 2: enrich AdminFeature::admin_path (reverse PIP hits) using
-    // the SAME index we just built. We collect chains in parallel, then
-    // write them back sequentially.
-    if let Some(layer) = deduped_admin.as_mut() {
-        use rayon::prelude::*;
-        let admin_idx = cairn_spatial::AdminIndex::build(layer.clone());
-        let chains: Vec<Vec<cairn_place::PlaceId>> = layer
-            .features
-            .par_iter()
-            .map(|feat| {
-                if !feat.admin_path.is_empty() {
-                    return feat
-                        .admin_path
-                        .iter()
-                        .map(|id| cairn_place::PlaceId(*id))
-                        .collect();
-                }
-                pip_admin_chain_for_feature(&admin_idx, feat)
-            })
-            .collect();
-        let mut admin_enriched = 0u64;
-        for (feat, chain) in layer.features.iter_mut().zip(chains) {
-            if feat.admin_path.is_empty() && !chain.is_empty() {
-                feat.admin_path = chain.into_iter().map(|p| p.0).collect();
-                admin_enriched += 1;
-            }
-        }
-        tracing::info!(
-            enriched = admin_enriched,
-            "AdminFeature admin_path enriched"
-        );
-    }
-
-    // Build the text index from the full (now enriched) place set first;
-    // tile bucketing consumes the vec afterwards.
-    let text_dir = args.out.join("index/text");
-    let docs = cairn_text::build_index(&text_dir, places.iter().cloned())
-        .with_context(|| format!("building text index at {}", text_dir.display()))?;
-    tracing::info!(docs, path = %text_dir.display(), "text index written");
-
-    // Sidecar `index/text/admin_names.json` maps every admin-tier
-    // PlaceId (AdminFeature.place_id post-renumber AND admin-kind Place.id)
-    // to its primary name. Powers Pelias-style label rendering at query
-    // time without a tantivy round-trip per hit. Optional — empty file
-    // is fine, runtime will simply not populate the label field.
+    // Phase 6e v2 — extract admin_names map from deduped_admin while
+    // the layer is still alive, so we can drop the full admin layer
+    // (5-10 GB on Europe) before the tantivy + tile-write peaks.
+    // The names map itself is ~10 MB (≤ 1M ids × small strings) and
+    // stays in scope through the sidecar write below.
     let mut admin_names: std::collections::BTreeMap<u64, String> =
         std::collections::BTreeMap::new();
     if let Some(layer) = &deduped_admin {
@@ -1342,114 +1349,12 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             }
         }
     }
-    for p in &places {
-        if !matches!(
-            p.kind,
-            cairn_place::PlaceKind::Country
-                | cairn_place::PlaceKind::Region
-                | cairn_place::PlaceKind::County
-                | cairn_place::PlaceKind::City
-                | cairn_place::PlaceKind::District
-                | cairn_place::PlaceKind::Neighborhood
-        ) {
-            continue;
-        }
-        if let Some(default_name) = p
-            .names
-            .iter()
-            .find(|n| n.lang == "default")
-            .or_else(|| p.names.first())
-        {
-            // Only insert if the AdminFeature pass didn't already cover
-            // this id, so AdminFeature names (the canonical polygon
-            // name) win over admin-tier Place names on ID overlap.
-            admin_names
-                .entry(p.id.0)
-                .or_insert_with(|| default_name.value.clone());
-        }
-    }
-    let admin_names_path = text_dir.join("admin_names.json");
-    let admin_names_str =
-        serde_json::to_string(&admin_names).context("encoding admin_names sidecar")?;
-    std::fs::write(&admin_names_path, &admin_names_str)
-        .with_context(|| format!("writing {}", admin_names_path.display()))?;
-    tracing::info!(
-        path = %admin_names_path.display(),
-        entries = admin_names.len(),
-        "admin_names sidecar written"
-    );
 
-    // Phase 6e — sort-and-stream tile write. Prior pipeline (drain
-    // `places` into HashMap<TileCoord, Vec<Place>>, then collect into
-    // Vec<(coord, places)>, then par_iter) held the full place set
-    // twice during the conversion: once in `places.drain()` (Vec
-    // capacity stays allocated until explicit drop) and again in
-    // `buckets`, plus a third transient peak when `into_iter().collect()`
-    // restructured the HashMap into the sorted Vec.
-    //
-    // For Europe-scale corpora (25.4M places ≈ 38 GB heap-resident)
-    // that ~2-3× factor put peak memory in the 76-114 GB range and
-    // triggered OOM on hosts where airflow/k3s workloads competed
-    // for the same RAM (cluster has 124 GB total, ~30-40 GB
-    // baseline taken by other tenants).
-    //
-    // New shape: sort `places` in place by (level, tile_id), build a
-    // small `runs` Vec<(coord, start, end)> of slice indices, then
-    // par_iter the runs and write each tile from a `&places[range]`
-    // slice. No bucketing HashMap, no Vec restructuring, no extra
-    // copies of the place set — peak adds only `num_threads` transient
-    // tile-blob buffers (each tile typically 1-50 MB after rkyv +
-    // zstd, so the parallel peak is bounded by ~50 MB × cores ≈ 1 GB
-    // on a 19-core box). `places` Vec frees explicitly after the
-    // run loop returns.
-    places.sort_unstable_by_key(|p| {
-        let level = Level::from_u8(p.id.level()).unwrap_or(Level::L1);
-        let coord = TileCoord::from_coord(level, p.centroid);
-        (coord.level.as_u8(), coord.id())
-    });
-    let mut runs: Vec<(TileCoord, usize, usize)> = Vec::new();
-    let mut start = 0usize;
-    while start < places.len() {
-        let p = &places[start];
-        let level = Level::from_u8(p.id.level()).unwrap_or(Level::L1);
-        let coord = TileCoord::from_coord(level, p.centroid);
-        let mut end = start + 1;
-        while end < places.len() {
-            let q = &places[end];
-            let qlevel = Level::from_u8(q.id.level()).unwrap_or(Level::L1);
-            let qcoord = TileCoord::from_coord(qlevel, q.centroid);
-            if qcoord != coord {
-                break;
-            }
-            end += 1;
-        }
-        runs.push((coord, start, end));
-        start = end;
-    }
-    tracing::info!(tile_count = runs.len(), "tile runs computed");
-    let entries: Vec<TileEntry> = {
-        use rayon::prelude::*;
-        runs.par_iter()
-            .map(|(coord, start, end)| -> Result<TileEntry> {
-                let tile_places: &[Place] = &places[*start..*end];
-                let path = args.out.join(coord.relative_path());
-                let count = tile_places.len() as u32;
-                let (hash, size) = write_tile(&path, tile_places, args.compression)?;
-                Ok(TileEntry {
-                    level: coord.level.as_u8(),
-                    tile_id: coord.id(),
-                    blake3: hash,
-                    byte_size: size,
-                    place_count: count,
-                    compression: args.compression,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?
-    };
-    drop(runs);
-
+    // Phase 6e v2 — write admin tiles BEFORE the tantivy + place-tile
+    // peaks, then explicitly drop the layer. Frees 5-10 GB of polygon
+    // ring memory before the next allocation pressure window.
     let mut admin_tile_entries: Vec<cairn_tile::SpatialTileEntry> = Vec::new();
-    if let Some(mut layer) = deduped_admin {
+    if let Some(mut layer) = deduped_admin.take() {
         if args.simplify_tolerance_deg > 0.0 {
             let before_verts: usize = layer
                 .features
@@ -1497,47 +1402,171 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
             total_bytes,
             "admin layer written (partitioned)"
         );
+        drop(layer);
     }
 
-    // Phase 6e — convert places into PlacePoints by draining instead
-    // of cloning. The previous `places.iter().map(...)` ran to
-    // completion holding both `places` (~38 GB on Europe) and the
-    // freshly built `point_layer.points` Vec (~2.5 GB) at the same
-    // time. Drain consumes `places` element-by-element so its
-    // allocation is reusable inside the iterator chain; we drop the
-    // empty Vec immediately after to release the underlying buffer.
-    let point_layer = PointLayer {
-        points: places
-            .drain(..)
-            .map(|p| {
-                let default_name = p
-                    .names
+    // Augment admin_names with admin-tier Place names — runs against
+    // the live `places` vec so AdminFeature names (already in the map
+    // from above) win on id collision via `or_insert_with`.
+    for p in &places {
+        if !matches!(
+            p.kind,
+            cairn_place::PlaceKind::Country
+                | cairn_place::PlaceKind::Region
+                | cairn_place::PlaceKind::County
+                | cairn_place::PlaceKind::City
+                | cairn_place::PlaceKind::District
+                | cairn_place::PlaceKind::Neighborhood
+        ) {
+            continue;
+        }
+        if let Some(default_name) = p
+            .names
+            .iter()
+            .find(|n| n.lang == "default")
+            .or_else(|| p.names.first())
+        {
+            admin_names
+                .entry(p.id.0)
+                .or_insert_with(|| default_name.value.clone());
+        }
+    }
+    let text_dir = args.out.join("index/text");
+    std::fs::create_dir_all(&text_dir)
+        .with_context(|| format!("creating {}", text_dir.display()))?;
+    let admin_names_path = text_dir.join("admin_names.json");
+    let admin_names_str =
+        serde_json::to_string(&admin_names).context("encoding admin_names sidecar")?;
+    std::fs::write(&admin_names_path, &admin_names_str)
+        .with_context(|| format!("writing {}", admin_names_path.display()))?;
+    tracing::info!(
+        path = %admin_names_path.display(),
+        entries = admin_names.len(),
+        "admin_names sidecar written"
+    );
+    drop(admin_names);
+    drop(admin_names_str);
+
+    // Phase 6e v2 — sort `places` once by (level, tile_id), then drive
+    // both the text index, the place-tile blobs, and the
+    // nearest-fallback point tiles off the same sorted Vec without
+    // re-bucketing or materializing intermediate copies.
+    places.sort_unstable_by_key(|p| {
+        let level = Level::from_u8(p.id.level()).unwrap_or(Level::L1);
+        let coord = TileCoord::from_coord(level, p.centroid);
+        (coord.level.as_u8(), coord.id())
+    });
+
+    // Tantivy build runs on the now-sorted slice. The iterator clones
+    // each Place lazily so peak transient memory is bounded by the
+    // tantivy writer heap (256 MiB) plus the sorted slice itself.
+    let docs = cairn_text::build_index(&text_dir, places.iter().cloned())
+        .with_context(|| format!("building text index at {}", text_dir.display()))?;
+    tracing::info!(docs, path = %text_dir.display(), "text index written");
+
+    // Compute one-pass run boundaries: a `run` is the contiguous
+    // index range in the sorted `places` slice that shares a single
+    // (level, tile_id). Each run becomes one place-tile and one
+    // point-tile.
+    let mut runs: Vec<(TileCoord, usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    while start < places.len() {
+        let p = &places[start];
+        let level = Level::from_u8(p.id.level()).unwrap_or(Level::L1);
+        let coord = TileCoord::from_coord(level, p.centroid);
+        let mut end = start + 1;
+        while end < places.len() {
+            let q = &places[end];
+            let qlevel = Level::from_u8(q.id.level()).unwrap_or(Level::L1);
+            let qcoord = TileCoord::from_coord(qlevel, q.centroid);
+            if qcoord != coord {
+                break;
+            }
+            end += 1;
+        }
+        runs.push((coord, start, end));
+        start = end;
+    }
+    tracing::info!(tile_count = runs.len(), "tile runs computed");
+
+    // Phase 6e v2 — fold place-tile + point-tile writes into one
+    // parallel pass over the run list. The prior code:
+    //   1. par_iter to write Place tiles
+    //   2. drain `places` into a 2.5 GB `Vec<PlacePoint>`
+    //   3. call `write_points_partitioned` which re-bucketed via
+    //      BTreeMap<(u8,u32), Vec<PlacePoint>> with another `clone()`
+    //      per feature
+    // peaked memory at +5 GB above the place set. The new path
+    // projects `&[Place]` slices to per-tile `Vec<PlacePoint>`s
+    // inside each rayon worker, writes both blobs back-to-back via
+    // `write_tile` + `write_point_tile`, and drops the per-tile
+    // `Vec<PlacePoint>` on map exit. Peak adds only
+    // `num_threads × tile_size` ≈ 1 GB on a 19-core box.
+    let (entries, point_tile_entries) = {
+        use rayon::prelude::*;
+        let pairs: Vec<(TileEntry, cairn_tile::SpatialTileEntry)> = runs
+            .par_iter()
+            .map(|(coord, start, end)| -> Result<_> {
+                let tile_places: &[Place] = &places[*start..*end];
+                let count = tile_places.len() as u32;
+                let path = args.out.join(coord.relative_path());
+                let (hash, size) = write_tile(&path, tile_places, args.compression)?;
+                let entry = TileEntry {
+                    level: coord.level.as_u8(),
+                    tile_id: coord.id(),
+                    blake3: hash,
+                    byte_size: size,
+                    place_count: count,
+                    compression: args.compression,
+                };
+                // Project to PlacePoint just for this tile, write, drop.
+                let points: Vec<PlacePoint> = tile_places
                     .iter()
-                    .find(|n| n.lang == "default")
-                    .or_else(|| p.names.first())
-                    .map(|n| n.value.clone())
-                    .unwrap_or_default();
-                PlacePoint {
-                    place_id: p.id.0,
-                    level: p.id.level(),
-                    kind: cairn_text::kind_str(p.kind).to_string(),
-                    name: default_name,
-                    centroid: p.centroid,
-                    admin_path: p.admin_path.iter().map(|a| a.0).collect(),
-                }
+                    .map(|p| {
+                        let default_name = p
+                            .names
+                            .iter()
+                            .find(|n| n.lang == "default")
+                            .or_else(|| p.names.first())
+                            .map(|n| n.value.clone())
+                            .unwrap_or_default();
+                        PlacePoint {
+                            place_id: p.id.0,
+                            level: p.id.level(),
+                            kind: cairn_text::kind_str(p.kind).to_string(),
+                            name: default_name,
+                            centroid: p.centroid,
+                            admin_path: p.admin_path.iter().map(|a| a.0).collect(),
+                        }
+                    })
+                    .collect();
+                let point_entry = cairn_spatial::write_point_tile(
+                    &args.out,
+                    coord.level.as_u8(),
+                    coord.id(),
+                    &points,
+                )
+                .map_err(|e| anyhow::anyhow!("writing point tile: {e:?}"))?;
+                Ok((entry, point_entry))
             })
-            .collect(),
+            .collect::<Result<Vec<_>>>()?;
+        let mut entries = Vec::with_capacity(pairs.len());
+        let mut point_tile_entries = Vec::with_capacity(pairs.len());
+        for (e, p) in pairs {
+            entries.push(e);
+            point_tile_entries.push(p);
+        }
+        (entries, point_tile_entries)
     };
+    drop(runs);
     drop(places);
-    let point_tile_entries = cairn_spatial::write_points_partitioned(&args.out, &point_layer)
-        .with_context(|| format!("writing partitioned point layer to {}", args.out.display()))?;
     let total_point_bytes: u64 = point_tile_entries.iter().map(|e| e.byte_size).sum();
     let total_points: u64 = point_tile_entries.iter().map(|e| e.item_count).sum();
     tracing::info!(
         tiles = point_tile_entries.len(),
         total_points,
         total_bytes = total_point_bytes,
-        "point layer written (partitioned)"
+        "point layer written (partitioned, streamed)"
     );
 
     let text_files = walk_text_files(&text_dir, &args.out)?;
