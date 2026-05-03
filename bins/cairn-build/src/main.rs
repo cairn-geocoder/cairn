@@ -2194,16 +2194,28 @@ fn pip_admin_chain(
     kind_str: &str,
     self_id: u64,
 ) -> Vec<cairn_place::PlaceId> {
-    let mut ranked: Vec<(u8, cairn_spatial::AdminFeature)> = admin_idx
-        .point_in_polygon(centroid)
+    // Phase 6e — metadata-only PIP. The previous `point_in_polygon`
+    // call deserialized every hit's archived MultiPolygon into an
+    // owned `AdminFeature` (rkyv deserialize → from_archived →
+    // geo_types::MultiPolygon clone of every ring vertex), and then
+    // this fn dropped the polygon by reading just `place_id` + `kind`.
+    // On Europe-scale runs (25.45 M places × ~5 admin hits each ×
+    // multi-thousand-vertex Russia / UK / Norway polygons) those
+    // discarded clones drove rayon-thread `vm_mmap_pgoff` /
+    // `vm_munmap` lock contention into the kernel mm subsystem and
+    // stretched admin enrichment from minutes to many hours. The new
+    // `point_in_polygon_meta` returns just `(place_id, kind, area)`,
+    // so this fn touches none of the polygon rings.
+    let mut ranked: Vec<(u8, u64)> = admin_idx
+        .point_in_polygon_meta(centroid)
         .into_iter()
-        .filter(|f| f.place_id != self_id && f.kind != kind_str)
-        .filter_map(|f| admin_kind_rank(&f.kind).map(|r| (r, f)))
+        .filter(|m| m.place_id != self_id && m.kind != kind_str)
+        .filter_map(|m| admin_kind_rank(&m.kind).map(|r| (r, m.place_id)))
         .collect();
     ranked.sort_by_key(|(r, _)| *r);
     ranked
         .into_iter()
-        .map(|(_, f)| cairn_place::PlaceId(f.place_id))
+        .map(|(_, id)| cairn_place::PlaceId(id))
         .collect()
 }
 
@@ -2218,17 +2230,17 @@ fn pip_admin_chain_for_feature(
         Some(r) => r,
         None => return Vec::new(),
     };
-    let mut ranked: Vec<(u8, cairn_spatial::AdminFeature)> = admin_idx
-        .point_in_polygon(feat.centroid)
+    let mut ranked: Vec<(u8, u64)> = admin_idx
+        .point_in_polygon_meta(feat.centroid)
         .into_iter()
-        .filter(|f| f.place_id != feat.place_id)
-        .filter_map(|f| admin_kind_rank(&f.kind).map(|r| (r, f)))
+        .filter(|m| m.place_id != feat.place_id)
+        .filter_map(|m| admin_kind_rank(&m.kind).map(|r| (r, m.place_id)))
         .filter(|(r, _)| *r < self_rank)
         .collect();
     ranked.sort_by_key(|(r, _)| *r);
     ranked
         .into_iter()
-        .map(|(_, f)| cairn_place::PlaceId(f.place_id))
+        .map(|(_, id)| cairn_place::PlaceId(id))
         .collect()
 }
 

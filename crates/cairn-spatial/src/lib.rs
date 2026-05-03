@@ -612,6 +612,56 @@ impl AdminIndex {
     /// [`archived::pip_archived_ref`]; the runtime `MultiPolygon` /
     /// `geo::Contains` path is gone. Hits hydrate to [`AdminFeature`]
     /// only at return time via `Deserialize`.
+    /// Phase 6e — metadata-only PIP for the admin-enrichment hot path.
+    /// Skips the per-hit `RkyvDeserialize` + `from_archived(&f)` clone
+    /// chain that turns archived polygon rings into a runtime
+    /// `MultiPolygon`. Callers that only need `(place_id, kind, area)`
+    /// — which is everything the `pip_admin_chain` /
+    /// `pip_admin_chain_for_feature` paths in `cairn-build` actually
+    /// read — should use this; the full [`Self::point_in_polygon`]
+    /// stays for runtime `?context=full` reverse-geocode queries that
+    /// surface admin polygons to the API.
+    pub fn point_in_polygon_meta(&self, coord: Coord) -> Vec<AdminFeatureMeta> {
+        let q = [coord.lon, coord.lat];
+        let envelope = AABB::from_point(q);
+        let candidate_idxs: Vec<usize> = self
+            .tree
+            .locate_in_envelope_intersecting(&envelope)
+            .map(|entry| entry.slot_idx)
+            .collect();
+        let mut hits: BTreeMap<u64, AdminFeatureMeta> = BTreeMap::new();
+        for idx in candidate_idxs {
+            let tile = self.load_slot(idx);
+            let layer_ref = tile.archived();
+            for feat_ref in layer_ref.features.iter() {
+                if !archived::pip_archived_ref(feat_ref, q) {
+                    continue;
+                }
+                let area = archived_ref_bbox_area(feat_ref).unwrap_or(f64::MAX);
+                let place_id = feat_ref.place_id;
+                hits.entry(place_id)
+                    .and_modify(|e| {
+                        if area < e.bbox_area {
+                            e.bbox_area = area;
+                            e.kind = feat_ref.kind.as_str().to_string();
+                        }
+                    })
+                    .or_insert_with(|| AdminFeatureMeta {
+                        place_id,
+                        kind: feat_ref.kind.as_str().to_string(),
+                        bbox_area: area,
+                    });
+            }
+        }
+        let mut sorted: Vec<AdminFeatureMeta> = hits.into_values().collect();
+        sorted.sort_by(|a, b| {
+            a.bbox_area
+                .partial_cmp(&b.bbox_area)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        sorted
+    }
+
     pub fn point_in_polygon(&self, coord: Coord) -> Vec<AdminFeature> {
         use rkyv::Deserialize as RkyvDeserialize;
         let q = [coord.lon, coord.lat];
@@ -654,6 +704,22 @@ impl AdminIndex {
             .map(|(f, _)| archived::from_archived(&f))
             .collect()
     }
+}
+
+/// Phase 6e — minimal metadata returned by [`AdminIndex::point_in_polygon_meta`].
+/// Carries only the fields the admin-enrichment hot path in
+/// `cairn-build` actually reads: the place id and the kind label
+/// (used by the kind-rank sort + same-rank filter). Skips the
+/// `MultiPolygon` hydration that the full [`AdminFeature`] path
+/// triggers per hit, which on Europe-scale runs (25.45 M places ×
+/// avg ~5 admin hits each) cloned polygon ring data hundreds of
+/// millions of times and burned the rayon enrichment passes on
+/// `vm_mmap_pgoff` / `vm_munmap` lock contention.
+#[derive(Clone, Debug)]
+pub struct AdminFeatureMeta {
+    pub place_id: u64,
+    pub kind: String,
+    pub bbox_area: f64,
 }
 
 /// Bbox area on the archived ref's first polygon. Used for the
