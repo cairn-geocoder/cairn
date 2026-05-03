@@ -1,0 +1,23 @@
+{
+  "esclient": {
+    "hosts": [{ "host": "elasticsearch", "port": 9200, "protocol": "http" }]
+  },
+  "api": {
+    "host": "http://localhost:4001",
+    "services": {
+      "placeholder": { "url": "http://placeholder:4100" },
+      "libpostal":   { "url": "http://libpostal:4400" }
+    }
+  },
+  "imports": {
+    "adminLookup": { "enabled": false },
+    "whosonfirst": { "datapath": "/data/whosonfirst", "countryCode": "EU" },
+    "openstreetmap": {
+      "datapath": "/data/openstreetmap",
+      "leveldbpath": "/tmp",
+      "adminLookup": false,
+      "import": [{ "filename": "europe-latest.osm.pbf" }]
+    }
+  },
+  "logger": { "level": "info" }
+}

@@ -1,0 +1,23 @@
+services:
+  # Photon Europe — uses komoot's prebuilt photon-data dump
+  # (https://download1.graphhopper.com/public/photon-db-eu-latest.tar.bz2),
+  # avoiding the 24-48 h Nominatim import dependency. Custom
+  # Dockerfile.europe pulls the dump on first run; subsequent runs
+  # reuse the volume.
+  photon:
+    build:
+      context: .
+      dockerfile: Dockerfile.europe
+    image: cairn-bench-photon:europe
+    container_name: photon-bench-europe
+    ports:
+      - "127.0.0.1:2323:2322"
+    volumes:
+      - /mnt/fast/photon-europe/data:/photon/data/photon_data
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+    environment:
+      - JAVA_OPTS=-Xms8g -Xmx12g
+    restart: "no"

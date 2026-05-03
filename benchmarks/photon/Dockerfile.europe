@@ -1,0 +1,18 @@
+# Photon Europe — bundles komoot's prebuilt photon-db-eu-latest dump
+# downloaded once at image build time. Avoids the 24-48 h Nominatim
+# import dependency the photon import path normally requires.
+FROM eclipse-temurin:21-jre
+ARG PHOTON_VERSION=1.1.0
+ARG PHOTON_DB_URL=https://download1.graphhopper.com/public/photon-db-eu-latest.tar.bz2
+WORKDIR /photon
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates bzip2 tar \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSLO "https://github.com/komoot/photon/releases/download/${PHOTON_VERSION}/photon-${PHOTON_VERSION}.jar" \
+    && mv "photon-${PHOTON_VERSION}.jar" photon.jar
+# Image build extracts the prebuilt dump once. Subsequent container
+# starts skip the import. Bind-mount /photon/data/photon_data to a
+# host volume to persist across image rebuilds.
+RUN mkdir -p data && cd data \
+    && curl -fsSL "${PHOTON_DB_URL}" | tar -xj
+EXPOSE 2322
+ENTRYPOINT ["java", "-jar", "photon.jar", "serve", "-listen-ip", "0.0.0.0", "-listen-port", "2322", "-data-dir", "/photon/data"]

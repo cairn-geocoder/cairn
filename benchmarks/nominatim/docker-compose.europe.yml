@@ -1,0 +1,38 @@
+services:
+  nominatim:
+    image: mediagis/nominatim:4.4
+    container_name: nominatim-bench-europe
+    ports:
+      - "127.0.0.1:9998:8080"
+    environment:
+      # Geofabrik europe-latest.osm.pbf — already downloaded onto
+      # /mnt/fast/cairn/europe-latest.osm.pbf by the Cairn build,
+      # so we mount the file rather than letting the container
+      # re-fetch 32 GB.
+      PBF_PATH: "/nominatim/data/europe-latest.osm.pbf"
+      REPLICATION_URL: "https://download.geofabrik.de/europe-updates/"
+      IMPORT_WIKIPEDIA: "false"
+      IMPORT_TIGER_ADDRESSES: "false"
+      IMPORT_GB_POSTCODES: "false"
+      IMPORT_US_POSTCODES: "false"
+      NOMINATIM_PASSWORD: "bench"
+      THREADS: "16"
+      POSTGRES_SHARED_BUFFERS: "16GB"
+      POSTGRES_MAINTENANCE_WORK_MEM: "8GB"
+      POSTGRES_AUTOVACUUM_WORK_MEM: "2GB"
+      POSTGRES_WORK_MEM: "256MB"
+      POSTGRES_EFFECTIVE_CACHE_SIZE: "32GB"
+      POSTGRES_SYNCHRONOUS_COMMIT: "off"
+      POSTGRES_MAX_WAL_SIZE: "8GB"
+      POSTGRES_CHECKPOINT_TIMEOUT: "30min"
+      POSTGRES_CHECKPOINT_COMPLETION_TARGET: "0.9"
+    volumes:
+      - /mnt/fast/cairn/europe-latest.osm.pbf:/nominatim/data/europe-latest.osm.pbf:ro
+      - /mnt/fast/nominatim-europe/pgdata:/var/lib/postgresql/14/main
+      - /mnt/fast/nominatim-europe/flatnode:/nominatim/flatnode
+    shm_size: 8g
+    deploy:
+      resources:
+        limits:
+          memory: 48g
+    restart: "no"

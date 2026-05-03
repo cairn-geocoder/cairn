@@ -1,0 +1,48 @@
+services:
+  elasticsearch:
+    image: pelias/elasticsearch:7.16.1
+    container_name: pelias-es-europe
+    ports:
+      - "127.0.0.1:9201:9200"
+    environment:
+      - cluster.name=pelias-europe
+      - node.name=pelias
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms24g -Xmx24g"
+      - discovery.type=single-node
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - /mnt/fast/pelias-europe/es-data:/usr/share/elasticsearch/data
+    deploy:
+      resources:
+        limits:
+          memory: 32g
+
+  api:
+    image: pelias/api:master
+    container_name: pelias-api-europe
+    ports:
+      - "127.0.0.1:4001:3100"
+    depends_on:
+      - elasticsearch
+      - libpostal
+      - placeholder
+    volumes:
+      - ./pelias.europe.json:/code/pelias.json:ro
+
+  libpostal:
+    image: pelias/libpostal-service:master
+    container_name: pelias-libpostal-europe
+    ports:
+      - "127.0.0.1:4401:4400"
+
+  placeholder:
+    image: pelias/placeholder:master
+    container_name: pelias-placeholder-europe
+    ports:
+      - "127.0.0.1:4101:4100"
+    volumes:
+      - /mnt/fast/pelias-europe/placeholder-data:/data
