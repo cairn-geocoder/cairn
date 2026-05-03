@@ -1447,22 +1447,26 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
     drop(admin_names);
     drop(admin_names_str);
 
-    // Phase 6e v2 — sort `places` once by (level, tile_id), then drive
-    // both the text index, the place-tile blobs, and the
-    // nearest-fallback point tiles off the same sorted Vec without
-    // re-bucketing or materializing intermediate copies.
+    // Phase 7b — sort `places` once by (level, tile_id), then drive
+    // tile-write + point-write off the sorted Vec. Tantivy build is
+    // deferred to AFTER tile-write completes and `places` is dropped,
+    // so the tantivy phase no longer competes with the place set for
+    // RAM. tantivy iterates the just-written tile blobs from disk via
+    // `PlaceTileArchive`, deserializing one tile at a time.
+    //
+    // Memory delta on Europe (25.45 M places ≈ 38 GB):
+    //   before: tantivy phase peak = places (38 GB) + tantivy (~4 GB transient)
+    //   after:  tantivy phase peak = ~5 MB current tile + ~4 GB tantivy transient
+    //
+    // The cost is one extra read of the tile blobs from disk during
+    // the tantivy pass — sequential NVMe reads at ~50 MB/s effective
+    // for the rkyv decode path, which is dwarfed by the heap savings
+    // and clears the OOM cliff observed on contended hosts.
     places.sort_unstable_by_key(|p| {
         let level = Level::from_u8(p.id.level()).unwrap_or(Level::L1);
         let coord = TileCoord::from_coord(level, p.centroid);
         (coord.level.as_u8(), coord.id())
     });
-
-    // Tantivy build runs on the now-sorted slice. The iterator clones
-    // each Place lazily so peak transient memory is bounded by the
-    // tantivy writer heap (256 MiB) plus the sorted slice itself.
-    let docs = cairn_text::build_index(&text_dir, places.iter().cloned())
-        .with_context(|| format!("building text index at {}", text_dir.display()))?;
-    tracing::info!(docs, path = %text_dir.display(), "text index written");
 
     // Compute one-pass run boundaries: a `run` is the contiguous
     // index range in the sorted `places` slice that shares a single
@@ -1568,6 +1572,30 @@ fn cmd_build(args: BuildArgs) -> Result<()> {
         total_bytes = total_point_bytes,
         "point layer written (partitioned, streamed)"
     );
+
+    // Phase 7b — tantivy build from disk. `places` is gone; iterate
+    // the just-written tile blobs in manifest order, decode each one
+    // via `PlaceTileArchive`, materialize per-tile `Vec<Place>` via
+    // rkyv `Deserialize`, and feed the stream to `cairn_text::build_index`.
+    //
+    // The custom iterator yields `Result<Place>` lazily so the
+    // tantivy pass holds at most one tile's worth of `Place`s
+    // (~5 MB on Europe) plus tantivy's own writer heap.
+    let docs = {
+        let bundle_root = args.out.clone();
+        let tile_paths: Vec<(u8, u32, std::path::PathBuf)> = entries
+            .iter()
+            .map(|e| {
+                let level = Level::from_u8(e.level).unwrap_or(Level::L1);
+                let coord = TileCoord::from_id(level, e.tile_id);
+                (e.level, e.tile_id, bundle_root.join(coord.relative_path()))
+            })
+            .collect();
+        let stream = PlaceStreamFromTiles::new(tile_paths);
+        cairn_text::build_index(&text_dir, stream)
+            .with_context(|| format!("building text index at {}", text_dir.display()))?
+    };
+    tracing::info!(docs, path = %text_dir.display(), "text index written");
 
     let text_files = walk_text_files(&text_dir, &args.out)?;
     tracing::info!(count = text_files.len(), "text index files hashed");
@@ -2188,6 +2216,56 @@ fn admin_kind_rank(kind: &str) -> Option<u8> {
 /// index. Drop same-kind matches (a city shouldn't list a city-level
 /// polygon), drop unranked matches (POIs etc that shouldn't appear in
 /// admin chains), and sort root → leaf by `admin_kind_rank`.
+/// Phase 7b — streaming Place iterator backed by already-written tile
+/// blobs. Used by the tantivy build pass after `places` is dropped:
+/// opens one tile at a time via `PlaceTileArchive`, deserializes the
+/// archived `Vec<Place>` into owned form, drains it into the consumer,
+/// drops it before opening the next tile. Peak per-iteration heap is
+/// one tile's worth of `Place`s (~5 MB on Europe).
+struct PlaceStreamFromTiles {
+    /// (level, tile_id, abs_path). We keep level + tile_id only for
+    /// diagnostic context if a tile fails to open.
+    tile_paths: std::vec::IntoIter<(u8, u32, std::path::PathBuf)>,
+    current: std::vec::IntoIter<Place>,
+}
+
+impl PlaceStreamFromTiles {
+    fn new(tile_paths: Vec<(u8, u32, std::path::PathBuf)>) -> Self {
+        Self {
+            tile_paths: tile_paths.into_iter(),
+            current: Vec::new().into_iter(),
+        }
+    }
+}
+
+impl Iterator for PlaceStreamFromTiles {
+    type Item = Place;
+
+    fn next(&mut self) -> Option<Place> {
+        loop {
+            if let Some(p) = self.current.next() {
+                return Some(p);
+            }
+            let (_level, _tile_id, path) = self.tile_paths.next()?;
+            // `cairn_tile::read_tile` runs the same header check + zstd
+            // decompress + rkyv deserialize as the runtime serve path.
+            // Errors here drop the tile from the tantivy stream — the
+            // tile blob still ships in the manifest, but its docs
+            // won't be searchable. Keep going so a single corrupt
+            // tile doesn't kill the whole bundle build.
+            match cairn_tile::read_tile(&path) {
+                Ok(places) => {
+                    self.current = places.into_iter();
+                }
+                Err(err) => {
+                    tracing::warn!(?err, path = %path.display(), "skipping tile in tantivy stream");
+                    continue;
+                }
+            }
+        }
+    }
+}
+
 fn pip_admin_chain(
     admin_idx: &cairn_spatial::AdminIndex,
     centroid: cairn_place::Coord,
