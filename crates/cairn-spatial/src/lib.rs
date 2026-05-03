@@ -283,8 +283,17 @@ pub fn write_admin_partitioned(
     bundle_root: &Path,
     layer: &AdminLayer,
 ) -> Result<Vec<SpatialTileEntry>, SpatialError> {
-    let mut buckets: BTreeMap<(u8, u32), Vec<AdminFeature>> = BTreeMap::new();
-    for feat in &layer.features {
+    // Phase 7c — bucket as indexes into `layer.features` instead of
+    // cloned `AdminFeature` values. The previous shape cloned every
+    // matching feature into every tile bucket its bbox spans. On
+    // Europe, multi-thousand-vertex polygons (Russia, Ukraine,
+    // Norway, UK with islands) frequently span 50+ L0 tiles and
+    // multiple hundred L1/L2 cells, multiplying the in-memory admin
+    // layer footprint 50-200× during the bucketing pass. Index-only
+    // buckets keep the layer single-resident; per-tile emit walks
+    // `&layer.features[idx]` and feeds `to_archived` by reference.
+    let mut buckets: BTreeMap<(u8, u32), Vec<usize>> = BTreeMap::new();
+    for (idx, feat) in layer.features.iter().enumerate() {
         let level = Level::from_u8(feat.level).ok_or(SpatialError::UnknownLevel(feat.level))?;
         let bbox = match feat.bbox() {
             Some(b) => b,
@@ -307,23 +316,23 @@ pub fn write_admin_partitioned(
         for row in lo_tile.row..=hi_tile.row {
             for col in lo_tile.col..=hi_tile.col {
                 let tc = TileCoord { level, row, col };
-                buckets
-                    .entry((tc.level.as_u8(), tc.id()))
-                    .or_default()
-                    .push(feat.clone());
+                buckets.entry((tc.level.as_u8(), tc.id())).or_default().push(idx);
             }
         }
     }
 
     let mut entries = Vec::with_capacity(buckets.len());
-    for ((level_u8, tile_id), feats) in buckets {
+    for ((level_u8, tile_id), idxs) in buckets {
         let rel = admin_rel_path(level_u8, tile_id);
         let abs = bundle_root.join(&rel);
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let archived_features: Vec<archived::ArchivedAdminFeature> =
-            feats.iter().map(archived::to_archived).collect();
+        let archived_features: Vec<archived::ArchivedAdminFeature> = idxs
+            .iter()
+            .map(|i| archived::to_archived(&layer.features[*i]))
+            .collect();
+        let item_count = archived_features.len() as u64;
         let archived_layer = archived::ArchivedAdminLayer {
             features: archived_features,
         };
@@ -339,7 +348,7 @@ pub fn write_admin_partitioned(
             min_lat,
             max_lon,
             max_lat,
-            item_count: feats.len() as u64,
+            item_count,
             byte_size: blob.len() as u64,
             blake3: blake3::hash(&blob[..]).to_hex().to_string(),
             rel_path: rel,
