@@ -647,7 +647,7 @@ where
             .tags
             .iter()
             .find_map(|(k, v)| {
-                if k == "population" {
+                if k.as_ref() == "population" {
                     v.parse::<u64>().ok()
                 } else {
                     None
@@ -667,8 +667,8 @@ where
             .tags
             .iter()
             .find_map(|(k, v)| {
-                if k == "start_date" {
-                    Some(v.as_str())
+                if k.as_ref() == "start_date" {
+                    Some(&**v)
                 } else {
                     None
                 }
@@ -679,8 +679,8 @@ where
             .tags
             .iter()
             .find_map(|(k, v)| {
-                if k == "end_date" {
-                    Some(v.as_str())
+                if k.as_ref() == "end_date" {
+                    Some(&**v)
                 } else {
                     None
                 }

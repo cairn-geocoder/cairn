@@ -5,7 +5,71 @@
 
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::sync::{Arc, OnceLock, RwLock};
 use thiserror::Error;
+
+/// Phase 7d — process-wide tag string interner. Importers + augmentors
+/// call [`intern`] to deduplicate the small bounded set of distinct
+/// tag keys (~30 OSM keys: "amenity", "name:en", "addr:street", …)
+/// and the medium set of high-frequency tag values (boolean "yes"/"no",
+/// brand names, repeating street names) into shared [`Arc<str>`]
+/// allocations.
+///
+/// Lifecycle: the interner is a `OnceLock<RwLock<HashSet<Arc<str>>>>`,
+/// initialized on first `intern()` call, retained for the rest of
+/// the process. cairn-build is one-bundle-per-process so the
+/// interner's memory comes back at exit; long-running tests should
+/// avoid leaning on it (the set never shrinks).
+///
+/// Concurrency: read-fast-path locks the RwLock for read while
+/// looking up an existing key. On miss the lock is upgraded to
+/// write, the candidate string is allocated as `Arc<str>`, the set
+/// re-checked under write lock to handle concurrent inserts, and
+/// the new entry inserted. Inner [`HashSet<Arc<str>>`] uses the
+/// blanket `Borrow<str>` impl on `Arc<T>` so lookups by `&str`
+/// require no per-call `Arc` allocation.
+fn interner() -> &'static RwLock<HashSet<Arc<str>>> {
+    static INTERNER: OnceLock<RwLock<HashSet<Arc<str>>>> = OnceLock::new();
+    INTERNER.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+/// Intern a tag string into the global build-time interner. Returns
+/// the shared `Arc<str>` for the deduplicated copy.
+pub fn intern(s: &str) -> Arc<str> {
+    {
+        let r = interner().read().expect("tag interner read lock");
+        if let Some(arc) = r.get(s) {
+            return arc.clone();
+        }
+    }
+    let arc: Arc<str> = Arc::from(s);
+    let mut w = interner().write().expect("tag interner write lock");
+    if let Some(existing) = w.get(s) {
+        return existing.clone();
+    }
+    w.insert(arc.clone());
+    arc
+}
+
+/// Intern a `String` by reference and return the shared `Arc<str>`.
+/// Convenience over [`intern`] for callers holding owned strings;
+/// avoids the usual `Arc::from(string)` per-occurrence allocation.
+pub fn intern_string(s: String) -> Arc<str> {
+    intern(&s)
+}
+
+/// Convert a `Vec<(String, String)>` of (key, value) tag pairs into
+/// the [`Arc<str>`]-shared form used by [`Place::tags`]. Callers that
+/// assemble a temporary working list of tags as `String` (every
+/// importer's hot loop) finalize them via this helper at the
+/// `Place` boundary; the global interner deduplicates so the
+/// resulting `Arc<str>` instances point at the shared corpus.
+pub fn tags_to_arc(tags: Vec<(String, String)>) -> Vec<(Arc<str>, Arc<str>)> {
+    tags.into_iter()
+        .map(|(k, v)| (intern_string(k), intern_string(v)))
+        .collect()
+}
 
 /// Bit layout of [`PlaceId`]: `[level: 3 | tile_id: 22 | local_id: 39]`.
 #[derive(
@@ -177,7 +241,29 @@ pub struct Place {
     pub names: Vec<LocalizedName>,
     pub centroid: Coord,
     pub admin_path: Vec<PlaceId>,
-    pub tags: Vec<(String, String)>,
+    /// Phase 7d — tag KEY+VALUE strings stored as `Arc<str>` so the
+    /// build pipeline can share common keys ("amenity", "name:en",
+    /// "addr:street", …) and high-frequency values ("yes", brand
+    /// names, recurring street names) across millions of Places.
+    /// Each importer threads a [`TagInterner`] and calls
+    /// `interner.intern(s)` to get the shared Arc clone instead of
+    /// allocating a fresh `String` per occurrence.
+    ///
+    /// On Europe (25.45 M places, ~5 tags each = ~127 M tag strings)
+    /// the previous `Vec<(String, String)>` layout allocated each
+    /// String independently — every "amenity" key was its own ~7-byte
+    /// heap block × 25 M occurrences. With Arc-shared keys + values
+    /// the same corpus drops to ~50-100 distinct key allocations and
+    /// ~1-5 M distinct value allocations, with the per-Place tag list
+    /// holding 16-byte Arc pointers instead of 24-byte String headers.
+    /// Estimated saving: 8-12 GB on Europe, 30-40 GB on planet build
+    /// peak.
+    ///
+    /// Wire format unchanged: rkyv archives `Arc<str>` as
+    /// `ArchivedString`, identical bytes to the old `String` field.
+    /// Bundle readers materialize fresh `Arc<str>` per Place — the
+    /// in-memory sharing is build-time only.
+    pub tags: Vec<(Arc<str>, Arc<str>)>,
 }
 
 /// Reserved tag key for the rebuild-stable external Place identifier.
@@ -237,19 +323,19 @@ impl Place {
     pub fn gid(&self) -> Option<&str> {
         self.tags
             .iter()
-            .find(|(k, _)| k == GID_TAG)
-            .map(|(_, v)| v.as_str())
+            .find(|(k, _)| k.as_ref() == GID_TAG)
+            .map(|(_, v)| &**v)
     }
 
     /// Stamp [`GID_TAG`] on this Place. Idempotent: replaces any
     /// existing gid rather than appending a duplicate. Call once
     /// per row at import time.
     pub fn set_gid(&mut self, gid: impl Into<String>) {
-        let gid = gid.into();
-        if let Some(slot) = self.tags.iter_mut().find(|(k, _)| k == GID_TAG) {
+        let gid: Arc<str> = Arc::from(gid.into().into_boxed_str());
+        if let Some(slot) = self.tags.iter_mut().find(|(k, _)| k.as_ref() == GID_TAG) {
             slot.1 = gid;
         } else {
-            self.tags.push((GID_TAG.to_string(), gid));
+            self.tags.push((Arc::from(GID_TAG), gid));
         }
     }
 }
@@ -417,8 +503,8 @@ pub fn categories_for(place: &Place) -> Vec<String> {
         place
             .tags
             .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
+            .find(|(k, _)| k.as_ref() == key)
+            .map(|(_, v)| &**v)
     };
 
     if let Some(v) = tag("amenity") {
@@ -609,7 +695,13 @@ mod tests {
         p.set_gid("osm:way:1");
         p.set_gid("osm:way:2");
         assert_eq!(p.gid(), Some("osm:way:2"));
-        assert_eq!(p.tags.iter().filter(|(k, _)| k == GID_TAG).count(), 1);
+        assert_eq!(
+            p.tags
+                .iter()
+                .filter(|(k, _)| k.as_ref() == GID_TAG)
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -822,7 +914,7 @@ mod tests {
             admin_path: vec![],
             tags: tags
                 .iter()
-                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .map(|(k, v)| (intern(k), intern(v)))
                 .collect(),
         }
     }

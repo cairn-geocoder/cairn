@@ -364,9 +364,15 @@ fn decode_tile(bytes: &[u8], path: &Path) -> Result<Vec<Place>, TileError> {
 
     let archived = rkyv::check_archived_root::<Vec<Place>>(&aligned)
         .map_err(|e| TileError::RkyvValidate(format!("{e:?}")))?;
-    let places: Vec<Place> =
-        RkyvDeserialize::<Vec<Place>, _>::deserialize(archived, &mut rkyv::Infallible)
-            .map_err(|e| TileError::RkyvValidate(format!("{e:?}")))?;
+    // Phase 7d — Place.tags now use `Arc<str>` for build-time
+    // sharing; rkyv's `Arc<str>` deserialize requires a deserializer
+    // that implements `SharedDeserializeRegistry`. `Infallible` does
+    // not, so swap in `SharedDeserializeMap` here. Per-tile
+    // deserialize cost is unaffected because the shared map starts
+    // empty for each tile decode.
+    let mut deserializer = rkyv::de::deserializers::SharedDeserializeMap::new();
+    let places: Vec<Place> = RkyvDeserialize::<Vec<Place>, _>::deserialize(archived, &mut deserializer)
+        .map_err(|e| TileError::RkyvValidate(format!("{e:?}")))?;
     Ok(places)
 }
 

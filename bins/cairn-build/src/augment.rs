@@ -194,8 +194,15 @@ fn run_building_attach(
             // the Place. Building IDs are stable across MS Building
             // Footprints releases, so a second run with the same data
             // produces a byte-identical tile.
-            if !p.tags.iter().any(|(k, v)| k == "building_id" && v == &b.id) {
-                p.tags.push(("building_id".into(), b.id.clone()));
+            if !p
+                .tags
+                .iter()
+                .any(|(k, v)| k.as_ref() == "building_id" && v.as_ref() == b.id.as_str())
+            {
+                p.tags.push((
+                    cairn_place::intern("building_id"),
+                    cairn_place::intern(&b.id),
+                ));
                 touched = true;
                 places_attached += 1;
             }
@@ -204,9 +211,12 @@ fn run_building_attach(
                 if !p
                     .tags
                     .iter()
-                    .any(|(k, v)| k == "building_height" && v == &formatted)
+                    .any(|(k, v)| k.as_ref() == "building_height" && v.as_ref() == formatted.as_str())
                 {
-                    p.tags.push(("building_height".into(), formatted));
+                    p.tags.push((
+                        cairn_place::intern("building_height"),
+                        cairn_place::intern(&formatted),
+                    ));
                     touched = true;
                 }
             }
@@ -428,16 +438,19 @@ mod tests {
         assert!(stamped
             .tags
             .iter()
-            .any(|(k, v)| k == "building_id" && v == "b1"));
+            .any(|(k, v)| k.as_ref() == "building_id" && v.as_ref() == "b1"));
         assert!(stamped
             .tags
             .iter()
-            .any(|(k, v)| k == "building_height" && v == "8.5"));
+            .any(|(k, v)| k.as_ref() == "building_height" && v.as_ref() == "8.5"));
         let other = places
             .iter()
             .find(|p| p.id == p_outside.id)
             .expect("outside place still present");
-        assert!(!other.tags.iter().any(|(k, _)| k == "building_id"));
+        assert!(!other
+            .tags
+            .iter()
+            .any(|(k, _)| k.as_ref() == "building_id"));
 
         // Re-run: no further changes (idempotent).
         let manifest_pre = manifest.tiles[0].byte_size;
@@ -448,7 +461,7 @@ mod tests {
             stamped2
                 .tags
                 .iter()
-                .filter(|(k, _)| k == "building_id")
+                .filter(|(k, _)| k.as_ref() == "building_id")
                 .count(),
             1,
             "re-run must not duplicate the tag"

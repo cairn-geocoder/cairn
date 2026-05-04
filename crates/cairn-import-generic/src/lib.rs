@@ -148,7 +148,7 @@ pub fn import_csv(path: &Path) -> Result<(Vec<Place>, Counters), ImportError> {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "default".into());
 
-        let mut tags: Vec<(String, String)> = Vec::new();
+        let mut tags: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)> = Vec::new();
         for (i, header) in headers.iter().enumerate() {
             if i == lon_idx
                 || i == lat_idx
@@ -161,7 +161,7 @@ pub fn import_csv(path: &Path) -> Result<(Vec<Place>, Counters), ImportError> {
             if let Some(v) = record.get(i) {
                 let v = v.trim();
                 if !v.is_empty() {
-                    tags.push((header.clone(), v.to_string()));
+                    tags.push((cairn_place::intern(header), cairn_place::intern(v)));
                 }
             }
         }
@@ -172,8 +172,8 @@ pub fn import_csv(path: &Path) -> Result<(Vec<Place>, Counters), ImportError> {
             // location for it.
             if let Some(v) = record.get(i) {
                 let v = v.trim();
-                if !v.is_empty() && !tags.iter().any(|(k, _)| k == "population") {
-                    tags.push(("population".into(), v.to_string()));
+                if !v.is_empty() && !tags.iter().any(|(k, _)| k.as_ref() == "population") {
+                    tags.push((cairn_place::intern("population"), cairn_place::intern(v)));
                 }
             }
         }
@@ -188,7 +188,7 @@ pub fn import_csv(path: &Path) -> Result<(Vec<Place>, Counters), ImportError> {
 
         let centroid = Coord { lon, lat };
         let gid = generic_gid(&tags, kind, &name, centroid);
-        tags.push((GID_TAG.into(), gid));
+        tags.push((cairn_place::intern(GID_TAG), cairn_place::intern(&gid)));
         places.push(Place {
             id,
             kind,
@@ -283,7 +283,7 @@ pub fn import_geojson(path: &Path) -> Result<(Vec<Place>, Counters), ImportError
             .map(parse_kind)
             .unwrap_or(PlaceKind::Poi);
 
-        let mut tags: Vec<(String, String)> = Vec::new();
+        let mut tags: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)> = Vec::new();
         for (k, v) in props.iter() {
             if k == "name" || k.starts_with("name:") || k == "kind" || k == "class" {
                 continue;
@@ -291,10 +291,10 @@ pub fn import_geojson(path: &Path) -> Result<(Vec<Place>, Counters), ImportError
             if let Some(s) = v.as_str() {
                 let s = s.trim();
                 if !s.is_empty() {
-                    tags.push((k.clone(), s.to_string()));
+                    tags.push((cairn_place::intern(k), cairn_place::intern(s)));
                 }
             } else if v.is_number() {
-                tags.push((k.clone(), v.to_string()));
+                tags.push((cairn_place::intern(k), cairn_place::intern(&v.to_string())));
             }
         }
 
@@ -313,7 +313,7 @@ pub fn import_geojson(path: &Path) -> Result<(Vec<Place>, Counters), ImportError
             .map(|n| n.value.clone())
             .unwrap_or_default();
         let gid = generic_gid(&tags, kind, &primary_name, coord);
-        tags.push((GID_TAG.into(), gid));
+        tags.push((cairn_place::intern(GID_TAG), cairn_place::intern(&gid)));
         places.push(Place {
             id,
             kind,
@@ -343,11 +343,16 @@ pub fn import_geojson(path: &Path) -> Result<(Vec<Place>, Counters), ImportError
 /// stable identifier column); otherwise hashes (kind, name, ~100 m
 /// centroid quantize) so bookmarks survive rebuilds when the row
 /// itself is unchanged.
-fn generic_gid(tags: &[(String, String)], kind: PlaceKind, name: &str, centroid: Coord) -> String {
+fn generic_gid(
+    tags: &[(std::sync::Arc<str>, std::sync::Arc<str>)],
+    kind: PlaceKind,
+    name: &str,
+    centroid: Coord,
+) -> String {
     let upstream = tags
         .iter()
-        .find(|(k, _)| k == "id")
-        .map(|(_, v)| v.as_str());
+        .find(|(k, _)| k.as_ref() == "id")
+        .map(|(_, v)| &**v);
     if let Some(id) = upstream {
         if let Some(gid) = synthesize_gid("generic", kind_slug(kind), id) {
             return gid;
@@ -500,8 +505,8 @@ mod tests {
         let (places, _) = import_csv(&p).unwrap();
         assert_eq!(places[0].kind, PlaceKind::City);
         let tags = &places[0].tags;
-        assert!(tags.iter().any(|(k, v)| k == "population" && v == "5400"));
-        assert!(tags.iter().any(|(k, v)| k == "country" && v == "LI"));
+        assert!(tags.iter().any(|(k, v)| k.as_ref() == "population" && v.as_ref() == "5400"));
+        assert!(tags.iter().any(|(k, v)| k.as_ref() == "country" && v.as_ref() == "LI"));
     }
 
     #[test]

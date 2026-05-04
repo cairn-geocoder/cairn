@@ -123,7 +123,7 @@ pub fn import(sqlite_path: &Path) -> Result<WofImport, ImportError> {
 
         let admin_path = walk_admin_path(row.wof_id, &parent_lookup, &place_id_by_wof);
 
-        let mut tags = vec![
+        let mut tags: Vec<(String, String)> = vec![
             ("source".into(), "wof".into()),
             ("wof_id".into(), row.wof_id.to_string()),
         ];
@@ -146,7 +146,7 @@ pub fn import(sqlite_path: &Path) -> Result<WofImport, ImportError> {
             names,
             centroid: row.centroid,
             admin_path,
-            tags,
+            tags: cairn_place::tags_to_arc(tags),
         });
         counters.rows_emitted += 1;
     }
@@ -175,7 +175,7 @@ pub fn import(sqlite_path: &Path) -> Result<WofImport, ImportError> {
 fn build_admin_layer(conn: &Connection, places: &[Place]) -> Result<AdminLayer, ImportError> {
     let mut wof_id_by_place: HashMap<PlaceId, i64> = HashMap::new();
     for place in places {
-        if let Some((_, wof_id_str)) = place.tags.iter().find(|(k, _)| k == "wof_id") {
+        if let Some((_, wof_id_str)) = place.tags.iter().find(|(k, _)| k.as_ref() == "wof_id") {
             if let Ok(wof_id) = wof_id_str.parse::<i64>() {
                 wof_id_by_place.insert(place.id, wof_id);
             }

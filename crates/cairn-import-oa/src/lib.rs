@@ -126,7 +126,8 @@ pub fn import(csv_path: &Path) -> Result<Vec<Place>, ImportError> {
             }
         };
 
-        let mut tags: Vec<(String, String)> = vec![("source".into(), "openaddresses".into())];
+        let mut tags: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)> =
+            vec![(cairn_place::intern("source"), cairn_place::intern("openaddresses"))];
         for (k, v) in [
             ("addr:housenumber", Some(number.clone())),
             ("addr:street", Some(street.clone())),
@@ -144,7 +145,7 @@ pub fn import(csv_path: &Path) -> Result<Vec<Place>, ImportError> {
                     Some(t)
                 }
             }) {
-                tags.push((k.into(), value));
+                tags.push((cairn_place::intern(k), cairn_place::intern(&value)));
             }
         }
 
@@ -155,8 +156,8 @@ pub fn import(csv_path: &Path) -> Result<Vec<Place>, ImportError> {
         // bookmark survives rebuilds at least when the underlying
         // address point doesn't move.
         tags.push((
-            GID_TAG.into(),
-            stable_hash_gid("oa", "address", &display, centroid),
+            cairn_place::intern(GID_TAG),
+            cairn_place::intern(&stable_hash_gid("oa", "address", &display, centroid)),
         ));
         places.push(Place {
             id,
@@ -221,8 +222,8 @@ mod tests {
         assert!(p
             .tags
             .iter()
-            .any(|(k, v)| k == "addr:postcode" && v == "9490"));
-        assert!(p.tags.iter().any(|(k, v)| k == "addr:city" && v == "Vaduz"));
+            .any(|(k, v)| k.as_ref() == "addr:postcode" && v.as_ref() == "9490"));
+        assert!(p.tags.iter().any(|(k, v)| k.as_ref() == "addr:city" && v.as_ref() == "Vaduz"));
     }
 
     #[test]

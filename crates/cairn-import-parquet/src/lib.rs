@@ -385,7 +385,7 @@ pub fn import(path: &Path, cfg: &Config) -> Result<Vec<Place>, ImportError> {
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| default_lang.clone());
 
-            let tags: Vec<(String, String)> = tag_idxs
+            let tags: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)> = tag_idxs
                 .iter()
                 .filter_map(|(name, idx)| {
                     let arr = batch.column(*idx);
@@ -404,7 +404,8 @@ pub fn import(path: &Path, cfg: &Config) -> Result<Vec<Place>, ImportError> {
                             .downcast_ref::<arrow_array::BooleanArray>()
                             .map(|b| b.value(row).to_string())
                     };
-                    v.filter(|s| !s.is_empty()).map(|s| (name.clone(), s))
+                    v.filter(|s| !s.is_empty())
+                        .map(|s| (cairn_place::intern(name), cairn_place::intern(&s)))
                 })
                 .collect();
             if let Some(p) = build_place(
@@ -517,7 +518,7 @@ fn build_place(
     name: &str,
     lang: &str,
     kind: PlaceKind,
-    tags: &[(String, String)],
+    tags: &[(std::sync::Arc<str>, std::sync::Arc<str>)],
     level: Level,
     local_counters: &mut HashMap<(u8, u32), u64>,
 ) -> Result<Option<Place>, ImportError> {
@@ -536,7 +537,10 @@ fn build_place(
     // stable across rebuilds. Source slug = "parquet" — narrower
     // wrappers (e.g. cairn-import-overture) overwrite this with
     // their own source slug downstream.
-    let upstream_id = tags.iter().find(|(k, _)| k == "id").map(|(_, v)| v.clone());
+    let upstream_id = tags
+        .iter()
+        .find(|(k, _)| k.as_ref() == "id")
+        .map(|(_, v)| v.to_string());
     let gid = match upstream_id
         .as_deref()
         .and_then(|raw| synthesize_gid("parquet", "place", raw))
@@ -544,7 +548,7 @@ fn build_place(
         Some(g) => g,
         None => stable_hash_gid("parquet", "place", name, centroid),
     };
-    tags.push((GID_TAG.into(), gid));
+    tags.push((cairn_place::intern(GID_TAG), cairn_place::intern(&gid)));
     Ok(Some(Place {
         id,
         kind,

@@ -50,7 +50,7 @@ cairn-import-buildings = { version = "0.1.0", path = "crates/cairn-import-buildi
 cairn-augment-wikidata = { version = "0.1.0", path = "crates/cairn-augment-wikidata" }
 
 # Core
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 toml = "0.8"
 thiserror = "1"

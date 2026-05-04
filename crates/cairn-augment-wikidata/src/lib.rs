@@ -148,8 +148,8 @@ pub fn collect_qids(places: &[Place]) -> FxHashSet<String> {
     let mut out = FxHashSet::default();
     for p in places {
         for (k, v) in &p.tags {
-            if k == "wikidata" && v.starts_with('Q') {
-                out.insert(v.clone());
+            if k.as_ref() == "wikidata" && v.starts_with('Q') {
+                out.insert(v.to_string());
             }
         }
     }
@@ -284,8 +284,8 @@ pub fn apply_to_places(
         let qid = p
             .tags
             .iter()
-            .find(|(k, _)| k == "wikidata")
-            .map(|(_, v)| v.clone());
+            .find(|(k, _)| k.as_ref() == "wikidata")
+            .map(|(_, v)| v.to_string());
         let qid = match qid {
             Some(q) => q,
             None => continue,
@@ -340,14 +340,14 @@ pub fn apply_to_places(
         }
         // Cross-refs: append on the place's tags. Skip duplicates so
         // re-running the augmenter is idempotent.
-        let mut push_tag = |tags: &mut Vec<(String, String)>, k: &str, v: &str| {
+        let mut push_tag = |tags: &mut Vec<(std::sync::Arc<str>, std::sync::Arc<str>)>, k: &str, v: &str| {
             if v.is_empty() {
                 return;
             }
-            if tags.iter().any(|(ek, ev)| ek == k && ev == v) {
+            if tags.iter().any(|(ek, ev)| ek.as_ref() == k && ev.as_ref() == v) {
                 return;
             }
-            tags.push((k.to_string(), v.to_string()));
+            tags.push((cairn_place::intern(k), cairn_place::intern(v)));
             stats.crossrefs_added += 1;
             touched = true;
         };
@@ -613,8 +613,8 @@ mod tests {
             .names
             .iter()
             .any(|n| n.lang == "en_alt" && n.value == "Douglas Adams"));
-        assert!(places[0].tags.iter().any(|(k, _)| k == "geonames_id"));
-        assert!(places[0].tags.iter().any(|(k, _)| k == "wikidata_parent"));
+        assert!(places[0].tags.iter().any(|(k, _)| k.as_ref() == "geonames_id"));
+        assert!(places[0].tags.iter().any(|(k, _)| k.as_ref() == "wikidata_parent"));
         // Re-run is idempotent: same counts.
         let pre_names = places[0].names.len();
         let pre_tags = places[0].tags.len();

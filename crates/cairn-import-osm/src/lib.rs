@@ -1036,12 +1036,19 @@ fn dense_node_to_place(
 /// against any Pelias-aware client.
 fn stamp_osm_gid(place: &mut Place, osm_type: &str, osm_id: i64) {
     if let Some(gid) = synthesize_gid("osm", osm_type, &osm_id.to_string()) {
-        place.tags.push((GID_TAG.into(), gid));
+        place
+            .tags
+            .push((cairn_place::intern(GID_TAG), cairn_place::intern(&gid)));
     }
     // Also stash the raw `osm_id` / `osm_type` so downstream tools
     // (replication, diff, debug) don't have to re-parse the gid.
-    place.tags.push(("osm_type".into(), osm_type.into()));
-    place.tags.push(("osm_id".into(), osm_id.to_string()));
+    place
+        .tags
+        .push((cairn_place::intern("osm_type"), cairn_place::intern(osm_type)));
+    place.tags.push((
+        cairn_place::intern("osm_id"),
+        cairn_place::intern(&osm_id.to_string()),
+    ));
 }
 
 fn way_to_place(
@@ -1089,7 +1096,7 @@ fn way_to_place(
         names,
         centroid,
         admin_path: vec![],
-        tags: filter_tags(&tags),
+        tags: cairn_place::tags_to_arc(filter_tags(&tags)),
     };
     stamp_osm_gid(&mut place, "way", way.id());
     Some(place)
@@ -1157,7 +1164,7 @@ fn build_place_from_centroid(
         names,
         centroid,
         admin_path: vec![],
-        tags: filter_tags(tags),
+        tags: cairn_place::tags_to_arc(filter_tags(tags)),
     })
 }
 
@@ -1356,7 +1363,7 @@ fn interpolate_way_addresses(
             }],
             centroid: s.centroid,
             admin_path: vec![],
-            tags,
+            tags: cairn_place::tags_to_arc(tags),
         });
         counters.interpolated_addresses += 1;
     }

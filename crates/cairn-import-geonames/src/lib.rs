@@ -129,23 +129,23 @@ pub fn import(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
             }
         };
 
-        let mut tags: Vec<(String, String)> = vec![
-            ("source".into(), "geonames".into()),
-            ("feature_code".into(), feature_code.to_string()),
+        let mut tags: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)> = vec![
+            (cairn_place::intern("source"), cairn_place::intern("geonames")),
+            (cairn_place::intern("feature_code"), cairn_place::intern(feature_code)),
         ];
         if let Some(country) = row
             .get(COL_COUNTRY)
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            tags.push(("ISO3166-1".into(), country.to_string()));
+            tags.push((cairn_place::intern("ISO3166-1"), cairn_place::intern(country)));
         }
         if let Some(pop) = row
             .get(COL_POPULATION)
             .and_then(|s| s.trim().parse::<u64>().ok())
         {
             if pop > 0 {
-                tags.push(("population".into(), pop.to_string()));
+                tags.push((cairn_place::intern("population"), cairn_place::intern(&pop.to_string())));
             }
         }
         if let Some(geonameid) = row
@@ -153,14 +153,14 @@ pub fn import(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            tags.push(("geonameid".into(), geonameid.to_string()));
+            tags.push((cairn_place::intern("geonameid"), cairn_place::intern(geonameid)));
             // Pelias ships geonames features as `geonames:venue:<id>`
             // for POIs and `geonames:locality:<id>` for cities. Use
             // the importer's already-resolved PlaceKind for the type
             // slot so the gid carries the same semantic as the row's
             // place classification.
             if let Some(gid) = synthesize_gid("geonames", kind_slug(kind), geonameid) {
-                tags.push((GID_TAG.into(), gid));
+                tags.push((cairn_place::intern(GID_TAG), cairn_place::intern(&gid)));
             }
         }
 
@@ -280,30 +280,31 @@ pub fn import_postcodes(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
             });
         }
 
-        let mut tags: Vec<(String, String)> = vec![("source".into(), "geonames".into())];
+        let mut tags: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)> =
+            vec![(cairn_place::intern("source"), cairn_place::intern("geonames"))];
         let country = row
             .get(COL_COUNTRY)
             .map(str::trim)
             .filter(|s| !s.is_empty());
         if let Some(c) = country {
-            tags.push(("ISO3166-1".into(), c.to_string()));
+            tags.push((cairn_place::intern("ISO3166-1"), cairn_place::intern(c)));
         }
         if !place_name.is_empty() {
-            tags.push(("addr:city".into(), place_name.to_string()));
+            tags.push((cairn_place::intern("addr:city"), cairn_place::intern(place_name)));
         }
         if let Some(admin1) = row
             .get(COL_ADMIN1_NAME)
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            tags.push(("addr:state".into(), admin1.to_string()));
+            tags.push((cairn_place::intern("addr:state"), cairn_place::intern(admin1)));
         }
         if let Some(accuracy) = row
             .get(COL_ACCURACY)
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            tags.push(("accuracy".into(), accuracy.to_string()));
+            tags.push((cairn_place::intern("accuracy"), cairn_place::intern(accuracy)));
         }
         // Postcode TSV has no upstream stable id; the stable
         // composite key is `<country>-<postal_code>` (geonames keeps
@@ -312,7 +313,7 @@ pub fn import_postcodes(tsv_path: &Path) -> Result<Vec<Place>, ImportError> {
         // importer produces.
         if let Some(c) = country {
             if let Some(gid) = synthesize_gid("geonames", "postalcode", &format!("{c}-{postal}")) {
-                tags.push((GID_TAG.into(), gid));
+                tags.push((cairn_place::intern(GID_TAG), cairn_place::intern(&gid)));
             }
         }
 
@@ -410,8 +411,8 @@ mod tests {
         let p = &places[0];
         assert_eq!(p.kind, PlaceKind::City);
         assert_eq!(p.names[0].value, "Vaduz");
-        assert!(p.tags.iter().any(|(k, v)| k == "population" && v == "5450"));
-        assert!(p.tags.iter().any(|(k, v)| k == "ISO3166-1" && v == "LI"));
+        assert!(p.tags.iter().any(|(k, v)| k.as_ref() == "population" && v.as_ref() == "5450"));
+        assert!(p.tags.iter().any(|(k, v)| k.as_ref() == "ISO3166-1" && v.as_ref() == "LI"));
     }
 
     #[test]
@@ -439,8 +440,8 @@ mod tests {
         assert_eq!(p.names[0].value, "9490");
         // Composite alias with bound place name.
         assert!(p.names.iter().any(|n| n.value == "9490 Vaduz"));
-        assert!(p.tags.iter().any(|(k, v)| k == "ISO3166-1" && v == "LI"));
-        assert!(p.tags.iter().any(|(k, v)| k == "addr:city" && v == "Vaduz"));
+        assert!(p.tags.iter().any(|(k, v)| k.as_ref() == "ISO3166-1" && v.as_ref() == "LI"));
+        assert!(p.tags.iter().any(|(k, v)| k.as_ref() == "addr:city" && v.as_ref() == "Vaduz"));
         assert_eq!(p.centroid.lon, 9.5215);
         assert_eq!(p.centroid.lat, 47.141);
     }
