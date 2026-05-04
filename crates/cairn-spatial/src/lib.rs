@@ -40,7 +40,22 @@ pub mod buildings;
 /// Each entry holds one tile's feature/point list. Country-scale bundles
 /// rarely exceed a few hundred non-empty tiles; planet-scale callers
 /// should tune this down once memory pressure shows up.
-pub const DEFAULT_TILE_CACHE_ENTRIES: usize = 1024;
+/// Phase 7 memory work — drop the per-AdminIndex / NearestIndex LRU
+/// from 1 024 entries to 256. Each cached entry holds an
+/// `Arc<AdminTileArchive>` (or `Arc<[PlacePoint]>` on the nearest
+/// side); on Europe-scale (9 172 admin tiles, average tile ~150 KB
+/// to several MB for Russia / Norway / France polygons), 1 024
+/// cached entries pinned 5-15 GB of resident polygon data during
+/// admin enrichment. The cache exists to amortize tile-archive
+/// header validation + rkyv `check_archived_root` cost on
+/// repeat hits; the underlying mmap'd file stays hot in the
+/// kernel page cache regardless, so cache misses re-validate
+/// from cheap mmap reads (typically tens of µs) rather than
+/// re-reading from disk. 4× smaller cache = 4× more validations
+/// per repeat hit, but freed RAM during the per-Place enrichment
+/// peak goes to actual workers. Operators who want the larger
+/// cache can still call `open_with_cache(...)` explicitly.
+pub const DEFAULT_TILE_CACHE_ENTRIES: usize = 256;
 
 #[derive(Debug, Error)]
 pub enum SpatialError {

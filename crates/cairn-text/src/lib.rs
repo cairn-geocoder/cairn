@@ -45,7 +45,16 @@ const CJK_NGRAM_MAX: usize = 2;
 /// digit). Per-bundle build is the only allocator hit, so spending
 /// 256 MiB during build buys multi-second wall-clock at no serve-side
 /// cost.
-const WRITER_HEAP: usize = 256 * 1024 * 1024;
+/// Phase 7 memory work — drop the tantivy writer heap from 256 MiB
+/// to 64 MiB. Larger heaps trade per-segment memory for fewer segment
+/// flushes during build; on Europe-scale corpora (25.45 M docs) the
+/// 256 MiB heap held a transient ~3-4 GB across parallel
+/// segment-builder threads at peak. Tantivy's `LogMergePolicy` still
+/// consolidates segments after commit, so the smaller heap costs
+/// build-time disk I/O (more segment flushes + merges) rather than
+/// final index quality. Trade is favourable when the host is the
+/// memory-constrained one — and on planet that's always the case.
+const WRITER_HEAP: usize = 64 * 1024 * 1024;
 const RERANK_MULTIPLIER: usize = 5;
 const MAX_FUZZY_DISTANCE: u8 = 2;
 /// Multiplier applied to a Hit's BM25 score when the lowercased,
