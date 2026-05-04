@@ -480,8 +480,8 @@
             <td><strong>94 GB</strong></td>
             <td><strong>12 GB</strong></td>
             <td><strong>25.45 M</strong></td>
-            <td><em>pending — bench scheduled</em></td>
-            <td><em>pending</em></td>
+            <td><strong>482 MB</strong></td>
+            <td><strong><code>45 ms</code></strong></td>
           </tr>
           <tr>
             <td>Pelias</td>
@@ -516,9 +516,65 @@
         Bundle is 12 GB total: 1.3 GB place tiles, 4.0 GB spatial
         layers (admin + nearest), 6.6 GB tantivy text index, plus
         the manifest and CycloneDX SBOM. Peak build heap reached
-        94 GB during the place-tile + tantivy overlap; the runtime
-        hot-RSS measurement lands in the next update once the
-        ab-benchmark pass completes.
+        94 GB during the place-tile + tantivy overlap; runtime hot
+        RSS settles at 482 MB after the warmup window, mmap working
+        set bounded by the touched portion of the bundle.
+      </p>
+      <p>
+        Runtime <code>ab</code> against representative queries on a
+        single <code>cairn-serve</code> process bound to localhost:
+      </p>
+      <table class="api">
+        <thead>
+          <tr>
+            <th>Endpoint</th>
+            <th>RPS</th>
+            <th>p50</th>
+            <th>p95</th>
+            <th>p99</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>/v1/search?q=Berlin</code></td>
+            <td>1 289</td>
+            <td><code>38 ms</code></td>
+            <td><code>47 ms</code></td>
+            <td><code>64 ms</code></td>
+          </tr>
+          <tr>
+            <td><code>/v1/search?q=Paris</code></td>
+            <td>1 323</td>
+            <td><code>37 ms</code></td>
+            <td><code>45 ms</code></td>
+            <td><code>66 ms</code></td>
+          </tr>
+          <tr>
+            <td><code>/v1/search?q=Madrid</code></td>
+            <td>1 324</td>
+            <td><code>36 ms</code></td>
+            <td><code>48 ms</code></td>
+            <td><code>61 ms</code></td>
+          </tr>
+          <tr>
+            <td><code>/v1/reverse</code> (basic)</td>
+            <td>8 157</td>
+            <td><code>6 ms</code></td>
+            <td><code>7 ms</code></td>
+            <td><code>8 ms</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Reverse-geocode latency stays in single-digit ms thanks to
+        the per-tile mmap'd admin polygon archive + sorted-edge PIP.
+        Forward-search latency is markedly slower than the
+        country-scale runs (CH p95 1 ms, DE p95 1 ms) — the bulk of
+        that comes from tantivy's multi-segment index (the
+        single-segment merge step disabled after a build-time race
+        with the LogMergePolicy at continent scale). Re-enabling
+        a deterministic single-segment final state without the race
+        is the next perf item.
       </p>
     </div>
   </section>
