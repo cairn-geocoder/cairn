@@ -685,19 +685,27 @@ where
         doc_count += 1;
     }
     writer.commit()?;
-    // Phase 6d C1 — force single-segment merge before quiescing. Default
-    // LogMergePolicy can leave 2-4 segments after commit on bundles built
-    // with mixed source arrival; per-query BM25 has to scan all of them.
-    // Single segment cuts text query latency 20-40% on small/medium
-    // corpora and stabilizes manifest file count.
-    let segment_ids = index.searchable_segment_ids()?;
-    if segment_ids.len() > 1 {
-        writer.merge(&segment_ids).wait()?;
-    }
     // Block until tantivy's background merge threads quiesce before
     // returning. Otherwise cairn-build's blake3 hashing race with
     // post-commit merges produces manifest hashes that don't match
     // the file bytes once the merge thread finishes its last write.
+    //
+    // We previously also called `writer.merge(searchable_segment_ids())`
+    // here to force a single-segment final state (Phase 6d C1) — the
+    // single-segment shape cuts BM25 cross-segment overhead 20-40%
+    // on small bundles. On Europe-scale corpora (25.45 M docs) the
+    // explicit merge raced against tantivy's own LogMergePolicy:
+    // background merges started consuming some segment_ids before our
+    // call ran, then the explicit `merge(...)` saw orphan ids and
+    // returned `'The segments that were merged could not be found in
+    // the SegmentManager'`. Bundle build wall-clock at the failure
+    // point: 7 h 9 m on Europe.
+    //
+    // The natural LogMergePolicy already collapses small / medium
+    // corpora to a single segment; large corpora may end with 2-4
+    // segments, which is the same shape every other tantivy-backed
+    // geocoder ships. Trade the build-time race for the per-query
+    // overhead and let tantivy do its thing.
     writer.wait_merging_threads()?;
     debug!(docs = doc_count, "tantivy index committed");
     Ok(doc_count)
