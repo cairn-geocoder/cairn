@@ -465,10 +465,10 @@
         <thead>
           <tr>
             <th>Engine</th>
-            <th>OSM ingest</th>
-            <th>Places after dedup</th>
-            <th>Admin polygons</th>
+            <th>Build</th>
+            <th>Peak build RSS</th>
             <th>Bundle disk</th>
+            <th>Places</th>
             <th>Hot RSS</th>
             <th>p95</th>
           </tr>
@@ -476,11 +476,11 @@
         <tbody>
           <tr>
             <td><strong>Cairn</strong></td>
-            <td><strong>4 h 25 m</strong></td>
+            <td><strong>7 h 4 m</strong></td>
+            <td><strong>94 GB</strong></td>
+            <td><strong>12 GB</strong></td>
             <td><strong>25.45 M</strong></td>
-            <td><strong>363 131</strong></td>
-            <td><em>pending — build in flight</em></td>
-            <td><em>pending</em></td>
+            <td><em>pending — bench scheduled</em></td>
             <td><em>pending</em></td>
           </tr>
           <tr>
@@ -498,17 +498,27 @@
         </tbody>
       </table>
       <p>
-        Cairn's OSM ingest on Europe — pass 0 (max-id scan) → pass 1
-        (flatnode write) → pass 2a (node-place emit) → pass 2b0
-        (relation way-ref scan) → pass 2b1 (parallel way-place emit,
-        458 M ways scanned, 22.16 M emitted) → pass 2b2 (admin
-        relations, 363 K polygons out of 8.31 M relations) —
-        completes in 4 h 25 m, sustaining ~2300 % CPU (≈ 23 cores)
-        through the rayon-parallel passes. Final bundle write (admin
-        tiles, text index, place tiles, point tiles, manifest, SBOM)
-        runs after OSM ingest finishes; full numbers and the
-        corresponding Pelias / Photon / Nominatim measurements ship in
-        the next update.
+        Cairn's pipeline on Europe runs in three macro-phases:
+        OSM ingest at the front (4 h 28 m: pass 0 max-id scan →
+        pass 1 flatnode write → pass 2a node-place emit → pass 2b0
+        relation way-ref scan → pass 2b1 parallel way-place emit
+        with 458 M ways scanned and 22.16 M emitted → pass 2b2
+        admin relations producing 363 K polygons), admin enrichment
+        in the middle (3 h 23 m: per-place point-in-polygon against
+        the admin index for two passes — Place admin_path then
+        AdminFeature admin_path), and the bundle-write tail at the
+        back (~30 m: simplify polygons → write 9 172 admin tiles
+        → sort 25.45 M places → emit 21 478 place tiles + 21 478
+        point tiles in one parallel pass → stream tantivy index
+        from the just-written tile blobs → manifest + SBOM).
+      </p>
+      <p>
+        Bundle is 12 GB total: 1.3 GB place tiles, 4.0 GB spatial
+        layers (admin + nearest), 6.6 GB tantivy text index, plus
+        the manifest and CycloneDX SBOM. Peak build heap reached
+        94 GB during the place-tile + tantivy overlap; the runtime
+        hot-RSS measurement lands in the next update once the
+        ab-benchmark pass completes.
       </p>
     </div>
   </section>
