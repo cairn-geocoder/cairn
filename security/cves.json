@@ -1,0 +1,12 @@
+{
+  "scanned_at": "2026-10-02T12:48:59Z",
+  "image": "ghcr.io/cairn-geocoder/cairn:latest",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "unknown": 0
+  },
+  "vulnerabilities": []
+}
