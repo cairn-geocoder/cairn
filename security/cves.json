@@ -1,12 +1,31 @@
 {
-  "scanned_at": "2026-11-06T14:29:57Z",
+  "scanned_at": "2026-11-07T13:15:46Z",
   "image": "ghcr.io/cairn-geocoder/cairn:latest",
   "summary": {
     "critical": 0,
-    "high": 0,
+    "high": 2,
     "medium": 0,
     "low": 0,
     "unknown": 0
   },
-  "vulnerabilities": []
+  "vulnerabilities": [
+    {
+      "id": "CVE-2026-107891",
+      "severity": "HIGH",
+      "package": "musl",
+      "installed_version": "1.2.5-r3",
+      "fixed_version": "1.2.5-r4",
+      "title": "musl: musl: Arbitrary code execution via integer overflow in regcomp",
+      "url": "https://avd.aquasec.com/nvd/cve-2026-107891"
+    },
+    {
+      "id": "CVE-2026-107891",
+      "severity": "HIGH",
+      "package": "musl-utils",
+      "installed_version": "1.2.5-r3",
+      "fixed_version": "1.2.5-r4",
+      "title": "musl: musl: Arbitrary code execution via integer overflow in regcomp",
+      "url": "https://avd.aquasec.com/nvd/cve-2026-107891"
+    }
+  ]
 }
